@@ -9,6 +9,53 @@ const path = require('path');
 const fs = require('fs');
 const nodemailer = require('nodemailer');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+
+// ==========================================
+// Módulo Criptográfico AES-256-GCM para Secretos Multi-Tenant (SaaS)
+// ==========================================
+const ENCRYPTION_MASTER_KEY = process.env.ENCRYPTION_MASTER_KEY || process.env.JWT_SECRET || 'unid_metal_uriel_saas_encryption_key_2026';
+const CRYPTO_KEY = crypto.createHash('sha256').update(ENCRYPTION_MASTER_KEY).digest();
+
+function encryptSecret(plainText) {
+    if (!plainText || typeof plainText !== 'string' || !plainText.trim()) return null;
+    try {
+        const iv = crypto.randomBytes(12); // 96-bit IV para AES-GCM
+        const cipher = crypto.createCipheriv('aes-256-gcm', CRYPTO_KEY, iv);
+        let encrypted = cipher.update(plainText, 'utf8', 'hex');
+        encrypted += cipher.final('hex');
+        const authTag = cipher.getAuthTag().toString('hex');
+        return `${iv.toString('hex')}:${authTag}:${encrypted}`;
+    } catch (e) {
+        console.error('❌ Error cifrando secreto:', e);
+        return null;
+    }
+}
+
+function decryptSecret(encryptedPayload) {
+    if (!encryptedPayload || typeof encryptedPayload !== 'string' || !encryptedPayload.includes(':')) return null;
+    try {
+        const parts = encryptedPayload.split(':');
+        if (parts.length !== 3) return null;
+        const [ivHex, authTagHex, encryptedHex] = parts;
+        const iv = Buffer.from(ivHex, 'hex');
+        const authTag = Buffer.from(authTagHex, 'hex');
+        const decipher = crypto.createDecipheriv('aes-256-gcm', CRYPTO_KEY, iv);
+        decipher.setAuthTag(authTag);
+        let decrypted = decipher.update(encryptedHex, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        return decrypted;
+    } catch (e) {
+        console.warn('⚠️ Error descifrando secreto (posible cambio de clave o texto corrupto):', e.message);
+        return null;
+    }
+}
+
+function maskSecret(plainText) {
+    if (!plainText || typeof plainText !== 'string') return '';
+    if (plainText.length <= 8) return '••••••••';
+    return plainText.substring(0, 4) + '••••••••' + plainText.substring(plainText.length - 4);
+}
 
 process.on('uncaughtException', (err) => {
     console.error('🔥 Error no capturado (uncaughtException):', err);
@@ -26,6 +73,35 @@ const PORT = process.env.PORT || 3000;
 const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || 'mi_token_secreto_123';
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
+
+// ==========================================
+// Catálogo de Sedes Oficiales UNID (Nacional)
+// ==========================================
+const UNID_CAMPUSES = [
+    { id: 'campeche', name: 'Campus San Francisco de Campeche', estado: 'Campeche', region: 'Sureste' },
+    { id: 'cancun', name: 'Campus Cancún', estado: 'Quintana Roo', region: 'Sureste' },
+    { id: 'chetumal', name: 'Campus Chetumal', estado: 'Quintana Roo', region: 'Sureste' },
+    { id: 'playa_del_carmen', name: 'Campus Playa del Carmen', estado: 'Quintana Roo', region: 'Sureste' },
+    { id: 'cozumel', name: 'Campus Cozumel', estado: 'Quintana Roo', region: 'Sureste' },
+    { id: 'merida', name: 'Campus Mérida', estado: 'Yucatán', region: 'Sureste' },
+    { id: 'villahermosa', name: 'Campus Villahermosa', estado: 'Tabasco', region: 'Sureste' },
+    { id: 'tijuana', name: 'Campus Tijuana', estado: 'Baja California', region: 'Noroeste' },
+    { id: 'ensenada', name: 'Campus Ensenada', estado: 'Baja California', region: 'Noroeste' },
+    { id: 'guadalajara', name: 'Campus Guadalajara', estado: 'Jalisco', region: 'Occidente' },
+    { id: 'zapopan', name: 'Campus Zapopan', estado: 'Jalisco', region: 'Occidente' },
+    { id: 'aguascalientes', name: 'Campus Aguascalientes', estado: 'Aguascalientes', region: 'Bajío' },
+    { id: 'zacatecas', name: 'Campus Zacatecas', estado: 'Zacatecas', region: 'Norte' },
+    { id: 'slp', name: 'Campus San Luis Potosí', estado: 'San Luis Potosí', region: 'Bajío' },
+    { id: 'toluca', name: 'Campus Toluca', estado: 'Estado de México', region: 'Centro' },
+    { id: 'tlalnepantla', name: 'Campus Tlalnepantla', estado: 'Estado de México', region: 'Centro' },
+    { id: 'tejupilco', name: 'Campus Tejupilco', estado: 'Estado de México', region: 'Centro' },
+    { id: 'morelia', name: 'Campus Morelia', estado: 'Michoacán', region: 'Occidente' },
+    { id: 'uruapan', name: 'Campus Uruapan', estado: 'Michoacán', region: 'Occidente' },
+    { id: 'pachuca', name: 'Campus Pachuca', estado: 'Hidalgo', region: 'Centro' },
+    { id: 'tampico', name: 'Campus Tampico', estado: 'Tamaulipas', region: 'Noreste' },
+    { id: 'durango', name: 'Campus Durango', estado: 'Durango', region: 'Norte' },
+    { id: 'online_nacional', name: 'UNID Online (Nacional 100% Virtual)', estado: 'Nacional', region: 'Virtual' }
+];
 
 // Configuración de Autenticación JWT
 const JWT_SECRET = process.env.JWT_SECRET || 'unid_metal_uriel_jwt_secret_key_2026';
@@ -46,13 +122,59 @@ const dbPool = mysql.createPool({
     queueLimit: 0
 });
 
-// Auto-migraciones para columnas avanzadas (Kanban, Lead Scoring y Resumen IA)
+// Auto-migraciones para columnas avanzadas (Kanban, Sedes SaaS Multi-Tenant y Cifrado)
 (async () => {
     try {
         const connection = await dbPool.getConnection();
         console.log('✅ Conexión exitosa al pool de MariaDB');
         
+        // 1. Crear tabla sedes si no existe
+        await connection.query(`
+            CREATE TABLE IF NOT EXISTS sedes (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                slug VARCHAR(50) NOT NULL UNIQUE,
+                nombre VARCHAR(150) NOT NULL,
+                estado VARCHAR(100) NOT NULL,
+                region VARCHAR(50) DEFAULT 'Nacional',
+                whatsapp_phone_number_id VARCHAR(100) NULL,
+                whatsapp_token_encrypted TEXT NULL,
+                meta_verify_token VARCHAR(150) DEFAULT 'unid_meta_verify_token_2026',
+                email_notificaciones VARCHAR(255) NULL,
+                custom_prompt TEXT NULL,
+                gemini_key_encrypted TEXT NULL,
+                openai_key_encrypted TEXT NULL,
+                activa BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_slug (slug),
+                INDEX idx_whatsapp_phone_id (whatsapp_phone_number_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `);
+
+        // 2. Poblar sedes base si la tabla está vacía
+        try {
+            const [sedesCount] = await connection.query('SELECT COUNT(*) as count FROM sedes');
+            if (sedesCount[0].count === 0) {
+                console.log('🏛️ Inicializando catálogo base de Sedes UNID en MariaDB...');
+                for (const campus of UNID_CAMPUSES) {
+                    const isCampeche = campus.id === 'campeche';
+                    const encryptedWaToken = isCampeche && WHATSAPP_TOKEN ? encryptSecret(WHATSAPP_TOKEN) : null;
+                    const phoneId = isCampeche ? (WHATSAPP_PHONE_NUMBER_ID || null) : null;
+                    const email = isCampeche ? (process.env.ADMISSIONS_NOTIFICATION_EMAIL || 'admisiones.campeche@unid.mx') : null;
+
+                    await connection.execute(`
+                        INSERT INTO sedes (slug, nombre, estado, region, whatsapp_phone_number_id, whatsapp_token_encrypted, email_notificaciones, activa)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+                    `, [campus.id, campus.name, campus.estado, campus.region, phoneId, encryptedWaToken, email]);
+                }
+            }
+        } catch (seedErr) {
+            console.warn('⚠️ Error poblando sedes iniciales:', seedErr.message);
+        }
+
+        // 3. Migraciones de la tabla aspirantes
         const migrations = [
+            `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS sede_id INT NULL`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS estado_prospecto VARCHAR(50) DEFAULT 'nuevo'`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS nivel_interes VARCHAR(20) DEFAULT 'Alto'`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS resumen_ia TEXT`,
@@ -1424,37 +1546,282 @@ app.post('/api/prompt/reset', (req, res) => {
 });
 
 // ==========================================
-// Catálogo de Sedes Oficiales UNID (Nacional)
+// 15. Endpoints API: Gestión de Sedes / Tenants (SaaS Multi-Tenant)
 // ==========================================
-const UNID_CAMPUSES = [
-    { id: 'campeche', name: 'Campus San Francisco de Campeche', estado: 'Campeche', region: 'Sureste' },
-    { id: 'cancun', name: 'Campus Cancún', estado: 'Quintana Roo', region: 'Sureste' },
-    { id: 'chetumal', name: 'Campus Chetumal', estado: 'Quintana Roo', region: 'Sureste' },
-    { id: 'playa_del_carmen', name: 'Campus Playa del Carmen', estado: 'Quintana Roo', region: 'Sureste' },
-    { id: 'cozumel', name: 'Campus Cozumel', estado: 'Quintana Roo', region: 'Sureste' },
-    { id: 'merida', name: 'Campus Mérida', estado: 'Yucatán', region: 'Sureste' },
-    { id: 'villahermosa', name: 'Campus Villahermosa', estado: 'Tabasco', region: 'Sureste' },
-    { id: 'tijuana', name: 'Campus Tijuana', estado: 'Baja California', region: 'Noroeste' },
-    { id: 'ensenada', name: 'Campus Ensenada', estado: 'Baja California', region: 'Noroeste' },
-    { id: 'guadalajara', name: 'Campus Guadalajara', estado: 'Jalisco', region: 'Occidente' },
-    { id: 'zapopan', name: 'Campus Zapopan', estado: 'Jalisco', region: 'Occidente' },
-    { id: 'aguascalientes', name: 'Campus Aguascalientes', estado: 'Aguascalientes', region: 'Bajío' },
-    { id: 'zacatecas', name: 'Campus Zacatecas', estado: 'Zacatecas', region: 'Norte' },
-    { id: 'slp', name: 'Campus San Luis Potosí', estado: 'San Luis Potosí', region: 'Bajío' },
-    { id: 'toluca', name: 'Campus Toluca', estado: 'Estado de México', region: 'Centro' },
-    { id: 'tlalnepantla', name: 'Campus Tlalnepantla', estado: 'Estado de México', region: 'Centro' },
-    { id: 'tejupilco', name: 'Campus Tejupilco', estado: 'Estado de México', region: 'Centro' },
-    { id: 'morelia', name: 'Campus Morelia', estado: 'Michoacán', region: 'Occidente' },
-    { id: 'uruapan', name: 'Campus Uruapan', estado: 'Michoacán', region: 'Occidente' },
-    { id: 'pachuca', name: 'Campus Pachuca', estado: 'Hidalgo', region: 'Centro' },
-    { id: 'tampico', name: 'Campus Tampico', estado: 'Tamaulipas', region: 'Noreste' },
-    { id: 'durango', name: 'Campus Durango', estado: 'Durango', region: 'Norte' },
-    { id: 'online_nacional', name: 'UNID Online (Nacional 100% Virtual)', estado: 'Nacional', region: 'Virtual' }
-];
 
-// Obtener catálogo de sedes UNID
+// Listar catálogo de sedes UNID
 app.get('/api/campuses', (req, res) => {
     res.json({ success: true, count: UNID_CAMPUSES.length, campuses: UNID_CAMPUSES });
+});
+
+// Listar todas las sedes con estado de configuración (Tokens enmascarados)
+app.get('/api/tenants', async (req, res) => {
+    try {
+        let sedes = [];
+        try {
+            const [rows] = await dbPool.query('SELECT * FROM sedes ORDER BY nombre ASC');
+            sedes = rows;
+        } catch (dbErr) {
+            console.warn('⚠️ MariaDB offline para listar sedes, usando fallback en memoria:', dbErr.message);
+        }
+
+        // Si la base de datos no tiene sedes o falló, devolver el catálogo base UNID
+        if (sedes.length === 0) {
+            sedes = UNID_CAMPUSES.map(c => ({
+                id: c.id,
+                slug: c.id,
+                nombre: c.name,
+                estado: c.estado,
+                region: c.region,
+                whatsapp_phone_number_id: c.id === 'campeche' ? WHATSAPP_PHONE_NUMBER_ID : null,
+                hasWhatsAppToken: Boolean(c.id === 'campeche' && WHATSAPP_TOKEN),
+                maskedWhatsAppToken: c.id === 'campeche' && WHATSAPP_TOKEN ? maskSecret(WHATSAPP_TOKEN) : '',
+                email_notificaciones: c.id === 'campeche' ? (process.env.ADMISSIONS_NOTIFICATION_EMAIL || 'admisiones.campeche@unid.mx') : '',
+                custom_prompt: '',
+                hasGeminiKey: Boolean(process.env.GEMINI_API_KEY),
+                hasOpenAiKey: Boolean(process.env.OPENAI_API_KEY),
+                activa: 1
+            }));
+        } else {
+            sedes = sedes.map(s => {
+                const plainWaToken = decryptSecret(s.whatsapp_token_encrypted);
+                return {
+                    id: s.id,
+                    slug: s.slug,
+                    nombre: s.nombre,
+                    estado: s.estado,
+                    region: s.region,
+                    whatsapp_phone_number_id: s.whatsapp_phone_number_id,
+                    hasWhatsAppToken: Boolean(plainWaToken || (s.slug === 'campeche' && WHATSAPP_TOKEN)),
+                    maskedWhatsAppToken: maskSecret(plainWaToken || (s.slug === 'campeche' ? WHATSAPP_TOKEN : '')),
+                    meta_verify_token: s.meta_verify_token || VERIFY_TOKEN,
+                    email_notificaciones: s.email_notificaciones || (s.slug === 'campeche' ? process.env.ADMISSIONS_NOTIFICATION_EMAIL : ''),
+                    custom_prompt: s.custom_prompt || '',
+                    hasGeminiKey: Boolean(s.gemini_key_encrypted || process.env.GEMINI_API_KEY),
+                    hasOpenAiKey: Boolean(s.openai_key_encrypted || process.env.OPENAI_API_KEY),
+                    activa: Boolean(s.activa)
+                };
+            });
+        }
+
+        res.json({ success: true, count: sedes.length, tenants: sedes });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Obtener detalle de una sede específica
+app.get('/api/tenants/:slug', async (req, res) => {
+    try {
+        const { slug } = req.params;
+        const [rows] = await dbPool.query('SELECT * FROM sedes WHERE slug = ? OR id = ?', [slug, slug]);
+        
+        if (rows.length === 0) {
+            const foundBase = UNID_CAMPUSES.find(c => c.id === slug);
+            if (!foundBase) {
+                return res.status(404).json({ success: false, error: 'Sede no encontrada.' });
+            }
+            return res.json({
+                success: true,
+                tenant: {
+                    slug: foundBase.id,
+                    nombre: foundBase.name,
+                    estado: foundBase.estado,
+                    region: foundBase.region,
+                    whatsapp_phone_number_id: foundBase.id === 'campeche' ? WHATSAPP_PHONE_NUMBER_ID : '',
+                    hasWhatsAppToken: Boolean(foundBase.id === 'campeche' && WHATSAPP_TOKEN),
+                    maskedWhatsAppToken: foundBase.id === 'campeche' && WHATSAPP_TOKEN ? maskSecret(WHATSAPP_TOKEN) : '',
+                    meta_verify_token: VERIFY_TOKEN,
+                    email_notificaciones: foundBase.id === 'campeche' ? process.env.ADMISSIONS_NOTIFICATION_EMAIL : '',
+                    custom_prompt: '',
+                    activa: true
+                }
+            });
+        }
+
+        const s = rows[0];
+        const plainWa = decryptSecret(s.whatsapp_token_encrypted);
+        res.json({
+            success: true,
+            tenant: {
+                id: s.id,
+                slug: s.slug,
+                nombre: s.nombre,
+                estado: s.estado,
+                region: s.region,
+                whatsapp_phone_number_id: s.whatsapp_phone_number_id || '',
+                hasWhatsAppToken: Boolean(plainWa),
+                maskedWhatsAppToken: maskSecret(plainWa || ''),
+                meta_verify_token: s.meta_verify_token || VERIFY_TOKEN,
+                email_notificaciones: s.email_notificaciones || '',
+                custom_prompt: s.custom_prompt || '',
+                hasGeminiKey: Boolean(s.gemini_key_encrypted),
+                hasOpenAiKey: Boolean(s.openai_key_encrypted),
+                activa: Boolean(s.activa)
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Guardar o actualizar configuración de sede (Cifrado en reposo)
+app.post('/api/tenants/:slug', async (req, res) => {
+    try {
+        const { slug } = req.params;
+        const {
+            whatsapp_phone_number_id,
+            whatsapp_token,
+            meta_verify_token,
+            email_notificaciones,
+            custom_prompt,
+            gemini_key,
+            openai_key,
+            activa
+        } = req.body;
+
+        const [existing] = await dbPool.query('SELECT * FROM sedes WHERE slug = ?', [slug]);
+        
+        let encryptedWaToken = null;
+        if (whatsapp_token && !whatsapp_token.includes('••••')) {
+            encryptedWaToken = encryptSecret(whatsapp_token);
+        } else if (existing.length > 0) {
+            encryptedWaToken = existing[0].whatsapp_token_encrypted;
+        }
+
+        let encryptedGeminiKey = null;
+        if (gemini_key && !gemini_key.includes('••••')) {
+            encryptedGeminiKey = encryptSecret(gemini_key);
+        } else if (existing.length > 0) {
+            encryptedGeminiKey = existing[0].gemini_key_encrypted;
+        }
+
+        let encryptedOpenAiKey = null;
+        if (openai_key && !openai_key.includes('••••')) {
+            encryptedOpenAiKey = encryptSecret(openai_key);
+        } else if (existing.length > 0) {
+            encryptedOpenAiKey = existing[0].openai_key_encrypted;
+        }
+
+        if (existing.length > 0) {
+            await dbPool.execute(`
+                UPDATE sedes SET
+                    whatsapp_phone_number_id = ?,
+                    whatsapp_token_encrypted = ?,
+                    meta_verify_token = ?,
+                    email_notificaciones = ?,
+                    custom_prompt = ?,
+                    gemini_key_encrypted = ?,
+                    openai_key_encrypted = ?,
+                    activa = ?
+                WHERE slug = ?
+            `, [
+                whatsapp_phone_number_id || null,
+                encryptedWaToken,
+                meta_verify_token || VERIFY_TOKEN,
+                email_notificaciones || null,
+                custom_prompt || null,
+                encryptedGeminiKey,
+                encryptedOpenAiKey,
+                activa !== undefined ? (activa ? 1 : 0) : 1,
+                slug
+            ]);
+            console.log(`🔐 [TENANT SAVED] Configuración cifrada y guardada para sede '${slug}'.`);
+        } else {
+            const foundBase = UNID_CAMPUSES.find(c => c.id === slug) || { name: slug, estado: 'México', region: 'Nacional' };
+            await dbPool.execute(`
+                INSERT INTO sedes (slug, nombre, estado, region, whatsapp_phone_number_id, whatsapp_token_encrypted, meta_verify_token, email_notificaciones, custom_prompt, gemini_key_encrypted, openai_key_encrypted, activa)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `, [
+                slug,
+                foundBase.name,
+                foundBase.estado,
+                foundBase.region,
+                whatsapp_phone_number_id || null,
+                encryptedWaToken,
+                meta_verify_token || VERIFY_TOKEN,
+                email_notificaciones || null,
+                custom_prompt || null,
+                encryptedGeminiKey,
+                encryptedOpenAiKey,
+                activa !== undefined ? (activa ? 1 : 0) : 1
+            ]);
+            console.log(`🏛️ [TENANT CREATED] Sede '${slug}' registrada y cifrada con éxito.`);
+        }
+
+        res.json({ success: true, message: `Configuración para ${slug} guardada y cifrada exitosamente.` });
+    } catch (err) {
+        console.error('Error guardando sede:', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Prueba de Conectividad con Meta WhatsApp para una Sede
+app.post('/api/tenants/:slug/test-whatsapp', async (req, res) => {
+    try {
+        const { slug } = req.params;
+        const { testPhone } = req.body;
+
+        const [rows] = await dbPool.query('SELECT * FROM sedes WHERE slug = ?', [slug]);
+        let tokenToTest = WHATSAPP_TOKEN;
+        let phoneIdToTest = WHATSAPP_PHONE_NUMBER_ID;
+
+        if (rows.length > 0) {
+            const sede = rows[0];
+            if (sede.whatsapp_token_encrypted) {
+                tokenToTest = decryptSecret(sede.whatsapp_token_encrypted);
+            }
+            if (sede.whatsapp_phone_number_id) {
+                phoneIdToTest = sede.whatsapp_phone_number_id;
+            }
+        }
+
+        if (!tokenToTest || !phoneIdToTest) {
+            return res.status(400).json({
+                success: false,
+                error: 'La sede no cuenta con WhatsApp Token o Phone Number ID configurado.'
+            });
+        }
+
+        // Probar llamada a Meta Graph API
+        const metaRes = await axios.get(`https://graph.facebook.com/v20.0/${phoneIdToTest}`, {
+            headers: { 'Authorization': `Bearer ${tokenToTest}` }
+        });
+
+        const phoneInfo = metaRes.data;
+
+        // Si se proporcionó un teléfono de prueba, enviar un mensaje de confirmación
+        if (testPhone) {
+            await axios.post(`https://graph.facebook.com/v20.0/${phoneIdToTest}/messages`, {
+                messaging_product: 'whatsapp',
+                recipient_type: 'individual',
+                to: testPhone,
+                type: 'text',
+                text: { body: `🐺 ¡Hola! Mensaje de prueba exitoso desde el Centro de Mando SaaS de Metal-Uriel para la sede de ${slug.toUpperCase()}. Conexión verificada con Meta Cloud API.` }
+            }, {
+                headers: {
+                    'Authorization': `Bearer ${tokenToTest}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+        }
+
+        res.json({
+            success: true,
+            message: `✅ Conexión exitosa con Meta WhatsApp Business API para Phone ID ${phoneIdToTest}.`,
+            phoneInfo: {
+                id: phoneInfo.id,
+                display_phone_number: phoneInfo.display_phone_number || phoneInfo.verified_name || 'Configurado',
+                quality_rating: phoneInfo.quality_rating || 'GREEN'
+            }
+        });
+    } catch (err) {
+        const metaError = err.response?.data?.error?.message || err.message;
+        res.status(400).json({
+            success: false,
+            error: `Error conectando con Meta: ${metaError}`
+        });
+    }
 });
 
 // Obtener lista de aspirantes con estados y filtros

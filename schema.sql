@@ -1,6 +1,6 @@
 -- ==========================================================
 -- Esquema de Base de Datos para MariaDB / MySQL
--- Proyecto: Metal-Uriel (Admisiones UNID Multi-Campus)
+-- Proyecto: Metal-Uriel (Admisiones UNID SaaS Multi-Tenant)
 -- ==========================================================
 
 CREATE DATABASE IF NOT EXISTS `unid_admisiones` 
@@ -9,9 +9,32 @@ COLLATE utf8mb4_unicode_ci;
 
 USE `unid_admisiones`;
 
--- Tabla principal de registro de aspirantes / prospectos
+-- Tabla de Sedes / Inquilinos (Tenants) para arquitectura SaaS Multi-Tenant
+CREATE TABLE IF NOT EXISTS `sedes` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `slug` VARCHAR(50) NOT NULL UNIQUE,
+    `nombre` VARCHAR(150) NOT NULL,
+    `estado` VARCHAR(100) NOT NULL,
+    `region` VARCHAR(50) DEFAULT 'Nacional',
+    `whatsapp_phone_number_id` VARCHAR(100) NULL,
+    `whatsapp_token_encrypted` TEXT NULL,
+    `meta_verify_token` VARCHAR(150) DEFAULT 'unid_meta_verify_token_2026',
+    `email_notificaciones` VARCHAR(255) NULL,
+    `custom_prompt` TEXT NULL,
+    `gemini_key_encrypted` TEXT NULL,
+    `openai_key_encrypted` TEXT NULL,
+    `activa` BOOLEAN DEFAULT TRUE,
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX `idx_slug` (`slug`),
+    INDEX `idx_whatsapp_phone_id` (`whatsapp_phone_number_id`),
+    INDEX `idx_activa` (`activa`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Tabla principal de registro de aspirantes / prospectos (Segmentada por Sede)
 CREATE TABLE IF NOT EXISTS `aspirantes` (
     `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `sede_id` INT NULL,
     `nombre_completo` VARCHAR(255) NOT NULL,
     `fecha_nacimiento` DATE NULL,
     `sexo` VARCHAR(30) NULL,
@@ -35,6 +58,7 @@ CREATE TABLE IF NOT EXISTS `aspirantes` (
     `raw_json_data` JSON NULL,
     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX `idx_sede_id` (`sede_id`),
     INDEX `idx_telefono` (`telefono_celular`),
     INDEX `idx_carrera` (`carrera_interes`),
     INDEX `idx_campus` (`campus_interes`),
@@ -42,12 +66,14 @@ CREATE TABLE IF NOT EXISTS `aspirantes` (
     INDEX `idx_archivado` (`archivado`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Tabla complementaria para almacenar el historial de conversación (opcional para persistencia de contexto)
+-- Tabla complementaria para almacenar el historial de conversación
 CREATE TABLE IF NOT EXISTS `historial_conversaciones` (
     `id` BIGINT AUTO_INCREMENT PRIMARY KEY,
+    `sede_id` INT NULL,
     `telefono_celular` VARCHAR(30) NOT NULL,
     `rol` ENUM('user', 'assistant', 'system') NOT NULL,
     `mensaje` TEXT NOT NULL,
     `timestamp` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    INDEX `idx_historial_telefono` (`telefono_celular`, `timestamp`)
+    INDEX `idx_historial_telefono` (`telefono_celular`, `timestamp`),
+    INDEX `idx_historial_sede` (`sede_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

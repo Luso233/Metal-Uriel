@@ -268,6 +268,32 @@ function App() {
   const [promptSaving, setPromptSaving] = useState(false);
   const [promptSavedNotification, setPromptSavedNotification] = useState(false);
 
+  // SaaS Multi-Tenant & Configuración de Sedes
+  const [tenantsList, setTenantsList] = useState([]);
+  const [selectedTenantSlug, setSelectedTenantSlug] = useState('campeche');
+  const [tenantForm, setTenantForm] = useState({
+    whatsapp_phone_number_id: '',
+    whatsapp_token: '',
+    maskedWhatsAppToken: '',
+    hasWhatsAppToken: false,
+    meta_verify_token: 'unid_meta_verify_token_2026',
+    email_notificaciones: '',
+    custom_prompt: '',
+    gemini_key: '',
+    hasGeminiKey: false,
+    openai_key: '',
+    hasOpenAiKey: false,
+    activa: true
+  });
+  const [tenantLoading, setTenantLoading] = useState(false);
+  const [tenantSaving, setTenantSaving] = useState(false);
+  const [tenantSaveSuccess, setTenantSaveSuccess] = useState(false);
+  const [tenantTesting, setTenantTesting] = useState(false);
+  const [tenantTestResult, setTenantTestResult] = useState(null);
+  const [onboardingStep, setOnboardingStep] = useState(1);
+  const [faqOpenIndex, setFaqOpenIndex] = useState(null);
+  const [copiedWebhook, setCopiedWebhook] = useState(false);
+
   const chatEndRef = useRef(null);
   const inputRef = useRef(null);
   const careerChartRef = useRef(null);
@@ -284,6 +310,8 @@ function App() {
     loadPromptData();
     loadAnalytics();
     loadBrochures();
+    loadTenants();
+    loadTenantDetails('campeche');
 
     const interval = setInterval(fetchHealthFull, 12000);
     return () => clearInterval(interval);
@@ -602,6 +630,122 @@ function App() {
 
   const handleSelectPreset = (presetPrompt) => {
     setCustomPrompt(presetPrompt);
+  };
+
+  // SaaS Multi-Tenant Handlers
+  const loadTenants = async () => {
+    try {
+      const res = await fetch('/api/tenants');
+      const data = await res.json();
+      if (data.success && data.tenants) {
+        setTenantsList(data.tenants);
+      }
+    } catch (e) {
+      console.error('Error cargando sedes:', e);
+    }
+  };
+
+  const loadTenantDetails = async (slug) => {
+    setTenantLoading(true);
+    setTenantTestResult(null);
+    try {
+      const res = await fetch(`/api/tenants/${slug}`);
+      const data = await res.json();
+      if (data.success && data.tenant) {
+        const t = data.tenant;
+        setTenantForm({
+          whatsapp_phone_number_id: t.whatsapp_phone_number_id || '',
+          whatsapp_token: '',
+          maskedWhatsAppToken: t.maskedWhatsAppToken || '',
+          hasWhatsAppToken: t.hasWhatsAppToken || false,
+          meta_verify_token: t.meta_verify_token || 'unid_meta_verify_token_2026',
+          email_notificaciones: t.email_notificaciones || '',
+          custom_prompt: t.custom_prompt || '',
+          gemini_key: '',
+          hasGeminiKey: t.hasGeminiKey || false,
+          openai_key: '',
+          hasOpenAiKey: t.hasOpenAiKey || false,
+          activa: t.activa !== undefined ? t.activa : true
+        });
+      }
+    } catch (e) {
+      console.error('Error cargando detalle de sede:', e);
+    } finally {
+      setTenantLoading(false);
+    }
+  };
+
+  const handleSelectTenant = (slug) => {
+    setSelectedTenantSlug(slug);
+    loadTenantDetails(slug);
+  };
+
+  const handleSaveTenant = async (e) => {
+    if (e) e.preventDefault();
+    setTenantSaving(true);
+    setTenantTestResult(null);
+    try {
+      const payload = {
+        whatsapp_phone_number_id: tenantForm.whatsapp_phone_number_id,
+        meta_verify_token: tenantForm.meta_verify_token,
+        email_notificaciones: tenantForm.email_notificaciones,
+        custom_prompt: tenantForm.custom_prompt,
+        activa: tenantForm.activa
+      };
+      if (tenantForm.whatsapp_token && tenantForm.whatsapp_token.trim()) {
+        payload.whatsapp_token = tenantForm.whatsapp_token.trim();
+      }
+      if (tenantForm.gemini_key && tenantForm.gemini_key.trim()) {
+        payload.gemini_key = tenantForm.gemini_key.trim();
+      }
+      if (tenantForm.openai_key && tenantForm.openai_key.trim()) {
+        payload.openai_key = tenantForm.openai_key.trim();
+      }
+
+      const res = await fetch(`/api/tenants/${selectedTenantSlug}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (data.success) {
+        setTenantSaveSuccess(true);
+        setTimeout(() => setTenantSaveSuccess(false), 4000);
+        loadTenants();
+        loadTenantDetails(selectedTenantSlug);
+      } else {
+        alert('Error guardando sede: ' + (data.error || 'Error desconocido'));
+      }
+    } catch (err) {
+      alert('Error de conexión al guardar sede: ' + err.message);
+    } finally {
+      setTenantSaving(false);
+    }
+  };
+
+  const handleTestTenantWhatsApp = async () => {
+    setTenantTesting(true);
+    setTenantTestResult(null);
+    try {
+      const res = await fetch(`/api/tenants/${selectedTenantSlug}/test-whatsapp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const data = await res.json();
+      setTenantTestResult(data);
+    } catch (err) {
+      setTenantTestResult({ success: false, error: 'Error de conexión: ' + err.message });
+    } finally {
+      setTenantTesting(false);
+    }
+  };
+
+  const handleCopyWebhook = () => {
+    const url = `${window.location.origin}/webhook`;
+    navigator.clipboard.writeText(url).then(() => {
+      setCopiedWebhook(true);
+      setTimeout(() => setCopiedWebhook(false), 3000);
+    });
   };
 
   // Enviar mensaje en el simulador
@@ -1220,6 +1364,33 @@ function App() {
               >
                 <i data-lucide="settings-2" className="w-3.5 h-3.5"></i>
                 <span>Personalidad Bot</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('tenant_config')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition ${
+                  activeTab === 'tenant_config'
+                    ? 'bg-[#FFC72C] text-slate-950 shadow-md shadow-amber-900/30'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                }`}
+              >
+                <i data-lucide="building-2" className="w-3.5 h-3.5"></i>
+                <span>Configuración Sedes</span>
+                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-900/60 font-mono">
+                  {tenantsList.length || 23}
+                </span>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('onboarding')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition ${
+                  activeTab === 'onboarding'
+                    ? 'bg-[#FFC72C] text-slate-950 shadow-md shadow-amber-900/30'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                }`}
+              >
+                <i data-lucide="help-circle" className="w-3.5 h-3.5"></i>
+                <span>Soporte & Onboarding</span>
               </button>
             </div>
 
@@ -1910,6 +2081,622 @@ function App() {
                 </div>
               </div>
             )}
+
+            {/* ====== TAB 7: CONFIGURACIÓN MULTI-TENANT POR SEDE ====== */}
+            {activeTab === 'tenant_config' && (
+              <div className="space-y-4">
+                {tenantSaveSuccess && (
+                  <div className="p-3.5 rounded-xl bg-emerald-950 border border-emerald-500/60 text-emerald-200 text-xs flex items-center justify-between shadow-lg animate-pulse">
+                    <span className="flex items-center gap-2 font-bold">
+                      <i data-lucide="check-circle-2" className="w-4 h-4 text-emerald-400"></i>
+                      ¡Configuración de la sede guardada y cifrada con AES-256-GCM con éxito en MariaDB!
+                    </span>
+                  </div>
+                )}
+
+                {/* Header de la Sede */}
+                <div className="rounded-2xl border border-slate-700 bg-[#1E293B] p-4 space-y-3 shadow-md">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <h2 className="font-extrabold text-sm sm:text-base text-white flex items-center gap-2">
+                        <i data-lucide="building-2" className="w-4 h-4 text-[#FFC72C]"></i>
+                        <span>Gestión Multi-Tenant • Sedes Nacionales UNID</span>
+                      </h2>
+                      <p className="text-xs text-slate-400">
+                        Configura el número oficial de WhatsApp, Tokens de Meta cifrados con AES-256 y llaves de IA para cada campus.
+                      </p>
+                    </div>
+
+                    {/* Selector de Sede a Configurar */}
+                    <div className="flex items-center gap-2 bg-[#0A192F] px-3 py-1.5 rounded-xl border border-slate-700">
+                      <label className="text-[11px] font-bold text-amber-400">Sede:</label>
+                      <select
+                        value={selectedTenantSlug}
+                        onChange={(e) => handleSelectTenant(e.target.value)}
+                        className="bg-transparent text-xs font-bold text-slate-100 focus:outline-none cursor-pointer"
+                      >
+                        {tenantsList.map(t => (
+                          <option key={t.slug} value={t.slug} className="bg-[#0F172A] text-slate-100">
+                            {t.nombre} {t.hasWhatsAppToken ? '🟢 (Configurado)' : '⚪ (Sin Token)'}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Resumen de la Sede Seleccionada */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-slate-800 text-xs">
+                    <div className="p-2.5 rounded-xl bg-[#0A192F] border border-slate-800">
+                      <span className="text-[10px] text-slate-400 block">Identificador Slug</span>
+                      <span className="font-mono font-bold text-amber-300">{selectedTenantSlug}</span>
+                    </div>
+                    <div className="p-2.5 rounded-xl bg-[#0A192F] border border-slate-800">
+                      <span className="text-[10px] text-slate-400 block">Estado de WhatsApp</span>
+                      <span className={`font-bold flex items-center gap-1 ${tenantForm.hasWhatsAppToken ? 'text-emerald-400' : 'text-slate-400'}`}>
+                        <i data-lucide={tenantForm.hasWhatsAppToken ? 'check-circle-2' : 'alert-circle'} className="w-3 h-3"></i>
+                        {tenantForm.hasWhatsAppToken ? 'Conectado / Cifrado' : 'Pendiente Token'}
+                      </span>
+                    </div>
+                    <div className="p-2.5 rounded-xl bg-[#0A192F] border border-slate-800">
+                      <span className="text-[10px] text-slate-400 block">Motor de IA</span>
+                      <span className="font-bold text-sky-300">
+                        {tenantForm.hasGeminiKey ? 'Gemini Personalizado' : 'Servidor Central (.env)'}
+                      </span>
+                    </div>
+                    <div className="p-2.5 rounded-xl bg-[#0A192F] border border-slate-800">
+                      <span className="text-[10px] text-slate-400 block">Estado de Sede</span>
+                      <span className={`font-bold ${tenantForm.activa ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {tenantForm.activa ? '🟢 Activa (En línea)' : '🔴 Pausada'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Formulario de Configuración */}
+                <form onSubmit={handleSaveTenant} className="space-y-4 text-xs">
+                  
+                  {/* Bloque 1: Meta WhatsApp Cloud API */}
+                  <div className="rounded-2xl border border-slate-700 bg-[#1E293B] p-4 space-y-3.5 shadow-md">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                      <h3 className="font-extrabold text-xs text-white flex items-center gap-2">
+                        <i data-lucide="message-square" className="w-4 h-4 text-emerald-400"></i>
+                        1. Credenciales Oficiales de Meta WhatsApp Cloud API
+                      </h3>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-500/30 font-bold">
+                        🔐 Cifrado AES-256-GCM
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                      <div>
+                        <label className="text-slate-300 block mb-1 font-bold">
+                          WhatsApp Phone Number ID:
+                        </label>
+                        <input
+                          type="text"
+                          value={tenantForm.whatsapp_phone_number_id}
+                          onChange={(e) => setTenantForm({ ...tenantForm, whatsapp_phone_number_id: e.target.value })}
+                          placeholder="Ej. 567890123456789"
+                          className="w-full bg-[#0A192F] border border-slate-700 rounded-xl px-3 py-2 text-slate-100 font-mono focus:outline-none focus:border-[#FFC72C]"
+                        />
+                        <span className="text-[10px] text-slate-400 mt-1 block">
+                          ID numérico asignado por Meta for Developers a esta línea telefónica.
+                        </span>
+                      </div>
+
+                      <div>
+                        <label className="text-slate-300 block mb-1 font-bold">
+                          Meta Access Token (Token de Sistema Permanente):
+                        </label>
+                        <input
+                          type="password"
+                          value={tenantForm.whatsapp_token}
+                          onChange={(e) => setTenantForm({ ...tenantForm, whatsapp_token: e.target.value })}
+                          placeholder={tenantForm.maskedWhatsAppToken || 'Escribe el nuevo token para actualizar...'}
+                          className="w-full bg-[#0A192F] border border-slate-700 rounded-xl px-3 py-2 text-slate-100 font-mono focus:outline-none focus:border-[#FFC72C]"
+                        />
+                        <span className="text-[10px] text-slate-400 mt-1 block">
+                          {tenantForm.hasWhatsAppToken 
+                            ? `Token actual cifrado: ${tenantForm.maskedWhatsAppToken} (Déjalo vacío para mantenerlo).`
+                            : 'Genera este token permanente en Meta Business Suite.'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 pt-1">
+                      <div>
+                        <label className="text-slate-300 block mb-1 font-bold">
+                          Webhook Verify Token (Token de Verificación):
+                        </label>
+                        <input
+                          type="text"
+                          value={tenantForm.meta_verify_token}
+                          onChange={(e) => setTenantForm({ ...tenantForm, meta_verify_token: e.target.value })}
+                          placeholder="unid_meta_verify_token_2026"
+                          className="w-full bg-[#0A192F] border border-slate-700 rounded-xl px-3 py-2 text-slate-100 font-mono focus:outline-none focus:border-[#FFC72C]"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-slate-300 block mb-1 font-bold">
+                          URL del Webhook para Meta Developers:
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            readOnly
+                            value={`${window.location.origin}/webhook`}
+                            className="flex-1 bg-[#0A192F] border border-slate-700 rounded-xl px-3 py-2 text-slate-300 font-mono text-[11px] select-all cursor-text"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleCopyWebhook}
+                            className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold transition flex items-center gap-1 shrink-0"
+                          >
+                            <i data-lucide={copiedWebhook ? 'check' : 'copy'} className="w-3.5 h-3.5 text-amber-400"></i>
+                            <span>{copiedWebhook ? '¡Copiado!' : 'Copiar'}</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Botón de Test de Conexión Live con Meta */}
+                    <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-t border-slate-800">
+                      <button
+                        type="button"
+                        onClick={handleTestTenantWhatsApp}
+                        disabled={tenantTesting}
+                        className="px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white font-bold transition flex items-center gap-2 shadow self-start sm:self-auto"
+                      >
+                        <i data-lucide={tenantTesting ? 'loader-2' : 'zap'} className={`w-3.5 h-3.5 ${tenantTesting ? 'animate-spin' : 'text-amber-300'}`}></i>
+                        <span>{tenantTesting ? 'Probando conexión con Meta...' : 'Probar Conexión con Meta Graph API'}</span>
+                      </button>
+
+                      <span className="text-[10px] text-slate-400">
+                        Valida la validez del token y el número registrado en tiempo real.
+                      </span>
+                    </div>
+
+                    {/* Resultado del Test de Conexión */}
+                    {tenantTestResult && (
+                      <div className={`p-3.5 rounded-xl border text-xs space-y-1 ${
+                        tenantTestResult.success 
+                          ? 'bg-emerald-950/70 border-emerald-500/60 text-emerald-200' 
+                          : 'bg-rose-950/70 border-rose-500/60 text-rose-200'
+                      }`}>
+                        <div className="flex items-center gap-2 font-bold">
+                          <i data-lucide={tenantTestResult.success ? 'check-circle-2' : 'alert-triangle'} className="w-4 h-4"></i>
+                          <span>{tenantTestResult.message || (tenantTestResult.success ? 'Conexión Exitosa con Meta' : 'Fallo en la Conexión')}</span>
+                        </div>
+                        {tenantTestResult.metaResponse && (
+                          <div className="text-[11px] font-mono grid grid-cols-1 sm:grid-cols-3 gap-1 pt-1 text-slate-300">
+                            <div>Teléfono: <strong>{tenantTestResult.metaResponse.display_phone_number || 'N/A'}</strong></div>
+                            <div>Nombre: <strong>{tenantTestResult.metaResponse.verified_name || 'Sin verificar'}</strong></div>
+                            <div>Calidad: <strong>{tenantTestResult.metaResponse.quality_rating || 'GREEN'}</strong></div>
+                          </div>
+                        )}
+                        {tenantTestResult.error && (
+                          <p className="text-[11px] text-rose-300 font-mono">{tenantTestResult.error}</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Bloque 2: Contacto & Notificaciones de Admisiones */}
+                  <div className="rounded-2xl border border-slate-700 bg-[#1E293B] p-4 space-y-3.5 shadow-md">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                      <h3 className="font-extrabold text-xs text-white flex items-center gap-2">
+                        <i data-lucide="mail" className="w-4 h-4 text-amber-400"></i>
+                        2. Contacto & Notificaciones por Correo de Admisiones
+                      </h3>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                      <div>
+                        <label className="text-slate-300 block mb-1 font-bold">
+                          Correo Institucional de Notificaciones (@unid.mx):
+                        </label>
+                        <input
+                          type="email"
+                          value={tenantForm.email_notificaciones}
+                          onChange={(e) => setTenantForm({ ...tenantForm, email_notificaciones: e.target.value })}
+                          placeholder={`admisiones.${selectedTenantSlug}@unid.mx`}
+                          className="w-full bg-[#0A192F] border border-slate-700 rounded-xl px-3 py-2 text-slate-100 focus:outline-none focus:border-[#FFC72C]"
+                        />
+                        <span className="text-[10px] text-slate-400 mt-1 block">
+                          Recibe la ficha completa en PDF/HTML en cuanto el alumno finalice los 11 datos obligatorios.
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-3 pt-6">
+                        <label className="flex items-center gap-2 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={tenantForm.activa}
+                            onChange={(e) => setTenantForm({ ...tenantForm, activa: e.target.checked })}
+                            className="w-4 h-4 text-amber-500 rounded bg-[#0A192F] border-slate-700 focus:ring-0 cursor-pointer"
+                          />
+                          <span className="font-bold text-slate-200">
+                            Habilitar recepción de mensajes en esta Sede
+                          </span>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Bloque 3: Llaves de IA & System Prompt Personalizado */}
+                  <div className="rounded-2xl border border-slate-700 bg-[#1E293B] p-4 space-y-3.5 shadow-md">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                      <h3 className="font-extrabold text-xs text-white flex items-center gap-2">
+                        <i data-lucide="cpu" className="w-4 h-4 text-purple-400"></i>
+                        3. Inteligencia Artificial Personalizada por Campus (Opcional)
+                      </h3>
+                      <span className="text-[10px] text-slate-400">
+                        Opcional: Si se deja vacío, se usa la llave maestra del servidor.
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                      <div>
+                        <label className="text-slate-300 block mb-1 font-bold">
+                          Google Gemini API Key de la Sede:
+                        </label>
+                        <input
+                          type="password"
+                          value={tenantForm.gemini_key}
+                          onChange={(e) => setTenantForm({ ...tenantForm, gemini_key: e.target.value })}
+                          placeholder={tenantForm.hasGeminiKey ? '•••••••••••••••• (Configurada)' : 'AIzaSy...'}
+                          className="w-full bg-[#0A192F] border border-slate-700 rounded-xl px-3 py-2 text-slate-100 font-mono focus:outline-none focus:border-[#FFC72C]"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="text-slate-300 block mb-1 font-bold">
+                          OpenAI API Key de la Sede:
+                        </label>
+                        <input
+                          type="password"
+                          value={tenantForm.openai_key}
+                          onChange={(e) => setTenantForm({ ...tenantForm, openai_key: e.target.value })}
+                          placeholder={tenantForm.hasOpenAiKey ? '•••••••••••••••• (Configurada)' : 'sk-proj-...'}
+                          className="w-full bg-[#0A192F] border border-slate-700 rounded-xl px-3 py-2 text-slate-100 font-mono focus:outline-none focus:border-[#FFC72C]"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="pt-1">
+                      <label className="text-slate-300 block mb-1 font-bold">
+                        Instrucciones Específicas / Promociones Locales de este Campus:
+                      </label>
+                      <textarea
+                        rows={3}
+                        value={tenantForm.custom_prompt}
+                        onChange={(e) => setTenantForm({ ...tenantForm, custom_prompt: e.target.value })}
+                        placeholder={`Ejemplo: Promoción exclusiva para ${selectedTenantSlug}: 50% de descuento en inscripción durante el mes patrio...`}
+                        className="w-full bg-[#0A192F] border border-slate-700 rounded-xl p-2.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-[#FFC72C]"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Barra de Guardado */}
+                  <div className="flex items-center justify-between pt-2">
+                    <div className="flex items-center gap-2 text-slate-400 text-[11px]">
+                      <i data-lucide="shield-check" className="w-4 h-4 text-emerald-400"></i>
+                      <span>Los secretos son cifrados antes de insertarse en la tabla <code>sedes</code> de MariaDB.</span>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={tenantSaving}
+                      className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-[#FFC72C] to-[#F59E0B] hover:from-[#F59E0B] hover:to-[#D97706] text-slate-950 font-black text-xs transition shadow-lg shadow-amber-900/30 flex items-center gap-2 active:scale-95"
+                    >
+                      <i data-lucide="save" className="w-4 h-4"></i>
+                      <span>{tenantSaving ? 'Cifrando y Guardando...' : 'Guardar Configuración de Sede'}</span>
+                    </button>
+                  </div>
+                </form>
+              </div>
+            )}
+
+            {/* ====== TAB 8: CENTRO DE ONBOARDING & GUÍAS ====== */}
+            {activeTab === 'onboarding' && (
+              <div className="space-y-5">
+                {/* Header Onboarding */}
+                <div className="rounded-2xl border border-slate-700 bg-[#1E293B] p-5 space-y-2 shadow-md">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center text-white shadow-lg">
+                      <i data-lucide="rocket" className="w-5 h-5"></i>
+                    </div>
+                    <div>
+                      <h2 className="font-extrabold text-base text-white">
+                        Centro de Onboarding & Guías de Despliegue Nacional
+                      </h2>
+                      <p className="text-xs text-slate-400">
+                        Aprende cómo conectar WhatsApp Cloud API, entrenar la personalidad de Metal-Uriel y operar el tablero de admisiones en tu campus.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Selector de Pasos */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 pt-3">
+                    <button
+                      onClick={() => setOnboardingStep(1)}
+                      className={`p-3 rounded-xl border text-left transition flex items-center gap-2.5 ${
+                        onboardingStep === 1
+                          ? 'bg-indigo-950/60 border-indigo-500/60 text-white shadow-md'
+                          : 'bg-[#0A192F] border-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      <div className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs ${
+                        onboardingStep === 1 ? 'bg-indigo-500 text-white' : 'bg-slate-800 text-slate-300'
+                      }`}>
+                        1
+                      </div>
+                      <div>
+                        <span className="font-bold text-xs block">Meta for Developers</span>
+                        <span className="text-[10px] text-slate-400">WhatsApp Cloud API</span>
+                      </div>
+                    </button>
+
+                    <button
+                      onClick={() => setOnboardingStep(2)}
+                      className={`p-3 rounded-xl border text-left transition flex items-center gap-2.5 ${
+                        onboardingStep === 2
+                          ? 'bg-purple-950/60 border-purple-500/60 text-white shadow-md'
+                          : 'bg-[#0A192F] border-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      <div className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs ${
+                        onboardingStep === 2 ? 'bg-purple-500 text-white' : 'bg-slate-800 text-slate-300'
+                      }`}>
+                        2
+                      </div>
+                      <div>
+                        <span className="font-bold text-xs block">Personalizar Asesor IA</span>
+                        <span className="text-[10px] text-slate-400">Prompt & Planes SEP</span>
+                      </div>
+                    </button>
+
+                    <button
+                      onClick={() => setOnboardingStep(3)}
+                      className={`p-3 rounded-xl border text-left transition flex items-center gap-2.5 ${
+                        onboardingStep === 3
+                          ? 'bg-amber-950/60 border-amber-500/60 text-white shadow-md'
+                          : 'bg-[#0A192F] border-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      <div className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs ${
+                        onboardingStep === 3 ? 'bg-amber-500 text-slate-950 font-black' : 'bg-slate-800 text-slate-300'
+                      }`}>
+                        3
+                      </div>
+                      <div>
+                        <span className="font-bold text-xs block">Kanban & Admisiones</span>
+                        <span className="text-[10px] text-slate-400">CRM & Exportación</span>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Contenido del Paso Seleccionado */}
+                {onboardingStep === 1 && (
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 text-xs">
+                    <div className="lg:col-span-2 rounded-2xl border border-slate-700 bg-[#1E293B] p-5 space-y-4 shadow-md">
+                      <div className="flex items-center gap-2">
+                        <span className="w-6 h-6 rounded-full bg-indigo-600 flex items-center justify-center text-white font-bold text-xs">1</span>
+                        <h3 className="font-extrabold text-sm text-white">
+                          Conectar WhatsApp Business con Meta for Developers
+                        </h3>
+                      </div>
+
+                      <ol className="space-y-3 text-slate-300 list-decimal list-inside leading-relaxed">
+                        <li>
+                          <strong className="text-white">Crear la App en Meta:</strong> Ingresa a <a href="https://developers.facebook.com" target="_blank" className="text-indigo-400 hover:underline">developers.facebook.com</a> con tu cuenta institucional de Meta, crea una aplicación de tipo <em>"Empresa" (Business)</em> y agrega el producto <em>WhatsApp</em>.
+                        </li>
+                        <li>
+                          <strong className="text-white">Obtener el Phone Number ID:</strong> En la sección <em>WhatsApp &gt; Configuración de la API</em>, copia el <code>Identificador de número de teléfono</code>.
+                        </li>
+                        <li>
+                          <strong className="text-white">Generar Token Permanente del Sistema:</strong> En <a href="https://business.facebook.com/settings" target="_blank" className="text-indigo-400 hover:underline">business.facebook.com/settings</a>, crea un <em>Usuario del Sistema</em> con rol Administrador, asígnale el activo de WhatsApp y genera un token con los permisos <code>whatsapp_business_messaging</code> y <code>whatsapp_business_management</code>.
+                        </li>
+                        <li>
+                          <strong className="text-white">Configurar el Webhook:</strong> En Meta Developers, coloca la URL de tu webhook (ej. <code>https://tu-dominio.com/webhook</code>) y el Verify Token configurado. Suscríbete al evento <code>messages</code>.
+                        </li>
+                      </ol>
+
+                      <div className="p-3 rounded-xl bg-[#0A192F] border border-slate-800 flex items-center justify-between">
+                        <span className="text-slate-300 font-mono text-[11px]">¿Listo para configurar tu sede?</span>
+                        <button
+                          onClick={() => setActiveTab('tenant_config')}
+                          className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-1 shadow"
+                        >
+                          <span>Ir a Configuración Sedes</span>
+                          <i data-lucide="arrow-right" className="w-3.5 h-3.5"></i>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Tarjeta de Video Tutorial */}
+                    <div className="rounded-2xl border border-indigo-500/40 bg-[#1E293B] p-4 flex flex-col justify-between shadow-md space-y-3">
+                      <div>
+                        <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider block">Tutorial en Video</span>
+                        <h4 className="font-extrabold text-sm text-white mt-1">
+                          Cómo configurar Meta WhatsApp Cloud API en 5 Minutos
+                        </h4>
+                        <div className="mt-3 aspect-video rounded-xl bg-slate-900 border border-slate-700 flex flex-col items-center justify-center p-4 relative overflow-hidden group cursor-pointer">
+                          <div className="w-12 h-12 rounded-full bg-indigo-600 group-hover:scale-110 text-white flex items-center justify-center shadow-lg transition">
+                            <i data-lucide="play" className="w-5 h-5 ml-0.5"></i>
+                          </div>
+                          <span className="text-[10px] text-slate-400 mt-2">Ver Tutorial de Meta Developers</span>
+                        </div>
+                      </div>
+
+                      <div className="text-[11px] text-slate-400">
+                        💡 Este video explica cómo asociar un número fijo o celular de admisiones sin perder las conversaciones previas.
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {onboardingStep === 2 && (
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 text-xs">
+                    <div className="lg:col-span-2 rounded-2xl border border-slate-700 bg-[#1E293B] p-5 space-y-4 shadow-md">
+                      <div className="flex items-center gap-2">
+                        <span className="w-6 h-6 rounded-full bg-purple-600 flex items-center justify-center text-white font-bold text-xs">2</span>
+                        <h3 className="font-extrabold text-sm text-white">
+                          Personalización de la IA, Planes de Estudio & Anti-Alucinación
+                        </h3>
+                      </div>
+
+                      <ul className="space-y-3 text-slate-300 list-disc list-inside leading-relaxed">
+                        <li>
+                          <strong className="text-white">Instrucciones del Sistema (System Prompt):</strong> Define el tono de voz de Metal-Uriel (Asertivo, Amigable o Ejecutivo) y agrega reglas sobre qué carreras ofrecer y cuáles derivar a modalidad Online.
+                        </li>
+                        <li>
+                          <strong className="text-white">Folletos Oficiales SEP:</strong> Revisa en la pestaña <em>Planes de Estudio</em> que las materias y RVOE coincidan con el plan 2026 de tu campus.
+                        </li>
+                        <li>
+                          <strong className="text-white">Pruebas en el Laboratorio:</strong> Utiliza el botón flotante <em>🧪 Laboratorio de Pruebas IA</em> para ejecutar casos reales de alumnos presenciales, foráneos y peticiones de PDF.
+                        </li>
+                      </ul>
+
+                      <div className="p-3 rounded-xl bg-[#0A192F] border border-slate-800 flex items-center justify-between">
+                        <span className="text-slate-300 font-mono text-[11px]">Ajusta la personalidad del bot ahora</span>
+                        <button
+                          onClick={() => setActiveTab('prompt')}
+                          className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs flex items-center gap-1 shadow"
+                        >
+                          <span>Ir al Editor de Prompt</span>
+                          <i data-lucide="arrow-right" className="w-3.5 h-3.5"></i>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-purple-500/40 bg-[#1E293B] p-4 flex flex-col justify-between shadow-md space-y-3">
+                      <div>
+                        <span className="text-[10px] font-bold text-purple-400 uppercase tracking-wider block">Tutorial en Video</span>
+                        <h4 className="font-extrabold text-sm text-white mt-1">
+                          Entrenamiento y Calibración de Prompts de Admisión
+                        </h4>
+                        <div className="mt-3 aspect-video rounded-xl bg-slate-900 border border-slate-700 flex flex-col items-center justify-center p-4 relative overflow-hidden group cursor-pointer">
+                          <div className="w-12 h-12 rounded-full bg-purple-600 group-hover:scale-110 text-white flex items-center justify-center shadow-lg transition">
+                            <i data-lucide="play" className="w-5 h-5 ml-0.5"></i>
+                          </div>
+                          <span className="text-[10px] text-slate-400 mt-2">Ver Demostración del Laboratorio</span>
+                        </div>
+                      </div>
+
+                      <div className="text-[11px] text-slate-400">
+                        💡 Aprende cómo evitar que el modelo invente carreras médicas o de aviación que no existen en el catálogo UNID.
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {onboardingStep === 3 && (
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 text-xs">
+                    <div className="lg:col-span-2 rounded-2xl border border-slate-700 bg-[#1E293B] p-5 space-y-4 shadow-md">
+                      <div className="flex items-center gap-2">
+                        <span className="w-6 h-6 rounded-full bg-amber-500 text-slate-950 font-black text-xs">3</span>
+                        <h3 className="font-extrabold text-sm text-white">
+                          Operación del Tablero Kanban & Exportación a CRM
+                        </h3>
+                      </div>
+
+                      <ul className="space-y-3 text-slate-300 list-disc list-inside leading-relaxed">
+                        <li>
+                          <strong className="text-white">Captura Automática:</strong> Cuando un prospecto chatea por WhatsApp, Metal-Uriel extrae de forma no invasiva los 11 campos clave y calcula su <em>Lead Score</em>.
+                        </li>
+                        <li>
+                          <strong className="text-white">Flujo de Estados:</strong> El equipo de admisiones puede mover a los aspirantes entre <em>Nuevos &gt; Contactados &gt; En Proceso &gt; Inscritos</em>.
+                        </li>
+                        <li>
+                          <strong className="text-white">Archivado Limpio:</strong> Una vez finalizado el ciclo, archiva a los aspirantes concluidos para mantener el tablero ordenado sin perder el historial.
+                        </li>
+                        <li>
+                          <strong className="text-white">Descarga a Excel / CSV:</strong> Exporta toda la base de datos oficial para reportes directos a Dirección y Rectoría.
+                        </li>
+                      </ul>
+
+                      <div className="p-3 rounded-xl bg-[#0A192F] border border-slate-800 flex items-center justify-between">
+                        <span className="text-slate-300 font-mono text-[11px]">Explora el Tablero de Admisiones</span>
+                        <button
+                          onClick={() => setActiveTab('kanban')}
+                          className="px-3 py-1.5 rounded-lg bg-[#FFC72C] hover:bg-[#F59E0B] text-slate-950 font-bold text-xs flex items-center gap-1 shadow"
+                        >
+                          <span>Ir al Tablero Kanban</span>
+                          <i data-lucide="arrow-right" className="w-3.5 h-3.5"></i>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-amber-500/40 bg-[#1E293B] p-4 flex flex-col justify-between shadow-md space-y-3">
+                      <div>
+                        <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wider block">Tutorial en Video</span>
+                        <h4 className="font-extrabold text-sm text-white mt-1">
+                          Flujo Diario de Admisiones y Cierre de Matrícula
+                        </h4>
+                        <div className="mt-3 aspect-video rounded-xl bg-slate-900 border border-slate-700 flex flex-col items-center justify-center p-4 relative overflow-hidden group cursor-pointer">
+                          <div className="w-12 h-12 rounded-full bg-[#FFC72C] text-slate-950 group-hover:scale-110 flex items-center justify-center shadow-lg transition font-black">
+                            <i data-lucide="play" className="w-5 h-5 ml-0.5"></i>
+                          </div>
+                          <span className="text-[10px] text-slate-400 mt-2">Ver Tutorial de Admisiones</span>
+                        </div>
+                      </div>
+
+                      <div className="text-[11px] text-slate-400">
+                        💡 Descubre cómo los asesores aumentan su tasa de conversión contactando por WhatsApp directo desde la ficha.
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Acordeón de Preguntas Frecuentes (FAQ) */}
+                <div className="rounded-2xl border border-slate-700 bg-[#1E293B] p-5 space-y-3 shadow-md">
+                  <h3 className="font-extrabold text-sm text-white flex items-center gap-2">
+                    <i data-lucide="help-circle" className="w-4 h-4 text-[#FFC72C]"></i>
+                    Preguntas Frecuentes & Soporte Técnico (FAQ)
+                  </h3>
+
+                  <div className="space-y-2 pt-1 text-xs">
+                    {[
+                      {
+                        q: '¿Cómo funciona la arquitectura Multi-Tenant SaaS?',
+                        a: 'El backend procesa los mensajes entrantes de Meta WhatsApp leyendo el phone_number_id. En base a ese ID, localiza la sede correspondiente en la tabla sedes de MariaDB, descifra las credenciales con AES-256-GCM y responde con la configuración de dicho campus.'
+                      },
+                      {
+                        q: '¿Qué ocurre si se agota la cuota del modelo de IA o falla la conexión?',
+                        a: 'Metal-Uriel cuenta con un sistema de Respaldo en Cascada (Fallback) y Circuit Breaker automático. Si Google Gemini agota tokens o límites HTTP 429/403, salta en milisegundos a Anthropic Claude, OpenAI, DeepSeek o Groq Cloud sin interrumpir la plática del aspirante.'
+                      },
+                      {
+                        q: '¿Cómo se protegen los datos personales de los aspirantes?',
+                        a: 'Cumpliendo con los estándares de privacidad educativa y la Ley Federal de Protección de Datos Personales, los tokens y datos sensibles se cifran en reposo con AES-256-GCM y los accesos al panel requieren autenticación institucional Office 365 / JWT.'
+                      },
+                      {
+                        q: '¿Podemos alojar una sola instancia central en la nube para todo México?',
+                        a: 'Sí. Metal-Uriel está diseñado para correr en contenedores Docker o servicios de nube como DigitalOcean, AWS, Railway o Render, atendiendo a todas las sedes del país con un solo webhook central y base de datos distribuida.'
+                      }
+                    ].map((faq, idx) => (
+                      <div key={idx} className="rounded-xl border border-slate-800 bg-[#0A192F] overflow-hidden">
+                        <button
+                          onClick={() => setFaqOpenIndex(faqOpenIndex === idx ? null : idx)}
+                          className="w-full p-3 text-left font-bold text-slate-200 flex items-center justify-between hover:text-amber-300 transition"
+                        >
+                          <span>{faq.q}</span>
+                          <i data-lucide={faqOpenIndex === idx ? 'chevron-up' : 'chevron-down'} className="w-4 h-4 text-slate-400"></i>
+                        </button>
+                        {faqOpenIndex === idx && (
+                          <div className="px-3 pb-3 text-slate-400 text-[11px] leading-relaxed border-t border-slate-800/60 pt-2 bg-slate-900/40">
+                            {faq.a}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
           </div>
         </div>
       </div>

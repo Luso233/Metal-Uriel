@@ -238,3 +238,39 @@ flowchart LR
 3. **Restricción de Dominio Educativo:**
    - El backend de Metal-Uriel valida estrictamente que la terminación del correo sea `@red.unid.mx`, `@unid.mx` o `@talisis.com`, bloqueando cualquier intento de acceso con correos externos personales (Gmail, Hotmail, etc.).
 
+---
+
+## 🌐 6. Arquitectura SaaS Multi-Tenant & Seguridad Bancaria (AES-256-GCM)
+
+Metal-Uriel ha evolucionado de un script local de un solo campus a una **plataforma híbrida SaaS Multi-Tenant**, capaz de atender simultáneamente a **más de 20 sedes UNID en todo el país**:
+
+```mermaid
+flowchart TD
+    A["Meta WhatsApp Network"] -->|Webhook POST /webhook con phone_number_id| B["Tenant Resolver Dinámico"]
+    B -->|Busca Sede en MariaDB| C[("Tabla sedes")]
+    C -->|Descifra con AES-256-GCM| D["Credenciales de la Sede"]
+    D --> E{"¿Tiene credenciales propias?"}
+    E -->|Sí| F["Usa WhatsApp Token & Keys del Campus"]
+    E -->|No / Default| G["Usa Variables de Entorno (.env)"]
+    F --> H["Procesamiento con IA + Fallback Cascada"]
+    G --> H
+    H --> I["Persistencia con sede_id en MariaDB"]
+    I --> J["Envío de respuesta a WhatsApp"]
+```
+
+### 6.1. Cifrado en Reposo de Nivel Bancario (`crypto` AES-256-GCM)
+- **Cero Tokens en Texto Plano:** Todos los tokens de Meta WhatsApp (`whatsapp_token_encrypted`), llaves de Gemini (`gemini_key_encrypted`) y llaves de OpenAI (`openai_key_encrypted`) se cifran antes de persistirse en la base de datos MariaDB.
+- **Autenticación Criptográfica:** El algoritmo `aes-256-gcm` utiliza un vector de inicialización único (IV) de 96 bits por cada operación y un tag de autenticación de 128 bits, impidiendo cualquier ataque de manipulación o fuga de credenciales.
+- **Enmascaramiento en el Frontend:** Las APIs `GET /api/tenants` y `GET /api/tenants/:slug` **nunca devuelven tokens descifrados a la interfaz web**, enviando exclusivamente una máscara segura (`••••••••`).
+
+### 6.2. Enrutamiento Inteligente por `phone_number_id`
+Cuando un mensaje llega al webhook central `POST /webhook`, el servidor extrae el `phone_number_id` provisto por Meta, busca la sede asociada en MariaDB y aplica:
+1. El token oficial de WhatsApp del campus.
+2. El System Prompt con reglas y promociones locales de esa sede.
+3. El correo de notificación de los asesores de dicho plantel.
+4. Las llaves de IA asignadas al campus (con fallback automático a las llaves maestras del servidor si no están configuradas).
+
+### 6.3. Opciones de Despliegue Híbrido
+- **Modo Piloto Local (Campus Campeche):** Funciona al 100% de manera local en una máquina con Node.js y MariaDB, leyendo las credenciales de `.env` sin necesidad de configuraciones previas.
+- **Modo SaaS Centralizado (Nacional):** Puede desplegarse en una sola instancia en la nube (**DigitalOcean App Platform, Railway, Render, AWS ECS o Google Cloud Run**) conectada a una base de datos gestionada, sirviendo a todas las sedes del país bajo un solo subdominio (`https://bot-admisiones.unid.mx/webhook`).
+
