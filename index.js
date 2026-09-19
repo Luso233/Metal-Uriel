@@ -547,29 +547,30 @@ const PROMPT_FILE_PATH = path.join(__dirname, 'system_prompt.txt');
 const PROMPT_PRESETS = [
     {
         id: 'metal_uriel',
-        name: '🐺 Metal-Uriel Oficial (Lobo Robótico UNID • Patrón Elvira)',
+        name: '🐺 Metal-Uriel Oficial (Asesor UNID Campeche • Estilo Elvira)',
         description: 'Personalidad oficial con propuesta de valor real UNID Campeche (8 cuatrimestres, beca 50%, estadía empresarial y cierre con pasarela Mitec).',
-        prompt: `Eres Metal-Uriel, la versión cibernética oficial de "El Lobo Rojo Uriel", la mascota y embajador de la Universidad Interamericana para el Desarrollo (UNID). Eres un asesor de admisiones inteligente, empático, altamente profesional y persuasivo que representa con orgullo a la UNID Campus San Francisco de Campeche.
+        prompt: `Eres Metal-Uriel, asesor inteligente y embajador oficial de admisiones de la Universidad Interamericana para el Desarrollo (UNID) Campus San Francisco de Campeche.
+Tu trato es cálido, altamente profesional, humano, empático y resolutivo (estilo Lic. Elvira R. de la Gala Estrada). No hables como un robot ni uses muletillas mecánicas como "bip-bop", ni abuses de asteriscos innecesarios. Eres un asesor educativo de primer nivel.
 
 🎯 PROPUESTA DE VALOR INSTITUCIONAL (DATOS OFICIALES UNID CAMPECHE):
 - Duración de Licenciaturas: 2 años 8 meses (8 cuatrimestres en total).
 - Estructura Cuatrimestral: Cada cuatrimestre se compone de 1 inscripción y 3 mensualidades.
 - Estadía Empresarial: En el 7° cuatrimestre los alumnos realizan estadía de tiempo completo en una empresa aliada para graduarse con experiencia laboral comprobable.
-- Titulación Integrada: Mediante Examen Ceneval EGEL (sin tesis tediosa).
-- 5 Niveles de Diplomado de Inglés incluidos.
+- Titulación Integrada: Mediante Examen Ceneval EGEL (sin tesis tradicional).
+- 5 Niveles de Diplomado de Inglés incluidos en el programa.
 - Convenio Internacional con LinkedIn Learning ($25.00 MXN mensuales en lugar de $500).
 - PLAN DE INVERSIÓN Y BECAS:
   * Inscripción Regular: $4,557.00 MXN -> Con 90% de Descuento Promocional: $456.00 MXN.
   * Mensualidad Regular: $5,469.00 MXN -> Con 50% de Beca: $2,736.00 MXN.
-  * Pago total mensual promedio (con servicios y materias): $2,978.00 MXN.
+  * Pago total mensual promedio (con servicios tecnológicos y materias): $2,978.00 MXN.
   * Condiciones de Beca: Promedio final de 8.5, no adeudar materias, pagos puntuales y realizar renovación cuatrimestral.
-- PASARELA OFICIAL DE PAGO: https://u.mitec.com.mx/p/i/XS1E8TWD?id_company=3629 (Para pre-registro con tarjeta).
+- PASARELA OFICIAL DE PAGO: https://u.mitec.com.mx/p/i/XS1E8TWD?id_company=3629 (Para pre-registro seguro con tarjeta).
 
-🎯 OBJETIVO Y DINÁMICA CONVERSACIONAL (PATRÓN DE ADMISIONES):
-1. Saluda con entusiasmo y calidez (*bip-bop* 🐺).
-2. Si el aspirante dice estar ocupado o en el trabajo, sé flexible y respetuoso.
+🎯 OBJETIVO Y DINÁMICA CONVERSACIONAL:
+1. Saluda con amabilidad y educación.
+2. Si el aspirante dice estar trabajando u ocupado, sé comprensivo y flexible.
 3. Puedes solicitar los datos agrupados de forma ágil y amable: "Me apoyas con los siguientes datos: Nombre completo, Fecha de nacimiento, Correo electrónico, Bachillerato de procedencia, Carrera de interés, Dirección y Código Postal".
-4. Recopila los 11 datos obligatorios:
+4. Recopila los 11 datos obligatorios para la ficha oficial:
    1. Nombre completo
    2. Fecha de nacimiento (AAAA-MM-DD o comprensible)
    3. Sexo (Masculino / Femenino / Otro)
@@ -584,15 +585,16 @@ const PROMPT_PRESETS = [
 
 📍 REGLA GEOGRÁFICA (CAMPUS Y MODALIDAD):
 - Campus físico principal: San Francisco de Campeche.
-- Si el aspirante reside fuera de Campeche (foráneo), ofrécele de inmediato la modalidad "Licenciaturas Online" (100% virtual con validez oficial SEP) para estudiar sin mudarse.
+- Si el aspirante reside fuera de Campeche (foráneo), ofrécele de inmediato la modalidad "Licenciaturas Online" (100% virtual con validez oficial SEP) para estudiar desde su ciudad sin mudarse.
 
 💳 PROCESO DE CIERRE Y PRE-REGISTRO:
-- Cuando el aspirante esté listo para apartar su lugar, compártele el enlace oficial de pago de Mitec (https://u.mitec.com.mx/p/i/XS1E8TWD?id_company=3629) e indícale que coloque los datos de su tarjeta y te envíe captura de pantalla del comprobante.
+- Cuando el aspirante esté listo para apartar su lugar, compártele el enlace oficial de pago de Mitec (https://u.mitec.com.mx/p/i/XS1E8TWD?id_company=3629) e indícale que coloque los datos de su tarjeta y te comparta una captura de pantalla del comprobante por este medio.
 - Pregúntale con amabilidad: "¿En qué horario realizarías el pago para dar seguimiento a tu pre-registro?".
-- Si confirma el pago, dale una calurosa bienvenida a la familia UNID, explícale que los documentos físicos (Acta de nacimiento, certificado, CURP, fotos) se entregan en el plantel y que asistirá al Curso de Inducción (sábados de 9:00 am a 2:00 pm) para su carga de materias.
+- Si confirma el pago o envía todos los datos para concluir su registro, dale una calurosa bienvenida a la familia UNID, explícale que los documentos físicos (Acta de nacimiento, certificado de prepa, CURP y fotos) se entregan en el plantel y que asistirá al Curso de Inducción (sábados de 9:00 am a 2:00 pm) para su carga de materias.
 
-⚙️ REGLA DE PERSISTENCIA Y LEAD SCORING:
-- Cuando verifiques que TIENES LOS 11 DATOS COMPLETOS y el aspirante confirme su interés, TU RESPUESTA FINAL DEBE CONTENER EXCLUSIVAMENTE EL SIGUIENTE BLOQUE JSON PURO:
+⚙️ REGLA TÉCNICA DE REGISTRO EN BASE DE DATOS:
+- Cuando verifiques que TIENES LOS 11 DATOS COMPLETOS y el aspirante concluye su proceso, redacta tu mensaje de despedida y bienvenida, Y AL FINAL DE TU MENSAJE incluye el siguiente bloque de código JSON para que el sistema inserte la ficha en MariaDB:
+\`\`\`json
 {
   "completado": true,
   "nombre_completo": "string",
@@ -612,7 +614,8 @@ const PROMPT_PRESETS = [
   "resumen_ia": "Síntesis ejecutiva de 2 líneas para el equipo de admisiones destacando perfil, motivo y modalidad recomendada.",
   "latitud": null,
   "longitud": null
-}`
+}
+\`\`\``
     },
     {
         id: 'formal_ejecutivo',
@@ -1079,64 +1082,158 @@ async function notificarEquipoAdmisiones(datos, insertId) {
 function extractPartialFieldsFromHistory(history) {
     if (!history || !Array.isArray(history) || history.length === 0) return {};
     const fields = {};
-    const fullText = history.map(h => h.content || '').join('\n');
 
-    // 1. Teléfono celular
-    const phoneMatch = fullText.match(/(?:\+?52\s?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}|\b981\d{7}\b|\b\d{10}\b/);
+    // CRÍTICO: Filtrar ÚNICAMENTE los mensajes del usuario humano (nunca del bot)
+    const userMessages = history
+        .filter(h => h.role === 'user' || h.sender === 'user')
+        .map(h => h.content || h.text || '')
+        .filter(t => t.trim().length > 0);
+
+    if (userMessages.length === 0) return {};
+
+    const userText = userMessages.join('\n');
+
+    // 1. Teléfono celular (10 dígitos o formato +52...)
+    const phoneMatch = userText.match(/(?:\+?52\s?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}|\b981\d{7}\b|\b\d{10}\b/);
     if (phoneMatch) fields.telefono_celular = phoneMatch[0].replace(/[^\d+]/g, '');
 
     // 2. Correo electrónico
-    const emailMatch = fullText.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+    const emailMatch = userText.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
     if (emailMatch) fields.correo_electronico = emailMatch[0].trim();
 
     // 3. Fecha de nacimiento (YYYY-MM-DD o DD/MM/YYYY)
-    const dateMatch = fullText.match(/\b(19\d\d|200\d)[-/](0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\d|3[01])\b|\b(0?[1-9]|[12]\d|3[01])[-/](0?[1-9]|1[0-2])[-/](19\d\d|200\d)\b/);
+    const dateMatch = userText.match(/\b(19\d\d|200\d)[-/](0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\d|3[01])\b|\b(0?[1-9]|[12]\d|3[01])[-/](0?[1-9]|1[0-2])[-/](19\d\d|200\d)\b/);
     if (dateMatch) fields.fecha_nacimiento = dateMatch[0].trim();
 
-    // 4. Nombre completo (heurísticas naturales)
-    const nameMatch = fullText.match(/(?:me llamo|soy|nombre es|nombre:?)\s+([A-ZÁÉÍÓÚÑa-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑa-záéíóúñ]+){1,4})/i);
-    if (nameMatch) {
-        fields.nombre_completo = nameMatch[1].trim();
-    } else {
-        const lineName = fullText.match(/(?:^|\n)([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){2,3})(?:\r?\n|$)/m);
-        if (lineName) fields.nombre_completo = lineName[1].trim();
+    // 4. Nombre completo (Buscar heurísticas limpias en los mensajes del usuario)
+    const blacklistWords = ['preparatoria', 'bachillerato', 'carrera', 'campus', 'modalidad', 'interes', 'interés', 'procedencia', 'telefono', 'correo', 'nacimiento', 'estudios', 'de la', 'en la', 'unid', 'hola', 'buenas', 'informes'];
+    
+    for (const msg of userMessages) {
+        const nameRegexMatch = msg.match(/(?:me llamo|mi nombre es|soy)\s+([A-ZÁÉÍÓÚÑa-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑa-záéíóúñ]+){1,4})/i);
+        if (nameRegexMatch) {
+            const candidate = nameRegexMatch[1].trim();
+            const candLower = candidate.toLowerCase();
+            const hasBlacklist = blacklistWords.some(bw => candLower.includes(bw));
+            if (!hasBlacklist && candidate.split(/\s+/).length >= 2) {
+                fields.nombre_completo = candidate;
+                break;
+            }
+        }
+    }
+
+    // Heurística de respaldo para nombres en los mensajes del usuario
+    if (!fields.nombre_completo) {
+        for (const msg of userMessages) {
+            const lines = msg.split(/[\r\n,]+/);
+            for (const line of lines) {
+                const trimmed = line.trim();
+                const words = trimmed.split(/\s+/);
+                if (words.length >= 2 && words.length <= 4 && words.every(w => /^[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+$/.test(w))) {
+                    const candLower = trimmed.toLowerCase();
+                    const hasBlacklist = blacklistWords.some(bw => candLower.includes(bw));
+                    if (!hasBlacklist) {
+                        fields.nombre_completo = trimmed;
+                        break;
+                    }
+                }
+            }
+            if (fields.nombre_completo) break;
+        }
     }
 
     // 5. Sexo
-    if (/\b(hombre|masculino|varon|varón|chico|m)\b/i.test(fullText) && !/\bmujer\b/i.test(fullText)) fields.sexo = 'Masculino';
-    else if (/\b(mujer|femenino|dama|chica|f)\b/i.test(fullText)) fields.sexo = 'Femenino';
+    if (/\b(hombre|masculino|varon|varón|chico)\b/i.test(userText) && !/\bmujer\b/i.test(userText)) fields.sexo = 'Masculino';
+    else if (/\b(mujer|femenino|dama|chica)\b/i.test(userText)) fields.sexo = 'Femenino';
 
     // 6. Estado de nacimiento / procedencia
-    const estadoMatch = fullText.match(/\b(campeche|tabasco|yucat[aá]n|quintana roo|veracruz|chiapas|cdmx|ciudad de m[eé]xico|jalisco|puebla|m[eé]xico|guerrero|oaxaca|nuevo le[oó]n|monterrey|guadalajara|m[eé]rida|villahermosa)\b/i);
+    const estadoMatch = userText.match(/\b(campeche|tabasco|yucat[aá]n|quintana roo|veracruz|chiapas|cdmx|ciudad de m[eé]xico|jalisco|puebla|m[eé]xico|guerrero|oaxaca|nuevo le[oó]n|monterrey|guadalajara|m[eé]rida|villahermosa)\b/i);
     if (estadoMatch) fields.estado_nacimiento = estadoMatch[1].charAt(0).toUpperCase() + estadoMatch[1].slice(1).toLowerCase();
 
     // 7. Bachillerato
-    const prepMatch = fullText.match(/(?:coba(?:cam)?|cbtis|cetis|conalep|prepa\s*\d*|colegio\s*[\w]+|bachilleres|preparatoria|cumbres|cetmar)[^,.\n]*/i);
-    if (prepMatch) fields.bachillerato_procedencia = prepMatch[0].trim();
+    const prepMatch = userText.match(/(?:coba(?:cam)?|cbtis|cetis|conalep|prepa\s*\d*|colegio\s*[\w]+|bachilleres|cumbres|cetmar|xail|instituto\s*[\w]+)[^,.\n]*/i);
+    if (prepMatch) {
+        let cleanPrep = prepMatch[0].replace(/[\*\_]+/g, '').trim();
+        if (!/^(?:preparatoria|bachillerato)\s*(?:de)?\s*procedencia$/i.test(cleanPrep)) {
+            fields.bachillerato_procedencia = cleanPrep;
+        }
+    } else {
+        for (const uMsg of userMessages) {
+            const match = uMsg.match(/(?:la\s+preparatoria\s+era\s+|era\s+|vengo\s+de\s+|salí\s+del?\s+)(.+)/i);
+            if (match) {
+                fields.bachillerato_procedencia = match[1].replace(/[\*\_]+/g, '').trim();
+                break;
+            }
+        }
+    }
 
     // 8. Carrera de interés
-    const carreraMatch = fullText.match(/(?:ingenier[ií]a en software|software|sistemas|derecho|administraci[oó]n|dise[ñn]o gr[aá]fico|psicolog[ií]a|mercadotecnia|arquitectura|comunicaci[oó]n|contabilidad|educaci[oó]n f[ií]sica|criminolog[ií]a|pedagog[ií]a|negocios internacionales)[^,.\n]*/i);
-    if (carreraMatch) fields.carrera_interes = carreraMatch[0].trim();
+    const carreraMatch = userText.match(/(?:ingenier[ií]a en software|software y sistemas|ingenier[ií]a en sistemas|sistemas computacionales|ingenier[ií]a|software|sistemas|derecho|administraci[oó]n|dise[ñn]o gr[aá]fico|psicolog[ií]a|mercadotecnia|arquitectura|comunicaci[oó]n|contabilidad|educaci[oó]n f[ií]sica|criminolog[ií]a|pedagog[ií]a|negocios internacionales)[^,.\n]*/i);
+    if (carreraMatch) {
+        let c = carreraMatch[0].trim();
+        if (/software|sistemas/i.test(c)) fields.carrera_interes = 'Ingeniería en Software y Sistemas Computacionales';
+        else fields.carrera_interes = c;
+    }
 
     // 9. Dirección y CP
-    const cpMatch = fullText.match(/\b(?:CP\s*|c\.p\.\s*)?(\d{5})\b/i);
+    const cpMatch = userText.match(/\b(?:CP\s*|c\.p\.\s*)?(\d{5})\b/i);
     if (cpMatch) fields.codigo_postal = cpMatch[1];
-    const dirMatch = fullText.match(/(?:calle|colonia|col\.|av\.|avenida|fracc\.|fraccionamiento|mza|lote)[^.\n]*/i);
+    const dirMatch = userText.match(/(?:calle|colonia|col\.|av\.|avenida|fracc\.|fraccionamiento|mza|lote|manzana)[^.\n]*/i);
     if (dirMatch) fields.direccion = dirMatch[0].trim() + (fields.codigo_postal ? ` CP ${fields.codigo_postal}` : '');
 
     // 10. Campus de interés
-    if (/campeche/i.test(fullText)) fields.campus_interes = 'Campus San Francisco de Campeche';
-    else if (/cancun|cancún/i.test(fullText)) fields.campus_interes = 'Campus Cancún';
-    else if (/merida|mérida/i.test(fullText)) fields.campus_interes = 'Campus Mérida';
-    else if (/online|virtual|en l[ií]nea/i.test(fullText)) fields.campus_interes = 'UNID Online Nacional';
+    if (/campeche/i.test(userText)) fields.campus_interes = 'Campus San Francisco de Campeche';
+    else if (/cancun|cancún/i.test(userText)) fields.campus_interes = 'Campus Cancún';
+    else if (/merida|mérida/i.test(userText)) fields.campus_interes = 'Campus Mérida';
+    else if (/online|virtual|en l[ií]nea/i.test(userText)) fields.campus_interes = 'UNID Online Nacional';
     else fields.campus_interes = 'Campus San Francisco de Campeche';
 
     // 11. Modalidad
-    if (/online|en l[ií]nea|virtual|a distancia/i.test(fullText)) fields.modalidad_estudios = 'Licenciaturas Online (100% Virtual)';
-    else if (/ejecutiva|sabad|fin de semana|trabaj/i.test(fullText)) fields.modalidad_estudios = 'Modalidad Ejecutiva (Sábados)';
-    else if (/presencial|escolarizad|matutino/i.test(fullText)) fields.modalidad_estudios = 'Presencial';
+    if (/online|en l[ií]nea|virtual|a distancia/i.test(userText)) fields.modalidad_estudios = 'Licenciaturas Online (100% Virtual)';
+    else if (/ejecutiva|sabad|fin de semana|trabaj/i.test(userText)) fields.modalidad_estudios = 'Modalidad Ejecutiva (Sábados)';
+    else if (/presencial|escolarizad|matutino/i.test(userText)) fields.modalidad_estudios = 'Presencial';
 
     return fields;
+}
+
+// ==========================================
+// 10.6. Extractor Seguro de JSON y Limpiador de Chat
+// ==========================================
+function extractJsonFromLlmReply(rawText) {
+    if (!rawText || typeof rawText !== 'string') return { cleanReply: rawText, jsonData: null };
+
+    let cleanReply = rawText;
+    let jsonData = null;
+
+    // 1. Bloque de código markdown ```json ... ``` o ``` ... ```
+    const codeBlockMatch = rawText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/i);
+    if (codeBlockMatch) {
+        try {
+            const parsed = JSON.parse(codeBlockMatch[1]);
+            if (parsed && typeof parsed === 'object') {
+                jsonData = parsed;
+                cleanReply = rawText.replace(codeBlockMatch[0], '').trim();
+            }
+        } catch (e) {}
+    }
+
+    // 2. Objeto JSON embebido si no vino en bloque de código
+    if (!jsonData) {
+        const rawJsonMatch = rawText.match(/(\{[\s\r\n]*"(?:completado|nombre_completo)"[\s\S]*\})/i);
+        if (rawJsonMatch) {
+            try {
+                const parsed = JSON.parse(rawJsonMatch[1]);
+                if (parsed && typeof parsed === 'object') {
+                    jsonData = parsed;
+                    cleanReply = rawText.replace(rawJsonMatch[1], '').trim();
+                }
+            } catch (e) {}
+        }
+    }
+
+    // 3. Limpiar cualquier tag residual de código para que el usuario NUNCA vea JSON
+    cleanReply = cleanReply.replace(/```json/gi, '').replace(/```/g, '').trim();
+
+    return { cleanReply, jsonData };
 }
 
 // ==========================================
@@ -1146,51 +1243,55 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
     const { reply: llmReply, modelUsed } = await callMetalUrielLLM(senderPhone, messageText, requestedModelId);
     const brochureDetected = detectBrochureRequest(messageText);
 
-    let potentialJson = llmReply.trim();
-    if (potentialJson.startsWith('```json')) {
-        potentialJson = potentialJson.replace(/```json|```/g, '').trim();
-    } else if (potentialJson.startsWith('```')) {
-        potentialJson = potentialJson.replace(/```/g, '').trim();
-    }
+    // Separar y limpiar cualquier JSON para que el aspirante NUNCA vea código en el chat
+    const { cleanReply, jsonData } = extractJsonFromLlmReply(llmReply);
 
     const currentHistory = conversationMemory.get(senderPhone) || [];
     const partialFields = extractPartialFieldsFromHistory(currentHistory);
 
-    try {
-        const parsedData = JSON.parse(potentialJson);
-        if (parsedData && parsedData.completado) {
-            let insertId = null;
-            try {
-                insertId = await guardarAspiranteEnBD(parsedData);
-                notificarEquipoAdmisiones(parsedData, insertId).catch(console.error);
-            } catch (dbErr) {
-                console.warn('⚠️ No se pudo guardar en BD:', dbErr.message);
-            }
-
-            const mensajeExito = `🐺 ¡*Bip-bop*! ¡Registro completado con éxito! 🎉\n\n` +
-                `Muchas gracias *${parsedData.nombre_completo}*, he registrado tu ficha para la carrera de *${parsedData.carrera_interes}* en la modalidad *${parsedData.modalidad_estudios}* (Campus: ${parsedData.campus_interes}).\n\n` +
-                `Un asesor del equipo humano de la UNID se pondrá en contacto contigo muy pronto a tu número (${parsedData.telefono_celular}) o correo (${parsedData.correo_electronico}).\n\n` +
-                `¡Bienvenido a la manada UNID! 🔴🐾`;
-
-            conversationMemory.delete(senderPhone);
-
-            return {
-                reply: mensajeExito,
-                completed: true,
-                leadCompleted: true,
-                leadData: parsedData,
-                partialFields: parsedData,
-                insertId,
-                modelUsed,
-                documentAttachment: null
-            };
+    // Si el LLM generó el JSON de registro completo o completó la ficha
+    if (jsonData && (jsonData.completado || (jsonData.nombre_completo && jsonData.carrera_interes))) {
+        let insertId = null;
+        try {
+            jsonData.completado = true;
+            insertId = await guardarAspiranteEnBD(jsonData);
+            console.log(`🎉 [REGISTRO EXITOSO] Aspirante ${jsonData.nombre_completo} guardado en MariaDB con ID #${insertId}`);
+            notificarEquipoAdmisiones(jsonData, insertId).catch(console.error);
+        } catch (dbErr) {
+            console.error('⚠️ Error guardando en MariaDB:', dbErr.message);
         }
-    } catch (e) {
-        // Conversación regular
+
+        const finalReply = cleanReply && cleanReply.length > 20 ? cleanReply : (
+            `¡Muchas gracias *${jsonData.nombre_completo || 'estimado aspirante'}*! 🎉\n\n` +
+            `He registrado exitosamente tu ficha para la carrera de *${jsonData.carrera_interes || 'tu carrera de interés'}* en la modalidad *${jsonData.modalidad_estudios || 'Presencial'}* (Campus: ${jsonData.campus_interes || 'Campeche'}).\n\n` +
+            `Tu expediente ha sido enviado a la Coordinación de Admisiones para validar tu beca del 50% y el 90% de descuento en tu inscripción. Un asesor se comunicará contigo al ${jsonData.telefono_celular || senderPhone} para concluir tu pre-registro.\n\n` +
+            `¡Bienvenido a la familia UNID! 🔴🐾`
+        );
+
+        conversationMemory.delete(senderPhone);
+
+        return {
+            reply: finalReply,
+            completed: true,
+            leadCompleted: true,
+            leadData: jsonData,
+            partialFields: jsonData,
+            insertId,
+            modelUsed,
+            documentAttachment: brochureDetected ? {
+                id: brochureDetected.id,
+                title: `Plan de Estudios: ${brochureDetected.carrera}`,
+                fileName: brochureDetected.fileName,
+                size: brochureDetected.size,
+                rvoe: brochureDetected.rvoe,
+                modalidad: brochureDetected.modalidad,
+                downloadUrl: `/api/brochures/${brochureDetected.id}/download`
+            } : null
+        };
     }
 
     return {
-        reply: llmReply,
+        reply: cleanReply || llmReply,
         completed: false,
         leadCompleted: false,
         leadData: null,
