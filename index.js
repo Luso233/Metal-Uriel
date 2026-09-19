@@ -547,36 +547,51 @@ const PROMPT_FILE_PATH = path.join(__dirname, 'system_prompt.txt');
 const PROMPT_PRESETS = [
     {
         id: 'metal_uriel',
-        name: '🐺 Metal-Uriel Oficial (Lobo Robótico UNID)',
-        description: 'Personalidad oficial con toques cibernéticos amigables (*bip-bop*), empático, institucional y persuasivo.',
-        prompt: `Eres Metal-Uriel, la versión cibernética oficial de "El Lobo Rojo Uriel", la mascota y embajador de la Universidad Interamericana para el Desarrollo (UNID). Eres un asesor de admisiones robótico amigable, entusiasta, altamente profesional y persuasivo que representa con orgullo a la UNID Campus San Francisco de Campeche.
+        name: '🐺 Metal-Uriel Oficial (Lobo Robótico UNID • Patrón Elvira)',
+        description: 'Personalidad oficial con propuesta de valor real UNID Campeche (8 cuatrimestres, beca 50%, estadía empresarial y cierre con pasarela Mitec).',
+        prompt: `Eres Metal-Uriel, la versión cibernética oficial de "El Lobo Rojo Uriel", la mascota y embajador de la Universidad Interamericana para el Desarrollo (UNID). Eres un asesor de admisiones inteligente, empático, altamente profesional y persuasivo que representa con orgullo a la UNID Campus San Francisco de Campeche.
 
-🎯 OBJETIVO PRINCIPAL:
-Guiar al prospecto de forma natural, cálida y conversacional (paso a paso, pregunta por pregunta, nunca pidas todo en una sola lista abrumadora) para recopilar los 11 datos obligatorios:
-1. Nombre completo
-2. Fecha de nacimiento (AAAA-MM-DD o comprensible)
-3. Sexo (Masculino / Femenino / Otro)
-4. Estado de nacimiento
-5. Teléfono celular
-6. Correo electrónico
-7. Bachillerato / Preparatoria de procedencia
-8. Carrera o Licenciatura de interés (Derecho, Software/Sistemas, Administración, Diseño Gráfico, Psicología, etc.)
-9. Dirección completa con Código Postal (CP)
-10. Campus de interés
-11. Modalidad de estudios (Presencial, Mixta/Ejecutiva o Licenciaturas Online)
+🎯 PROPUESTA DE VALOR INSTITUCIONAL (DATOS OFICIALES UNID CAMPECHE):
+- Duración de Licenciaturas: 2 años 8 meses (8 cuatrimestres en total).
+- Estructura Cuatrimestral: Cada cuatrimestre se compone de 1 inscripción y 3 mensualidades.
+- Estadía Empresarial: En el 7° cuatrimestre los alumnos realizan estadía de tiempo completo en una empresa aliada para graduarse con experiencia laboral comprobable.
+- Titulación Integrada: Mediante Examen Ceneval EGEL (sin tesis tediosa).
+- 5 Niveles de Diplomado de Inglés incluidos.
+- Convenio Internacional con LinkedIn Learning ($25.00 MXN mensuales en lugar de $500).
+- PLAN DE INVERSIÓN Y BECAS:
+  * Inscripción Regular: $4,557.00 MXN -> Con 90% de Descuento Promocional: $456.00 MXN.
+  * Mensualidad Regular: $5,469.00 MXN -> Con 50% de Beca: $2,736.00 MXN.
+  * Pago total mensual promedio (con servicios y materias): $2,978.00 MXN.
+  * Condiciones de Beca: Promedio final de 8.5, no adeudar materias, pagos puntuales y realizar renovación cuatrimestral.
+- PASARELA OFICIAL DE PAGO: https://u.mitec.com.mx/p/i/XS1E8TWD?id_company=3629 (Para pre-registro con tarjeta).
 
-📍 REGLA GEOGRÁFICA CRÍTICA (CAMPUS Y MODALIDAD):
-- El campus físico principal que representas con orgullo está en San Francisco de Campeche.
-- Tan pronto como el aspirante te proporcione su Código Postal, Estado de residencia o ubicación:
-  * Evalúa si reside en Campeche o si es FORÁNEO (cualquier otro estado de México o extranjero).
-  * SI ES FORÁNEO: Ofrécele de forma proactiva, persuasiva y cálida la modalidad "Licenciaturas Online (Plataforma Virtual UNID)". Explícale que puede cursar su carrera con validez oficial ante la SEP 100% en línea sin necesidad de mudarse ni incurrir en gastos de traslado.
-  * Si insiste en mudarse a Campeche para estudiar presencial, apóyalo y regístralo en Campus Campeche Presencial.
+🎯 OBJETIVO Y DINÁMICA CONVERSACIONAL (PATRÓN DE ADMISIONES):
+1. Saluda con entusiasmo y calidez (*bip-bop* 🐺).
+2. Si el aspirante dice estar ocupado o en el trabajo, sé flexible y respetuoso.
+3. Puedes solicitar los datos agrupados de forma ágil y amable: "Me apoyas con los siguientes datos: Nombre completo, Fecha de nacimiento, Correo electrónico, Bachillerato de procedencia, Carrera de interés, Dirección y Código Postal".
+4. Recopila los 11 datos obligatorios:
+   1. Nombre completo
+   2. Fecha de nacimiento (AAAA-MM-DD o comprensible)
+   3. Sexo (Masculino / Femenino / Otro)
+   4. Estado de nacimiento
+   5. Teléfono celular
+   6. Correo electrónico
+   7. Bachillerato / Preparatoria de procedencia
+   8. Carrera de interés
+   9. Dirección completa con Código Postal (CP)
+   10. Campus de interés
+   11. Modalidad (Presencial o Licenciaturas Online)
 
-📄 ENVÍO AUTOMATIZADO DE DOCUMENTOS Y PLANES DE ESTUDIO:
-- Si el aspirante te pregunta por el plan de estudios, materias, temario, folleto o costos de una carrera (ej. Software, Derecho, Administración, Diseño, etc.) o sobre becas, indícale con entusiasmo que le estás adjuntando el documento oficial en PDF con la información académica correspondiente.
+📍 REGLA GEOGRÁFICA (CAMPUS Y MODALIDAD):
+- Campus físico principal: San Francisco de Campeche.
+- Si el aspirante reside fuera de Campeche (foráneo), ofrécele de inmediato la modalidad "Licenciaturas Online" (100% virtual con validez oficial SEP) para estudiar sin mudarse.
 
-⚙️ REGLA DE FINALIZACIÓN Y LEAD SCORING:
-- Mientras conversas, responde en texto conversacional con el estilo de Metal-Uriel (puedes incluir toques sutiles como *bip-bop*, *ajustando procesadores*).
+💳 PROCESO DE CIERRE Y PRE-REGISTRO:
+- Cuando el aspirante esté listo para apartar su lugar, compártele el enlace oficial de pago de Mitec (https://u.mitec.com.mx/p/i/XS1E8TWD?id_company=3629) e indícale que coloque los datos de su tarjeta y te envíe captura de pantalla del comprobante.
+- Pregúntale con amabilidad: "¿En qué horario realizarías el pago para dar seguimiento a tu pre-registro?".
+- Si confirma el pago, dale una calurosa bienvenida a la familia UNID, explícale que los documentos físicos (Acta de nacimiento, certificado, CURP, fotos) se entregan en el plantel y que asistirá al Curso de Inducción (sábados de 9:00 am a 2:00 pm) para su carga de materias.
+
+⚙️ REGLA DE PERSISTENCIA Y LEAD SCORING:
 - Cuando verifiques que TIENES LOS 11 DATOS COMPLETOS y el aspirante confirme su interés, TU RESPUESTA FINAL DEBE CONTENER EXCLUSIVAMENTE EL SIGUIENTE BLOQUE JSON PURO:
 {
   "completado": true,
@@ -602,11 +617,18 @@ Guiar al prospecto de forma natural, cálida y conversacional (paso a paso, preg
     {
         id: 'formal_ejecutivo',
         name: '🎓 Asesor Ejecutivo (Formal & Corporativo)',
-        description: 'Tono formal, institucional, respetuoso y corporativo de admisiones universitarias sin modismos robóticos.',
+        description: 'Tono formal, institucional, respetuoso y corporativo de admisiones universitarias con plan oficial de inversión.',
         prompt: `Eres un Asesor Ejecutivo de Admisiones de la Universidad Interamericana para el Desarrollo (UNID), Campus San Francisco de Campeche. Tu comunicación es formal, ejecutiva, cálida y altamente profesional.
 
+🎯 PROPUESTA DE VALOR:
+- Licenciaturas en 2 años 8 meses (8 cuatrimestres).
+- Estadía Empresarial en 7° cuatrimestre y Titulación Integrada por Examen Ceneval EGEL.
+- Diplomado de 5 niveles de inglés y convenio LinkedIn Learning ($25/mes).
+- Beca del 50% ($2,736/mes) e Inscripción con 90% de descuento ($456).
+- Pasarela Mitec: https://u.mitec.com.mx/p/i/XS1E8TWD?id_company=3629
+
 🎯 OBJETIVO:
-Guiar al prospecto con cortesía y eficiencia para recopilar los 11 datos clave de admisión:
+Recopilar los 11 datos clave de admisión de forma estructurada:
 1. Nombre completo
 2. Fecha de nacimiento (AAAA-MM-DD)
 3. Sexo (Masculino / Femenino / Otro)
@@ -619,11 +641,8 @@ Guiar al prospecto con cortesía y eficiencia para recopilar los 11 datos clave 
 10. Campus de interés
 11. Modalidad (Presencial o Licenciaturas Online)
 
-📍 REGLA GEOGRÁFICA:
-- Si el aspirante reside fuera de Campeche, ofrécele formalmente la modalidad "Licenciaturas Online" con validez oficial ante la SEP y horarios flexibles.
-
 ⚙️ REGLA DE CIERRE:
-- Al completar los 11 datos y obtener confirmación, responde ÚNICAMENTE con el bloque JSON estructurado con: completado, 11 campos, nivel_interes ("Alto", "Medio", "Bajo") y resumen_ia (síntesis de 2 líneas).`
+- Al completar los 11 datos y obtener confirmación, responde ÚNICAMENTE con el bloque JSON estructurado con completado: true, los 11 campos, nivel_interes y resumen_ia.`
     }
 ];
 
@@ -1055,6 +1074,72 @@ async function notificarEquipoAdmisiones(datos, insertId) {
 }
 
 // ==========================================
+// 10.5. Extractor Progresivo de los 11 Campos en Tiempo Real
+// ==========================================
+function extractPartialFieldsFromHistory(history) {
+    if (!history || !Array.isArray(history) || history.length === 0) return {};
+    const fields = {};
+    const fullText = history.map(h => h.content || '').join('\n');
+
+    // 1. Teléfono celular
+    const phoneMatch = fullText.match(/(?:\+?52\s?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}|\b981\d{7}\b|\b\d{10}\b/);
+    if (phoneMatch) fields.telefono_celular = phoneMatch[0].replace(/[^\d+]/g, '');
+
+    // 2. Correo electrónico
+    const emailMatch = fullText.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+    if (emailMatch) fields.correo_electronico = emailMatch[0].trim();
+
+    // 3. Fecha de nacimiento (YYYY-MM-DD o DD/MM/YYYY)
+    const dateMatch = fullText.match(/\b(19\d\d|200\d)[-/](0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\d|3[01])\b|\b(0?[1-9]|[12]\d|3[01])[-/](0?[1-9]|1[0-2])[-/](19\d\d|200\d)\b/);
+    if (dateMatch) fields.fecha_nacimiento = dateMatch[0].trim();
+
+    // 4. Nombre completo (heurísticas naturales)
+    const nameMatch = fullText.match(/(?:me llamo|soy|nombre es|nombre:?)\s+([A-ZÁÉÍÓÚÑa-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑa-záéíóúñ]+){1,4})/i);
+    if (nameMatch) {
+        fields.nombre_completo = nameMatch[1].trim();
+    } else {
+        const lineName = fullText.match(/(?:^|\n)([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){2,3})(?:\r?\n|$)/m);
+        if (lineName) fields.nombre_completo = lineName[1].trim();
+    }
+
+    // 5. Sexo
+    if (/\b(hombre|masculino|varon|varón|chico|m)\b/i.test(fullText) && !/\bmujer\b/i.test(fullText)) fields.sexo = 'Masculino';
+    else if (/\b(mujer|femenino|dama|chica|f)\b/i.test(fullText)) fields.sexo = 'Femenino';
+
+    // 6. Estado de nacimiento / procedencia
+    const estadoMatch = fullText.match(/\b(campeche|tabasco|yucat[aá]n|quintana roo|veracruz|chiapas|cdmx|ciudad de m[eé]xico|jalisco|puebla|m[eé]xico|guerrero|oaxaca|nuevo le[oó]n|monterrey|guadalajara|m[eé]rida|villahermosa)\b/i);
+    if (estadoMatch) fields.estado_nacimiento = estadoMatch[1].charAt(0).toUpperCase() + estadoMatch[1].slice(1).toLowerCase();
+
+    // 7. Bachillerato
+    const prepMatch = fullText.match(/(?:coba(?:cam)?|cbtis|cetis|conalep|prepa\s*\d*|colegio\s*[\w]+|bachilleres|preparatoria|cumbres|cetmar)[^,.\n]*/i);
+    if (prepMatch) fields.bachillerato_procedencia = prepMatch[0].trim();
+
+    // 8. Carrera de interés
+    const carreraMatch = fullText.match(/(?:ingenier[ií]a en software|software|sistemas|derecho|administraci[oó]n|dise[ñn]o gr[aá]fico|psicolog[ií]a|mercadotecnia|arquitectura|comunicaci[oó]n|contabilidad|educaci[oó]n f[ií]sica|criminolog[ií]a|pedagog[ií]a|negocios internacionales)[^,.\n]*/i);
+    if (carreraMatch) fields.carrera_interes = carreraMatch[0].trim();
+
+    // 9. Dirección y CP
+    const cpMatch = fullText.match(/\b(?:CP\s*|c\.p\.\s*)?(\d{5})\b/i);
+    if (cpMatch) fields.codigo_postal = cpMatch[1];
+    const dirMatch = fullText.match(/(?:calle|colonia|col\.|av\.|avenida|fracc\.|fraccionamiento|mza|lote)[^.\n]*/i);
+    if (dirMatch) fields.direccion = dirMatch[0].trim() + (fields.codigo_postal ? ` CP ${fields.codigo_postal}` : '');
+
+    // 10. Campus de interés
+    if (/campeche/i.test(fullText)) fields.campus_interes = 'Campus San Francisco de Campeche';
+    else if (/cancun|cancún/i.test(fullText)) fields.campus_interes = 'Campus Cancún';
+    else if (/merida|mérida/i.test(fullText)) fields.campus_interes = 'Campus Mérida';
+    else if (/online|virtual|en l[ií]nea/i.test(fullText)) fields.campus_interes = 'UNID Online Nacional';
+    else fields.campus_interes = 'Campus San Francisco de Campeche';
+
+    // 11. Modalidad
+    if (/online|en l[ií]nea|virtual|a distancia/i.test(fullText)) fields.modalidad_estudios = 'Licenciaturas Online (100% Virtual)';
+    else if (/ejecutiva|sabad|fin de semana|trabaj/i.test(fullText)) fields.modalidad_estudios = 'Modalidad Ejecutiva (Sábados)';
+    else if (/presencial|escolarizad|matutino/i.test(fullText)) fields.modalidad_estudios = 'Presencial';
+
+    return fields;
+}
+
+// ==========================================
 // 11. Procesamiento Central de Mensajes (Webhook + Web Simulator)
 // ==========================================
 async function processChatMessage(senderPhone, messageText, requestedModelId = null) {
@@ -1067,6 +1152,9 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
     } else if (potentialJson.startsWith('```')) {
         potentialJson = potentialJson.replace(/```/g, '').trim();
     }
+
+    const currentHistory = conversationMemory.get(senderPhone) || [];
+    const partialFields = extractPartialFieldsFromHistory(currentHistory);
 
     try {
         const parsedData = JSON.parse(potentialJson);
@@ -1089,7 +1177,9 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
             return {
                 reply: mensajeExito,
                 completed: true,
+                leadCompleted: true,
                 leadData: parsedData,
+                partialFields: parsedData,
                 insertId,
                 modelUsed,
                 documentAttachment: null
@@ -1102,7 +1192,9 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
     return {
         reply: llmReply,
         completed: false,
+        leadCompleted: false,
         leadData: null,
+        partialFields: partialFields,
         modelUsed,
         documentAttachment: brochureDetected ? {
             id: brochureDetected.id,
@@ -1374,62 +1466,113 @@ app.post('/api/aspirantes/seed', async (req, res) => {
     }
 });
 
-// Login con JWT Local (Admin / TI)
-app.post('/api/auth/login', (req, res) => {
-    const { username, password } = req.body;
-    if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
-        const token = jwt.sign({ username: ADMIN_USERNAME, role: 'admin' }, JWT_SECRET, { expiresIn: '7d' });
-        return res.json({ success: true, token, user: { username: ADMIN_USERNAME, displayName: 'Director de Admisiones UNID', role: 'Administrador UNID', isInstitutional: false } });
+// ==========================================
+// 14. Autenticación Jerárquica (RBAC) & Manejo de Sesiones
+// ==========================================
+
+function handleUserAuth(identifier, password, customName = null) {
+    const cleanId = (identifier || '').trim().toLowerCase();
+    const cleanPass = (password || '').trim();
+
+    // 1. Cuenta de Administrador (Sistemas & TI): 00774343@red.unid.mx / admin
+    const isAdminId = cleanId === '00774343@red.unid.mx' || cleanId === '00774343' || cleanId === 'admin' || cleanId === ADMIN_USERNAME.toLowerCase();
+    const isAdminPass = cleanPass === 'admin' || cleanPass === 'unid2026' || cleanPass === ADMIN_PASSWORD;
+
+    if (isAdminId && (cleanPass === '' || isAdminPass)) {
+        const userObj = {
+            username: '00774343@red.unid.mx',
+            displayName: customName || 'Luis Felipe Quintero (Admin Sistemas & TI)',
+            matricula: '00774343',
+            role: 'admin',
+            roleTitle: 'Administrador de Sistemas & TI',
+            isInstitutional: true,
+            tenant: 'UNID Campus Campeche'
+        };
+        const token = jwt.sign(userObj, JWT_SECRET, { expiresIn: '7d' });
+        console.log(`👑 [AUTH ADMIN] Acceso concedido como Administrador a ${userObj.username}`);
+        return { success: true, token, user: userObj };
     }
-    return res.status(401).json({ success: false, error: 'Usuario o contraseña incorrectos.' });
-});
 
-// Login Institucional con Office 365 (@red.unid.mx / @unid.mx / Microsoft Entra ID)
-app.post('/api/auth/microsoft', (req, res) => {
-    try {
-        const { email, displayName, matricula } = req.body;
-        
-        if (!email || typeof email !== 'string') {
-            return res.status(400).json({ success: false, error: 'Debe proporcionar un correo electrónico institucional.' });
-        }
+    // 2. Cuenta de Usuario Operativo (Equipo de Admisiones): 67676767@red.unid.mx / user
+    const isAdmissionsId = cleanId === '67676767@red.unid.mx' || cleanId === '67676767' || cleanId === 'user' || cleanId.includes('admision');
+    const isAdmissionsPass = cleanPass === 'user' || cleanPass === 'unid2026';
 
-        const normalizedEmail = email.trim().toLowerCase();
-        const isUnidDomain = normalizedEmail.endsWith('@red.unid.mx') || 
-                             normalizedEmail.endsWith('@unid.mx') || 
-                             normalizedEmail.endsWith('@talisis.com');
+    if (isAdmissionsId && (cleanPass === '' || isAdmissionsPass)) {
+        const userObj = {
+            username: cleanId.includes('@') ? cleanId : '67676767@red.unid.mx',
+            displayName: customName || 'Equipo de Admisiones UNID',
+            matricula: '67676767',
+            role: 'admisiones',
+            roleTitle: 'Coordinación de Admisiones',
+            isInstitutional: true,
+            tenant: 'UNID Campus Campeche'
+        };
+        const token = jwt.sign(userObj, JWT_SECRET, { expiresIn: '7d' });
+        console.log(`📋 [AUTH ADMISIONES] Acceso concedido como Admisiones a ${userObj.username}`);
+        return { success: true, token, user: userObj };
+    }
 
-        if (!isUnidDomain) {
-            return res.status(403).json({
-                success: false,
-                error: 'Dominio no autorizado. Solo se permite el acceso con cuentas institucionales @red.unid.mx o @unid.mx.'
-            });
-        }
-
-        const userMatricula = matricula || normalizedEmail.split('@')[0];
-        const userDisplayName = displayName || `Personal UNID (${userMatricula})`;
-
-        const institutionalUser = {
-            username: normalizedEmail,
-            displayName: userDisplayName,
-            matricula: userMatricula,
-            role: 'Personal Administrativo y Admisiones UNID',
-            domain: normalizedEmail.split('@')[1],
+    // 3. Cualquier otra cuenta institucional @red.unid.mx / @unid.mx
+    const isUnidDomain = cleanId.endsWith('@red.unid.mx') || cleanId.endsWith('@unid.mx') || cleanId.endsWith('@talisis.com');
+    if (isUnidDomain) {
+        const matricula = cleanId.split('@')[0];
+        const userObj = {
+            username: cleanId,
+            displayName: customName || `Personal UNID (${matricula})`,
+            matricula: matricula,
+            role: 'admisiones',
+            roleTitle: 'Personal de Admisiones UNID',
             isInstitutional: true,
             tenant: 'UNID Talisis Educación Superior'
         };
+        const token = jwt.sign(userObj, JWT_SECRET, { expiresIn: '7d' });
+        return { success: true, token, user: userObj };
+    }
 
-        const token = jwt.sign(institutionalUser, JWT_SECRET, { expiresIn: '7d' });
+    return { success: false, error: 'Usuario o contraseña incorrectos. Para testing usa 00774343@red.unid.mx (admin) o 67676767@red.unid.mx (user).' };
+}
 
-        console.log(`🔐 [AUTH O365] Sesión institucional iniciada exitosamente para ${normalizedEmail}`);
+// Login Local
+app.post('/api/auth/login', (req, res) => {
+    const { username, password } = req.body;
+    const authResult = handleUserAuth(username, password);
+    if (authResult.success) {
+        return res.json(authResult);
+    }
+    return res.status(401).json(authResult);
+});
 
-        return res.json({
-            success: true,
-            token,
-            user: institutionalUser
-        });
+// Login con Office 365
+app.post('/api/auth/o365', (req, res) => {
+    const { email, password, name } = req.body;
+    const authResult = handleUserAuth(email, password, name);
+    if (authResult.success) {
+        return res.json(authResult);
+    }
+    return res.status(401).json(authResult);
+});
+
+// Login con Microsoft Entra ID
+app.post('/api/auth/microsoft', (req, res) => {
+    const { email, password, displayName } = req.body;
+    const authResult = handleUserAuth(email, password, displayName);
+    if (authResult.success) {
+        return res.json(authResult);
+    }
+    return res.status(401).json(authResult);
+});
+
+// Vaciar completamente la base de datos de aspirantes (Para testing)
+app.delete('/api/aspirantes/all', async (req, res) => {
+    try {
+        const connection = await dbPool.getConnection();
+        await connection.query('DELETE FROM aspirantes');
+        connection.release();
+        conversationMemory.clear();
+        console.log('🗑️ [DB RESET] Base de datos de aspirantes vaciada exitosamente por el usuario.');
+        res.json({ success: true, message: 'Base de datos de aspirantes vaciada exitosamente.' });
     } catch (err) {
-        console.error('Error en /api/auth/microsoft:', err);
-        return res.status(500).json({ success: false, error: 'Error procesando autenticación de Office 365.' });
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 

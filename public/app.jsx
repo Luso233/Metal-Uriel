@@ -54,6 +54,32 @@ const DEFAULT_CAMPUSES = [
 // Casos de Prueba para el Laboratorio Flotante
 const TEST_SUITE_CATEGORIES = [
   {
+    id: 'caso_real_elvira',
+    title: '⭐ 0. Caso Real de Éxito: Flujo Elvira (Inscripción & Pasarela Mitec)',
+    cases: [
+      {
+        title: 'Paso 1: Solicitud de Información (Ing. Software y Sistemas)',
+        desc: 'Inicia plática como Luis Felipe preguntando por la ingeniería',
+        text: 'Buenas tardes, me gustaría pedir informes sobre la Ingeniería en Software y Sistemas Computacionales para el campus Campeche.'
+      },
+      {
+        title: 'Paso 2: Entrega de los 11 Datos Obligatorios',
+        desc: 'Datos reales de aspirante para ficha oficial',
+        text: 'Claro que sí, me llamo Luis Felipe Pérez, nací el 2003-08-14 en Campeche. Hombre. Mi cel es 9811234567, correo luis.felipe@gmail.com. Egresé del COBACAM 01. Me interesa Ing. en Software y Sistemas Computacionales en modalidad Presencial en Campus Campeche. Vivo en Calle 10 #45 Col. Miramar, CP 24020.'
+      },
+      {
+        title: 'Paso 3: Consulta de Costos, Beca y Pasarela Mitec',
+        desc: 'Pregunta sobre la promoción del 90% en inscripción y mensualidades',
+        text: '¿Cuánto sería el costo de la inscripción con descuento y la mensualidad con la beca del 50%? ¿Cómo puedo realizar el pago en línea?'
+      },
+      {
+        title: 'Paso 4: Solicitud de Requisitos y Curso de Inducción',
+        desc: 'Pregunta qué documentos llevar al campus y horarios',
+        text: 'Ya realicé el pago en Mitec. ¿Qué papelería debo entregar en el campus y cuándo es el curso de inducción?'
+      }
+    ]
+  },
+  {
     id: 'local_presencial',
     title: '🏛️ 1. Flujos Presenciales Locales (Campeche)',
     cases: [
@@ -204,9 +230,10 @@ function App() {
   ]);
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState('kanban'); // 'kanban' | 'analytics' | 'brochures' | 'database' | 'inspector' | 'prompt'
+  const [activeTab, setActiveTab] = useState('kanban'); // 'kanban' | 'analytics' | 'brochures' | 'database' | 'inspector' | 'prompt' | 'tenant_config' | 'onboarding'
   const [aspirantes, setAspirantes] = useState([]);
   const [lastCompletedLead, setLastCompletedLead] = useState(null);
+  const [liveExtractedFields, setLiveExtractedFields] = useState({});
   const [selectedLead, setSelectedLead] = useState(null);
   const [autoScroll, setAutoScroll] = useState(true);
 
@@ -221,7 +248,7 @@ function App() {
 
   // Modal Flotante del Laboratorio de Pruebas
   const [showTestSuiteModal, setShowTestSuiteModal] = useState(false);
-  const [selectedTestCategory, setSelectedTestCategory] = useState('local_presencial');
+  const [selectedTestCategory, setSelectedTestCategory] = useState('caso_real_elvira');
 
   // Catálogo Oficial de Folletos & Planes de Estudio (Lectura y Descarga Directa)
   const [brochures, setBrochures] = useState([]);
@@ -244,11 +271,11 @@ function App() {
     const saved = localStorage.getItem('metal_uriel_user');
     return saved ? JSON.parse(saved) : null;
   });
-  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [showLoginModal, setShowLoginModal] = useState(() => !localStorage.getItem('metal_uriel_jwt'));
   const [authTab, setAuthTab] = useState('o365'); // 'o365' | 'local'
   const [o365Email, setO365Email] = useState('00774343@red.unid.mx');
-  const [o365Name, setO365Name] = useState('Personal Admisiones UNID');
-  const [loginForm, setLoginForm] = useState({ username: '', password: '', error: '', loading: false });
+  const [o365Name, setO365Name] = useState('Luis Felipe Pérez (Admin Sistemas)');
+  const [loginForm, setLoginForm] = useState({ username: '00774343@red.unid.mx', password: 'admin', error: '', loading: false });
 
   // Banda Sonora Cibernética de Metal Sonic (YouTube OST @ 1515s)
   const [isPlayingBgm, setIsPlayingBgm] = useState(false);
@@ -550,6 +577,26 @@ function App() {
     }
   };
 
+  const handleTruncateDb = async () => {
+    if (!confirm('⚠️ ¿Estás COMPLETAMENTE seguro de eliminar TODOS los prospectos de la base de datos MariaDB? Esta acción es solo para propósitos de testing y no se puede deshacer.')) return;
+    try {
+      const res = await fetch('/api/aspirantes/all', { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        setAspirantes([]);
+        setSelectedLead(null);
+        setLastCompletedLead(null);
+        setLiveExtractedFields({});
+        loadAnalytics();
+        alert('🗑️ Base de datos vaciada exitosamente. 0 registros de aspirantes.');
+      } else {
+        alert('Error al vaciar base de datos: ' + (data.error || 'Error desconocido'));
+      }
+    } catch (err) {
+      alert('Error de conexión al vaciar DB: ' + err.message);
+    }
+  };
+
   const handleUpdateStatus = async (aspiranteId, nuevoEstado) => {
     try {
       setAspirantes(prev => prev.map(a => a.id === aspiranteId ? { ...a, estado_prospecto: nuevoEstado } : a));
@@ -789,8 +836,14 @@ function App() {
 
       setMessages(prev => [...prev, botMsg]);
 
+      // Actualización progresiva en tiempo real de los 11 campos extraídos por IA
+      if (data.partialFields && Object.keys(data.partialFields).length > 0) {
+        setLiveExtractedFields(prev => ({ ...prev, ...data.partialFields }));
+      }
+
       if (data.leadCompleted && data.leadData) {
         setLastCompletedLead(data.leadData);
+        setLiveExtractedFields(prev => ({ ...prev, ...data.leadData }));
         loadAspirantes();
         loadAnalytics();
       }
@@ -827,6 +880,7 @@ function App() {
         }
       ]);
       setLastCompletedLead(null);
+      setLiveExtractedFields({});
     } catch (e) {
       console.error('Error reiniciando sesión:', e);
     }
@@ -913,7 +967,17 @@ function App() {
     setAuthUser(null);
     localStorage.removeItem('metal_uriel_jwt');
     localStorage.removeItem('metal_uriel_user');
+    setShowLoginModal(true);
   };
+
+  const isAdmin = authUser?.role === 'admin';
+
+  // Proteger pestañas de administración contra usuarios del equipo operativo
+  useEffect(() => {
+    if (!isAdmin && ['database', 'prompt', 'tenant_config'].includes(activeTab)) {
+      setActiveTab('kanban');
+    }
+  }, [isAdmin, activeTab]);
 
   // Filtros de Prospectos para la base de datos y Kanban
   const filteredAspirantes = useMemo(() => {
@@ -1101,14 +1165,19 @@ function App() {
           {/* Botón de Autenticación O365 / Admin */}
           {authUser ? (
             <div className="flex items-center gap-2 bg-slate-900 border border-slate-700/80 rounded-xl px-2.5 py-1 text-xs">
-              <span className="text-emerald-400 font-bold flex items-center gap-1">
-                <i data-lucide="shield-check" className="w-3.5 h-3.5"></i>
-                <span className="hidden md:inline">{authUser.name || authUser.username}</span>
+              <span className={`font-bold flex items-center gap-1 ${isAdmin ? 'text-amber-300' : 'text-emerald-400'}`}>
+                <i data-lucide={isAdmin ? 'shield-alert' : 'users'} className="w-3.5 h-3.5"></i>
+                <span className="hidden md:inline">{authUser.displayName || authUser.name || authUser.username}</span>
+                <span className={`text-[9px] px-1.5 py-0.2 rounded-full font-mono font-bold border ml-1 ${
+                  isAdmin ? 'bg-amber-950/80 text-amber-300 border-amber-500/40' : 'bg-sky-950/80 text-sky-300 border-sky-500/40'
+                }`}>
+                  {isAdmin ? '🛡️ Admin TI' : '👥 Admisiones'}
+                </span>
               </span>
               <button
                 onClick={handleLogout}
                 title="Cerrar sesión institucional"
-                className="text-slate-400 hover:text-rose-400 transition"
+                className="text-slate-400 hover:text-rose-400 transition ml-1"
               >
                 <i data-lucide="log-out" className="w-3.5 h-3.5"></i>
               </button>
@@ -1331,18 +1400,6 @@ function App() {
               </button>
 
               <button
-                onClick={() => setActiveTab('database')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition ${
-                  activeTab === 'database'
-                    ? 'bg-[#FFC72C] text-slate-950 shadow-md shadow-amber-900/30'
-                    : 'text-slate-300 hover:text-white hover:bg-slate-800'
-                }`}
-              >
-                <i data-lucide="database" className="w-3.5 h-3.5"></i>
-                <span>MariaDB</span>
-              </button>
-
-              <button
                 onClick={() => setActiveTab('inspector')}
                 className={`px-3 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition ${
                   activeTab === 'inspector'
@@ -1354,32 +1411,48 @@ function App() {
                 <span>11 Datos IA</span>
               </button>
 
-              <button
-                onClick={() => setActiveTab('prompt')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition ${
-                  activeTab === 'prompt'
-                    ? 'bg-[#FFC72C] text-slate-950 shadow-md shadow-amber-900/30'
-                    : 'text-slate-300 hover:text-white hover:bg-slate-800'
-                }`}
-              >
-                <i data-lucide="settings-2" className="w-3.5 h-3.5"></i>
-                <span>Personalidad Bot</span>
-              </button>
+              {isAdmin && (
+                <>
+                  <button
+                    onClick={() => setActiveTab('database')}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition ${
+                      activeTab === 'database'
+                        ? 'bg-[#FFC72C] text-slate-950 shadow-md shadow-amber-900/30'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                    }`}
+                  >
+                    <i data-lucide="database" className="w-3.5 h-3.5"></i>
+                    <span>MariaDB</span>
+                  </button>
 
-              <button
-                onClick={() => setActiveTab('tenant_config')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition ${
-                  activeTab === 'tenant_config'
-                    ? 'bg-[#FFC72C] text-slate-950 shadow-md shadow-amber-900/30'
-                    : 'text-slate-300 hover:text-white hover:bg-slate-800'
-                }`}
-              >
-                <i data-lucide="building-2" className="w-3.5 h-3.5"></i>
-                <span>Configuración Sedes</span>
-                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-900/60 font-mono">
-                  {tenantsList.length || 23}
-                </span>
-              </button>
+                  <button
+                    onClick={() => setActiveTab('prompt')}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition ${
+                      activeTab === 'prompt'
+                        ? 'bg-[#FFC72C] text-slate-950 shadow-md shadow-amber-900/30'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                    }`}
+                  >
+                    <i data-lucide="settings-2" className="w-3.5 h-3.5"></i>
+                    <span>Personalidad Bot</span>
+                  </button>
+
+                  <button
+                    onClick={() => setActiveTab('tenant_config')}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition ${
+                      activeTab === 'tenant_config'
+                        ? 'bg-[#FFC72C] text-slate-950 shadow-md shadow-amber-900/30'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                    }`}
+                  >
+                    <i data-lucide="building-2" className="w-3.5 h-3.5"></i>
+                    <span>Configuración Sedes</span>
+                    <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-900/60 font-mono">
+                      {tenantsList.length || 23}
+                    </span>
+                  </button>
+                </>
+              )}
 
               <button
                 onClick={() => setActiveTab('onboarding')}
@@ -1873,12 +1946,23 @@ function App() {
                       </button>
                     </div>
 
-                    <button
-                      onClick={loadAspirantes}
-                      className="text-[11px] text-slate-400 hover:text-slate-200 flex items-center gap-1 font-semibold"
-                    >
-                      <i data-lucide="refresh-cw" className="w-3 h-3"></i> Refrescar
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleTruncateDb}
+                        className="px-2.5 py-1 rounded-lg text-[11px] bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-600/50 font-bold transition flex items-center gap-1 shadow"
+                        title="Eliminar todos los aspirantes de la base de datos MariaDB (Reset Testing)"
+                      >
+                        <i data-lucide="trash-2" className="w-3 h-3"></i>
+                        <span>Vaciar DB (Reset)</span>
+                      </button>
+
+                      <button
+                        onClick={loadAspirantes}
+                        className="text-[11px] text-slate-400 hover:text-slate-200 flex items-center gap-1 font-semibold px-2 py-1 bg-slate-800 rounded-lg"
+                      >
+                        <i data-lucide="refresh-cw" className="w-3 h-3"></i> Refrescar
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -1971,27 +2055,46 @@ function App() {
                     Checklist de los 11 Campos Obligatorios de Admisión
                   </h3>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div className="flex items-center justify-between text-[11px] text-slate-400 pb-1">
+                    <span>Campos detectados en tiempo real durante la conversación:</span>
+                    <span className="font-bold text-amber-300 font-mono">
+                      {REQUIRED_FIELDS.filter(f => {
+                        const val = (liveExtractedFields && liveExtractedFields[f.key]) || (lastCompletedLead && lastCompletedLead[f.key]);
+                        return Boolean(val && String(val).trim().length > 0 && String(val).trim() !== 'null');
+                      }).length} / 11 Capturados
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                     {REQUIRED_FIELDS.map((field) => {
-                      const isComplete = Boolean(lastCompletedLead && lastCompletedLead[field.key]);
+                      const val = (liveExtractedFields && liveExtractedFields[field.key]) || (lastCompletedLead && lastCompletedLead[field.key]);
+                      const isComplete = Boolean(val && String(val).trim().length > 0 && String(val).trim() !== 'null');
                       return (
                         <div
                           key={field.key}
-                          className={`p-2.5 rounded-xl border flex items-center justify-between text-xs transition ${
+                          className={`p-3 rounded-xl border flex flex-col justify-between text-xs transition ${
                             isComplete
-                              ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-200'
+                              ? 'bg-emerald-950/50 border-emerald-500/50 text-emerald-200 shadow-sm'
                               : 'bg-[#0A192F] border-slate-800 text-slate-400'
                           }`}
                         >
-                          <div className="flex items-center gap-2">
-                            <i data-lucide={field.icon} className={`w-3.5 h-3.5 ${isComplete ? 'text-emerald-400' : 'text-slate-500'}`}></i>
-                            <span className="font-semibold">{field.label}</span>
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <i data-lucide={field.icon} className={`w-3.5 h-3.5 ${isComplete ? 'text-emerald-400' : 'text-slate-500'}`}></i>
+                              <span className="font-semibold text-slate-200">{field.label}</span>
+                            </div>
+                            <span className={`text-[9px] font-bold px-2 py-0.5 rounded font-mono ${
+                              isComplete ? 'bg-emerald-900 text-emerald-300 border border-emerald-500/40' : 'bg-slate-800 text-slate-500'
+                            }`}>
+                              {isComplete ? '✓ CAPTURADO' : '⏳ PENDIENTE'}
+                            </span>
                           </div>
-                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                            isComplete ? 'bg-emerald-900 text-emerald-300' : 'bg-slate-800 text-slate-500'
-                          }`}>
-                            {isComplete ? 'CAPTURADO' : 'PENDIENTE'}
-                          </span>
+
+                          {isComplete && (
+                            <div className="mt-1.5 pt-1.5 border-t border-emerald-900/60 text-[11px] font-mono text-emerald-300 truncate">
+                              💬 {String(val)}
+                            </div>
+                          )}
                         </div>
                       );
                     })}
@@ -2956,24 +3059,68 @@ function App() {
 
       {/* ================= MODAL DE LOGIN INSTITUCIONAL O365 & JWT ================= */}
       {showLoginModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#1E293B] border border-slate-700 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-[#1E293B] border border-amber-500/40 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4 shadow-amber-950/40">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div className="flex items-center gap-2">
-                <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-[#FFC72C] to-[#F59E0B] flex items-center justify-center text-slate-950 font-black">
-                  :U
+                <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-[#FFC72C] to-[#F59E0B] flex items-center justify-center text-slate-950 font-black text-sm shadow">
+                  :UNID
                 </div>
                 <div>
-                  <h3 className="font-black text-sm text-white">Acceso Institucional UNID</h3>
-                  <span className="text-[10px] text-slate-400">Microsoft 365 & Single Sign-On</span>
+                  <h3 className="font-extrabold text-sm text-white">Acceso al Centro de Mando</h3>
+                  <span className="text-[10px] text-slate-400">Microsoft 365 & Control de Roles (RBAC)</span>
                 </div>
               </div>
-              <button 
-                onClick={() => setShowLoginModal(false)}
-                className="p-1 rounded-lg text-slate-400 hover:text-white"
-              >
-                <i data-lucide="x" className="w-5 h-5"></i>
-              </button>
+              {authToken && (
+                <button 
+                  onClick={() => setShowLoginModal(false)}
+                  className="p-1 rounded-lg text-slate-400 hover:text-white"
+                >
+                  <i data-lucide="x" className="w-5 h-5"></i>
+                </button>
+              )}
+            </div>
+
+            {/* Selector Rápido de Cuentas para Testing */}
+            <div className="space-y-1.5 p-3 rounded-2xl bg-[#0A192F] border border-slate-700/80">
+              <span className="text-[10px] font-bold text-amber-300 block uppercase tracking-wider">
+                ⚡ Acceso Rápido para Testing (Selecciona un Rol):
+              </span>
+              <div className="grid grid-cols-2 gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setO365Email('00774343@red.unid.mx');
+                    setO365Name('Luis Felipe Pérez (Admin Sistemas)');
+                    setLoginForm({ username: '00774343@red.unid.mx', password: 'admin', error: '', loading: false });
+                  }}
+                  className="p-2 rounded-xl bg-amber-950/60 hover:bg-amber-900/80 border border-amber-500/50 text-left transition"
+                >
+                  <div className="text-[11px] font-extrabold text-amber-300 flex items-center gap-1">
+                    <i data-lucide="shield-alert" className="w-3 h-3"></i>
+                    <span>Admin (Sistemas)</span>
+                  </div>
+                  <div className="text-[9px] text-slate-400 font-mono mt-0.5">00774343 / admin</div>
+                  <div className="text-[9px] text-emerald-400 font-bold mt-0.5">8 Pestañas Completas</div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setO365Email('67676767@red.unid.mx');
+                    setO365Name('Equipo de Admisiones (Campus Campeche)');
+                    setLoginForm({ username: '67676767@red.unid.mx', password: 'user', error: '', loading: false });
+                  }}
+                  className="p-2 rounded-xl bg-sky-950/60 hover:bg-sky-900/80 border border-sky-500/50 text-left transition"
+                >
+                  <div className="text-[11px] font-extrabold text-sky-300 flex items-center gap-1">
+                    <i data-lucide="users" className="w-3 h-3"></i>
+                    <span>Usuario (Admisiones)</span>
+                  </div>
+                  <div className="text-[9px] text-slate-400 font-mono mt-0.5">67676767 / user</div>
+                  <div className="text-[9px] text-sky-400 font-bold mt-0.5">5 Pestañas Operativas</div>
+                </button>
+              </div>
             </div>
 
             {/* Pestañas de Acceso */}
@@ -2997,7 +3144,7 @@ function App() {
                 }`}
               >
                 <i data-lucide="key" className="w-3.5 h-3.5"></i>
-                <span>Admin Local</span>
+                <span>Login Directo</span>
               </button>
             </div>
 
@@ -3028,7 +3175,7 @@ function App() {
                     type="text"
                     value={o365Name}
                     onChange={(e) => setO365Name(e.target.value)}
-                    placeholder="Lic. María Elena Ramos"
+                    placeholder="Luis Felipe Pérez (Admin Sistemas)"
                     required
                     className="w-full bg-[#0A192F] border border-slate-700 rounded-xl px-3 py-2 text-slate-100 focus:outline-none focus:border-[#FFC72C]"
                   />
@@ -3042,7 +3189,7 @@ function App() {
                 <button
                   type="submit"
                   disabled={loginForm.loading}
-                  className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-black transition flex items-center justify-center gap-2 shadow-lg shadow-indigo-900/30"
+                  className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-black transition flex items-center justify-center gap-2 shadow-lg shadow-indigo-900/30 active:scale-95"
                 >
                   <i data-lucide="log-in" className="w-4 h-4"></i>
                   <span>{loginForm.loading ? 'Verificando con Microsoft...' : 'Iniciar Sesión con Office 365'}</span>
@@ -3051,12 +3198,12 @@ function App() {
             ) : (
               <form onSubmit={handleLoginSubmit} className="space-y-3.5 text-xs">
                 <div>
-                  <label className="text-slate-300 block mb-1 font-bold">Usuario:</label>
+                  <label className="text-slate-300 block mb-1 font-bold">Usuario / Correo Institucional:</label>
                   <input
                     type="text"
                     value={loginForm.username}
                     onChange={(e) => setLoginForm({ ...loginForm, username: e.target.value })}
-                    placeholder="admin"
+                    placeholder="00774343@red.unid.mx"
                     required
                     className="w-full bg-[#0A192F] border border-slate-700 rounded-xl px-3 py-2 text-slate-100 focus:outline-none focus:border-[#FFC72C]"
                   />
@@ -3068,7 +3215,7 @@ function App() {
                     type="password"
                     value={loginForm.password}
                     onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
-                    placeholder="••••••••"
+                    placeholder="admin o user"
                     required
                     className="w-full bg-[#0A192F] border border-slate-700 rounded-xl px-3 py-2 text-slate-100 focus:outline-none focus:border-[#FFC72C]"
                   />
@@ -3077,7 +3224,7 @@ function App() {
                 <button
                   type="submit"
                   disabled={loginForm.loading}
-                  className="w-full py-2.5 rounded-xl bg-gradient-to-r from-[#FFC72C] to-[#F59E0B] hover:from-[#F59E0B] hover:to-[#D97706] text-slate-950 font-black transition flex items-center justify-center gap-2 shadow-lg shadow-amber-900/30"
+                  className="w-full py-2.5 rounded-xl bg-gradient-to-r from-[#FFC72C] to-[#F59E0B] hover:from-[#F59E0B] hover:to-[#D97706] text-slate-950 font-black transition flex items-center justify-center gap-2 shadow-lg shadow-amber-900/30 active:scale-95"
                 >
                   <i data-lucide="key" className="w-4 h-4"></i>
                   <span>{loginForm.loading ? 'Accediendo...' : 'Acceder al Panel'}</span>
