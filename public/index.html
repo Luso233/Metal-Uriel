@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="es" class="h-full bg-[#0A192F] text-slate-100">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>:UNID | Centro de Mando & Admisiones Inteligentes</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            unid: {
+              navy: '#0A192F',
+              dark: '#0F172A',
+              card: '#1E293B',
+              border: '#334155',
+              gold: '#FFC72C',
+              goldHover: '#F59E0B',
+              goldLight: '#FEF08A',
+              red: '#D92525',
+              redDark: '#991B1B',
+              blueAccent: '#1E3E62'
+            },
+            wa: {
+              green: '#00A884',
+              teal: '#128C7E',
+              darkBg: '#0C1317',
+              chatBg: '#111B21',
+              bubbleMe: '#005C4B',
+              bubbleBot: '#202C33',
+              inputBg: '#2A3942'
+            }
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace']
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <!-- React 18 & Babel Standalone -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    /* Custom scrollbars */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: rgba(10, 25, 47, 0.8);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(51, 65, 85, 0.8);
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 199, 44, 0.6);
+    }
+
+    /* WhatsApp Wallpaper Pattern */
+    .whatsapp-pattern {
+      background-color: #0c1317;
+      background-image: radial-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 0);
+      background-size: 24px 24px;
+    }
+
+    /* UNID Brand Gradient & Glow */
+    .unid-gold-gradient {
+      background: linear-gradient(135deg, #FFC72C 0%, #F59E0B 100%);
+    }
+    .unid-navy-gradient {
+      background: linear-gradient(180deg, #0A192F 0%, #0F172A 100%);
+    }
+    .unid-card-glow {
+      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+    }
+
+    /* Cyber Sound Visualizer Animation */
+    @keyframes eq-bounce-1 { 0%, 100% { height: 4px; } 50% { height: 16px; } }
+    @keyframes eq-bounce-2 { 0%, 100% { height: 6px; } 50% { height: 18px; } }
+    @keyframes eq-bounce-3 { 0%, 100% { height: 3px; } 50% { height: 14px; } }
+    @keyframes eq-bounce-4 { 0%, 100% { height: 5px; } 50% { height: 17px; } }
+
+    .eq-bar-1 { animation: eq-bounce-1 0.65s ease-in-out infinite; }
+    .eq-bar-2 { animation: eq-bounce-2 0.5s ease-in-out infinite 0.15s; }
+    .eq-bar-3 { animation: eq-bounce-3 0.8s ease-in-out infinite 0.3s; }
+    .eq-bar-4 { animation: eq-bounce-4 0.6s ease-in-out infinite 0.1s; }
+  </style>
+</head>
+<body class="h-full antialiased selection:bg-[#FFC72C] selection:text-slate-950 overflow-hidden bg-[#0A192F]">
+  <div id="root" class="h-full w-full"></div>
+
+  <!-- Load React Application -->
+  <script type="text/babel" src="app.jsx"></script>
+</body>
+</html>

@@ -1,0 +1,36 @@
+{
+  "name": "metal-uriel-bot",
+  "version": "1.0.0",
+  "description": "Centro de Mando y Asistente Inteligente de Admisiones UNID con WhatsApp Cloud API, Cascada Multi-LLM (Gemini, Claude, OpenAI), MariaDB y React 18",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "keywords": [
+    "unid",
+    "whatsapp-cloud-api",
+    "google-gemini",
+    "anthropic-claude",
+    "openai",
+    "mariadb",
+    "express",
+    "react",
+    "tailwind-css",
+    "admissions-bot",
+    "chatbot"
+  ],
+  "author": "Luis Flores",
+  "license": "ISC",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.127.0",
+    "@google/genai": "^2.23.0",
+    "axios": "^1.7.7",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "jsonwebtoken": "^9.0.3",
+    "mysql2": "^3.11.3",
+    "nodemailer": "^10.0.10",
+    "openai": "^4.63.0"
+  }
+}
