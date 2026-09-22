@@ -537,6 +537,8 @@ function getProviderCooldownRemaining(providerKey) {
 
 // Memoria conversacional y métricas de sesiones
 const conversationMemory = new Map();
+const userSessionState = new Map(); // senderPhone -> { isRegistered: boolean, leadData: object, insertId: number, registeredAt: Date }
+const processedMessageIds = new Set();
 let totalConversationsStarted = 0;
 
 // ==========================================
@@ -569,7 +571,7 @@ Tu trato es cálido, altamente profesional, humano, empático y resolutivo (esti
 🎯 OBJETIVO Y DINÁMICA CONVERSACIONAL:
 1. Saluda con amabilidad y educación.
 2. Si el aspirante dice estar trabajando u ocupado, sé comprensivo y flexible.
-3. Puedes solicitar los datos agrupados de forma ágil y amable: "Me apoyas con los siguientes datos: Nombre completo, Fecha de nacimiento, Correo electrónico, Bachillerato de procedencia, Carrera de interés, Dirección y Código Postal".
+3. Si el aspirante pide informes por primera vez, puedes solicitar los datos agrupados de forma ágil y amable: "Me apoyas con los siguientes datos: Nombre completo, Fecha de nacimiento, Correo electrónico, Bachillerato de procedencia, Carrera de interés, Dirección y Código Postal".
 4. Recopila los 11 datos obligatorios para la ficha oficial:
    1. Nombre completo
    2. Fecha de nacimiento (AAAA-MM-DD o comprensible)
@@ -583,6 +585,14 @@ Tu trato es cálido, altamente profesional, humano, empático y resolutivo (esti
    10. Campus de interés
    11. Modalidad (Presencial o Licenciaturas Online)
 
+📄 ENTREGA DE PLANES DE ESTUDIO (PDFs OFICIALES):
+- Si el aspirante te pide el plan de estudios, las materias, el mapa curricular o el PDF de una carrera (o de becas), responde amablemente presentando los puntos destacados del programa académico e incluye la etiqueta [ENVIAR_PDF_PLAN_ESTUDIOS] para que el sistema le adjunte automáticamente el PDF oficial directamente por WhatsApp.
+- NUNCA digas que no puedes enviar archivos o que este chat no permite adjuntos. El sistema enviará el documento oficial al instante.
+
+🧠 REGLA DE MEMORIA Y CONTINUIDAD:
+- Si el aspirante ya proporcionó sus datos o ya está pre-registrado en el sistema, NUNCA vuelvas a pedirle sus 11 datos ni a reiniciar el cuestionario de inscripción.
+- Responde a sus dudas específicas con amabilidad sobre materias, planes de estudio, horarios, pasarela de pago Mitec, fechas de inicio o inducción.
+
 📍 REGLA GEOGRÁFICA (CAMPUS Y MODALIDAD):
 - Campus físico principal: San Francisco de Campeche.
 - Si el aspirante reside fuera de Campeche (foráneo), ofrécele de inmediato la modalidad "Licenciaturas Online" (100% virtual con validez oficial SEP) para estudiar desde su ciudad sin mudarse.
@@ -593,7 +603,7 @@ Tu trato es cálido, altamente profesional, humano, empático y resolutivo (esti
 - Si confirma el pago o envía todos los datos para concluir su registro, dale una calurosa bienvenida a la familia UNID, explícale que los documentos físicos (Acta de nacimiento, certificado de prepa, CURP y fotos) se entregan en el plantel y que asistirá al Curso de Inducción (sábados de 9:00 am a 2:00 pm) para su carga de materias.
 
 ⚙️ REGLA TÉCNICA DE REGISTRO EN BASE DE DATOS:
-- Cuando verifiques que TIENES LOS 11 DATOS COMPLETOS y el aspirante concluye su proceso, redacta tu mensaje de despedida y bienvenida, Y AL FINAL DE TU MENSAJE incluye el siguiente bloque de código JSON para que el sistema inserte la ficha en MariaDB:
+- Cuando verifiques que TIENES LOS 11 DATOS COMPLETOS y el aspirante concluye su proceso, redacta tu mensaje de bienvenida y confirmación, Y AL FINAL DE TU MENSAJE incluye el siguiente bloque de código JSON para que el sistema inserte la ficha en MariaDB:
 \`\`\`json
 {
   "completado": true,
@@ -644,6 +654,9 @@ Recopilar los 11 datos clave de admisión de forma estructurada:
 10. Campus de interés
 11. Modalidad (Presencial o Licenciaturas Online)
 
+📄 PLANES DE ESTUDIO:
+- Si el aspirante pide el plan de estudios o materias, incluye [ENVIAR_PDF_PLAN_ESTUDIOS] para el envío automático del PDF.
+
 ⚙️ REGLA DE CIERRE:
 - Al completar los 11 datos y obtener confirmación, responde ÚNICAMENTE con el bloque JSON estructurado con completado: true, los 11 campos, nivel_interes y resumen_ia.`
     }
@@ -677,21 +690,54 @@ function setActivePrompt(newPrompt) {
 // ==========================================
 // 6. Detección de Folletos PDF
 // ==========================================
-function detectBrochureRequest(userMessage) {
-    if (!userMessage || typeof userMessage !== 'string') return null;
-    const text = userMessage.toLowerCase();
-    const isAskingForDoc = /plan de estudio|plan de estudios|temario|materias|folleto|pdf|brochure|beca|becas|costos|costo|precio|malla curricular|carrera|licenciatura|ingenieria/i.test(text);
+function detectBrochureRequest(userMessage, senderPhone = null, llmReply = '') {
+    const combinedText = `${userMessage || ''} ${llmReply || ''}`.toLowerCase();
+    const isAskingForDoc = /plan de estudio|plan de estudios|temario|materias|folleto|pdf|brochure|beca|becas|costos|costo|precio|malla curricular|carrera|licenciatura|ingenieria|\[ENVIAR_PDF/i.test(combinedText);
     
     if (!isAskingForDoc) return null;
 
+    // 1. Match directo con tags en el texto actual
     for (const b of UNID_BROCHURES) {
         if (b.tags && Array.isArray(b.tags)) {
-            const matchTag = b.tags.some(t => text.includes(String(t).toLowerCase()));
+            const matchTag = b.tags.some(t => combinedText.includes(String(t).toLowerCase()));
             if (matchTag) {
                 return b;
             }
         }
     }
+
+    // 2. Si el usuario pide el plan sin mencionar la carrera (ej. "puedes mandarme el plan de estudios"),
+    // buscar en su sesión registrada o en los mensajes previos de su historial
+    if (senderPhone) {
+        const session = userSessionState.get(senderPhone);
+        if (session && session.leadData && session.leadData.carrera_interes) {
+            const carreraTarget = String(session.leadData.carrera_interes).toLowerCase();
+            for (const b of UNID_BROCHURES) {
+                if (b.tags && Array.isArray(b.tags)) {
+                    if (b.tags.some(t => carreraTarget.includes(String(t).toLowerCase()))) {
+                        return b;
+                    }
+                }
+            }
+        }
+
+        const history = conversationMemory.get(senderPhone) || [];
+        const pastText = history.map(h => h.content || '').join(' ').toLowerCase();
+        for (const b of UNID_BROCHURES) {
+            if (b.tags && Array.isArray(b.tags)) {
+                if (b.tags.some(t => pastText.includes(String(t).toLowerCase()))) {
+                    return b;
+                }
+            }
+        }
+    }
+
+    // 3. Fallback inteligente: buscar si pidió becas o primer brochure disponible
+    if (/beca|costo|financiamiento|precio/i.test(combinedText)) {
+        const becasBrochure = UNID_BROCHURES.find(b => b.id === 'becas');
+        if (becasBrochure) return becasBrochure;
+    }
+
     return UNID_BROCHURES.length > 0 ? UNID_BROCHURES[0] : null;
 }
 
@@ -848,7 +894,25 @@ async function callMetalUrielLLM(senderPhone, userMessage, requestedModelId = nu
         history.splice(0, history.length - 20);
     }
 
-    const currentPrompt = getActivePrompt();
+    let currentPrompt = getActivePrompt();
+
+    // Inyección contextual según el estado del usuario en sesión
+    const session = userSessionState.get(senderPhone);
+    if (session && session.isRegistered && session.leadData) {
+        currentPrompt = `${currentPrompt}
+
+[📌 ESTADO DEL ASPIRANTE EN SISTEMA: PRE-REGISTRO COMPLETADO EXITOSAMENTE]
+- Aspirante: ${session.leadData.nombre_completo || 'Registrado'}
+- Carrera: ${session.leadData.carrera_interes || 'Elegida'}
+- Modalidad: ${session.leadData.modalidad_estudios || 'Presencial'}
+- Campus: ${session.leadData.campus_interes || 'San Francisco de Campeche'}
+
+INSTRUCCIONES CLAVE DE ATENCIÓN:
+1. NUNCA vuelvas a solicitarle los 11 datos ni a reiniciar el cuestionario de inscripción.
+2. Responde con calidez humana, entusiasmo y precisión a sus dudas (planes de estudio, materias, costos, pasarela de pago Mitec, fechas de inicio o inducción).
+3. Si solicita el plan de estudios, materias o PDF, menciónale brevemente los puntos destacados de la carrera e incluye la etiqueta [ENVIAR_PDF_PLAN_ESTUDIOS] para que el sistema le adjunte el documento PDF oficial de inmediato.`;
+    }
+
     const modelToUse = requestedModelId || globalActiveModelId;
 
     // Determinar lista de intentos según el modelo seleccionado o modo auto-fallback
@@ -1230,8 +1294,13 @@ function extractJsonFromLlmReply(rawText) {
         }
     }
 
-    // 3. Limpiar cualquier tag residual de código para que el usuario NUNCA vea JSON
-    cleanReply = cleanReply.replace(/```json/gi, '').replace(/```/g, '').trim();
+    // 3. Limpiar tags técnicos del sistema ([ENVIAR_PDF...], ```json, etc.) para que el usuario NUNCA vea códigos
+    cleanReply = cleanReply
+        .replace(/\[ENVIAR_PDF_[A-Z_]+\]/gi, '')
+        .replace(/\[ENVIAR_PDF\]/gi, '')
+        .replace(/```json/gi, '')
+        .replace(/```/g, '')
+        .trim();
 
     return { cleanReply, jsonData };
 }
@@ -1241,10 +1310,10 @@ function extractJsonFromLlmReply(rawText) {
 // ==========================================
 async function processChatMessage(senderPhone, messageText, requestedModelId = null) {
     const { reply: llmReply, modelUsed } = await callMetalUrielLLM(senderPhone, messageText, requestedModelId);
-    const brochureDetected = detectBrochureRequest(messageText);
-
-    // Separar y limpiar cualquier JSON para que el aspirante NUNCA vea código en el chat
+    
+    // Separar y limpiar cualquier JSON y tags técnicos
     const { cleanReply, jsonData } = extractJsonFromLlmReply(llmReply);
+    const brochureDetected = detectBrochureRequest(messageText, senderPhone, llmReply);
 
     const currentHistory = conversationMemory.get(senderPhone) || [];
     const partialFields = extractPartialFieldsFromHistory(currentHistory);
@@ -1261,14 +1330,20 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
             console.error('⚠️ Error guardando en MariaDB:', dbErr.message);
         }
 
+        // Actualizar el estado de sesión del usuario para memoria persistente (NUNCA BORRAR HISTORIAL)
+        userSessionState.set(senderPhone, {
+            isRegistered: true,
+            leadData: jsonData,
+            insertId,
+            registeredAt: new Date()
+        });
+
         const finalReply = cleanReply && cleanReply.length > 20 ? cleanReply : (
             `¡Muchas gracias *${jsonData.nombre_completo || 'estimado aspirante'}*! 🎉\n\n` +
             `He registrado exitosamente tu ficha para la carrera de *${jsonData.carrera_interes || 'tu carrera de interés'}* en la modalidad *${jsonData.modalidad_estudios || 'Presencial'}* (Campus: ${jsonData.campus_interes || 'Campeche'}).\n\n` +
             `Tu expediente ha sido enviado a la Coordinación de Admisiones para validar tu beca del 50% y el 90% de descuento en tu inscripción. Un asesor se comunicará contigo al ${jsonData.telefono_celular || senderPhone} para concluir tu pre-registro.\n\n` +
             `¡Bienvenido a la familia UNID! 🔴🐾`
         );
-
-        conversationMemory.delete(senderPhone);
 
         return {
             reply: finalReply,
@@ -1285,6 +1360,7 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
                 size: brochureDetected.size,
                 rvoe: brochureDetected.rvoe,
                 modalidad: brochureDetected.modalidad,
+                pdfUrl: brochureDetected.pdfUrl,
                 downloadUrl: `/api/brochures/${brochureDetected.id}/download`
             } : null
         };
@@ -1304,6 +1380,7 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
             size: brochureDetected.size,
             rvoe: brochureDetected.rvoe,
             modalidad: brochureDetected.modalidad,
+            pdfUrl: brochureDetected.pdfUrl,
             downloadUrl: `/api/brochures/${brochureDetected.id}/download`
         } : null
     };
@@ -1321,25 +1398,37 @@ async function sendWhatsAppMessage(to, messageText, documentAttachment = null) {
     const url = `https://graph.facebook.com/v20.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
 
     try {
-        await axios.post(
-            url,
-            {
-                messaging_product: 'whatsapp',
-                recipient_type: 'individual',
-                to: to,
-                type: 'text',
-                text: { body: messageText }
-            },
-            {
-                headers: {
-                    'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
-                    'Content-Type': 'application/json'
+        // 1. Enviar mensaje de texto al usuario
+        if (messageText && messageText.trim()) {
+            await axios.post(
+                url,
+                {
+                    messaging_product: 'whatsapp',
+                    recipient_type: 'individual',
+                    to: to,
+                    type: 'text',
+                    text: { body: messageText.trim() }
+                },
+                {
+                    headers: {
+                        'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    }
                 }
-            }
-        );
+            );
+            console.log(`💬 [WHATSAPP ENVIADO] Texto enviado con éxito a ${to}`);
+        }
 
+        // 2. Enviar documento adjunto si se solicitó o detectó
         if (documentAttachment) {
-            const docUrl = `https://mascot-say-breeching.ngrok-free.dev${documentAttachment.downloadUrl}`;
+            let docUrl = documentAttachment.pdfUrl;
+            if (!docUrl || (!docUrl.startsWith('http://') && !docUrl.startsWith('https://'))) {
+                const baseUrl = process.env.PUBLIC_URL || process.env.APP_URL || 'https://digitalmedia.talisis.com';
+                docUrl = `${baseUrl}${documentAttachment.downloadUrl}`;
+            }
+
+            console.log(`📄 [WHATSAPP PDF] Enviando documento "${documentAttachment.fileName}" (${docUrl}) a ${to}...`);
+
             await axios.post(
                 url,
                 {
@@ -1349,8 +1438,8 @@ async function sendWhatsAppMessage(to, messageText, documentAttachment = null) {
                     type: 'document',
                     document: {
                         link: docUrl,
-                        filename: documentAttachment.fileName,
-                        caption: `📄 ${documentAttachment.title} (Validez Oficial SEP: ${documentAttachment.rvoe})`
+                        filename: documentAttachment.fileName || 'Plan_Estudios_UNID.pdf',
+                        caption: `📄 ${documentAttachment.title} (Validez Oficial SEP: ${documentAttachment.rvoe || 'Oficial UNID'})`
                     }
                 },
                 {
@@ -1360,10 +1449,10 @@ async function sendWhatsAppMessage(to, messageText, documentAttachment = null) {
                     }
                 }
             );
-            console.log(`📄 Documento enviado vía WhatsApp a ${to}: ${documentAttachment.fileName}`);
+            console.log(`✅ [DOCUMENTO ENVIADO] ${documentAttachment.fileName} enviado exitosamente a WhatsApp ${to}`);
         }
     } catch (error) {
-        console.error('Error enviando mensaje a WhatsApp API:', error.response?.data || error.message);
+        console.error('❌ Error enviando mensaje a WhatsApp API:', error.response?.data || error.message);
     }
 }
 
@@ -2405,8 +2494,10 @@ app.post('/api/session/reset', (req, res) => {
     const { phone } = req.body;
     if (phone) {
         conversationMemory.delete(phone);
+        userSessionState.delete(phone);
     } else {
         conversationMemory.clear();
+        userSessionState.clear();
     }
     res.json({ success: true, message: 'Sesión reiniciada con éxito.' });
 });
@@ -2438,29 +2529,69 @@ app.get('/webhook', (req, res) => {
 
 // Endpoint POST: Recepción de Mensajes de WhatsApp
 app.post('/webhook', async (req, res) => {
+    // 1. Responder de inmediato con 200 OK a Meta
     res.status(200).send('EVENT_RECEIVED');
 
     try {
         const body = req.body;
 
-        if (body.object === 'whatsapp_business_account') {
-            const entry = body.entry?.[0];
-            const changes = entry?.changes?.[0];
-            const value = changes?.value;
-            const messageObj = value?.messages?.[0];
+        if (body.object === 'whatsapp_business_account' && Array.isArray(body.entry)) {
+            for (const entry of body.entry) {
+                const changes = entry.changes;
+                if (!Array.isArray(changes)) continue;
 
-            if (messageObj && messageObj.type === 'text') {
-                const senderPhone = messageObj.from;
-                const messageText = messageObj.text.body;
+                for (const change of changes) {
+                    const value = change.value;
+                    if (!value) continue;
 
-                console.log(`📩 Webhook recibido de [${senderPhone}]: "${messageText}"`);
+                    // Si es solo una actualización de entrega o lectura (statuses), ignorar
+                    if (value.statuses && (!value.messages || value.messages.length === 0)) {
+                        continue;
+                    }
 
-                const result = await processChatMessage(senderPhone, messageText);
-                await sendWhatsAppMessage(senderPhone, result.reply, result.documentAttachment);
+                    if (Array.isArray(value.messages)) {
+                        for (const messageObj of value.messages) {
+                            if (!messageObj) continue;
+
+                            const messageId = messageObj.id;
+                            if (messageId) {
+                                if (processedMessageIds.has(messageId)) {
+                                    console.log(`⏩ [DEDUPLICACIÓN] Mensaje ${messageId} ya procesado. Omitiendo.`);
+                                    continue;
+                                }
+                                processedMessageIds.add(messageId);
+                                if (processedMessageIds.size > 2000) {
+                                    const first = processedMessageIds.values().next().value;
+                                    processedMessageIds.delete(first);
+                                }
+                            }
+
+                            let messageText = '';
+                            if (messageObj.type === 'text' && messageObj.text?.body) {
+                                messageText = messageObj.text.body.trim();
+                            } else if (messageObj.type === 'button' && messageObj.button?.text) {
+                                messageText = messageObj.button.text.trim();
+                            } else if (messageObj.type === 'interactive') {
+                                messageText = messageObj.interactive?.button_reply?.title || messageObj.interactive?.list_reply?.title || '';
+                            }
+
+                            if (!messageText) {
+                                console.log(`ℹ️ [WEBHOOK] Evento de tipo '${messageObj.type}' recibido sin texto para responder.`);
+                                continue;
+                            }
+
+                            const senderPhone = messageObj.from;
+                            console.log(`📩 [WHATSAPP MENSAJE] De [${senderPhone}]: "${messageText}"`);
+
+                            const result = await processChatMessage(senderPhone, messageText);
+                            await sendWhatsAppMessage(senderPhone, result.reply, result.documentAttachment);
+                        }
+                    }
+                }
             }
         }
     } catch (error) {
-        console.error('Error procesando el webhook de WhatsApp:', error);
+        console.error('❌ Error procesando el webhook de WhatsApp:', error);
     }
 });
 
