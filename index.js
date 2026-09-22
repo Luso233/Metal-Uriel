@@ -691,12 +691,20 @@ function setActivePrompt(newPrompt) {
 // 6. Detección de Folletos PDF
 // ==========================================
 function detectBrochureRequest(userMessage, senderPhone = null, llmReply = '') {
-    const combinedText = `${userMessage || ''} ${llmReply || ''}`.toLowerCase();
-    const isAskingForDoc = /plan de estudio|plan de estudios|temario|materias|folleto|pdf|brochure|beca|becas|costos|costo|precio|malla curricular|carrera|licenciatura|ingenieria|\[ENVIAR_PDF/i.test(combinedText);
+    const userText = (userMessage || '').toLowerCase();
+    const hasExplicitAiTag = /\[ENVIAR_PDF/i.test(llmReply || '');
     
-    if (!isAskingForDoc) return null;
+    // Solo activar si la IA lo pidió explícitamente O si el usuario pide el documento con palabras clave claras
+    const isUserAskingForDoc = /\b(?:plan de estudios?|temario|malla curricular|folleto|pdf|brochure|materias|plan de carrera|gu[ií]a de becas)\b/i.test(userText) &&
+                               /\b(?:mand|envi|pas|quier|tienes|ver|descarg|compart|mostrar|proporcion|facilit|solicit|podr[ií]as)\b/i.test(userText);
 
-    // 1. Match directo con tags en el texto actual
+    if (!hasExplicitAiTag && !isUserAskingForDoc) {
+        return null; // ¡Cero falsos positivos en saludos o conversaciones normales!
+    }
+
+    const combinedText = `${userText} ${llmReply || ''}`.toLowerCase();
+
+    // 1. Match directo con tags de carrera en el mensaje del usuario o respuesta de la IA
     for (const b of UNID_BROCHURES) {
         if (b.tags && Array.isArray(b.tags)) {
             const matchTag = b.tags.some(t => combinedText.includes(String(t).toLowerCase()));
@@ -732,12 +740,13 @@ function detectBrochureRequest(userMessage, senderPhone = null, llmReply = '') {
         }
     }
 
-    // 3. Fallback inteligente: buscar si pidió becas o primer brochure disponible
-    if (/beca|costo|financiamiento|precio/i.test(combinedText)) {
+    // 3. Si pidió becas o costos específicamente
+    if (/\bbecas?\b|\bcostos?\b|\bfinanciamiento\b|\bprecios?\b/i.test(userText)) {
         const becasBrochure = UNID_BROCHURES.find(b => b.id === 'becas');
         if (becasBrochure) return becasBrochure;
     }
 
+    // Si explícitamente pidió un plan pero no sabemos de cuál, enviar el de software o el primero
     return UNID_BROCHURES.length > 0 ? UNID_BROCHURES[0] : null;
 }
 
@@ -2583,6 +2592,21 @@ app.post('/webhook', async (req, res) => {
                             const senderPhone = messageObj.from;
                             console.log(`📩 [WHATSAPP MENSAJE] De [${senderPhone}]: "${messageText}"`);
 
+                            // Verificar si la IA está pausada por un asesor humano (Human Handover)
+                            const session = userSessionState.get(senderPhone);
+                            if (session && session.isPaused) {
+                                console.log(`⏸️ [CONTROL HUMANO] Mensaje recibido de [${senderPhone}]: "${messageText}". Metal-Uriel está en pausa.`);
+                                if (!conversationMemory.has(senderPhone)) {
+                                    conversationMemory.set(senderPhone, []);
+                                }
+                                conversationMemory.get(senderPhone).push({
+                                    role: 'user',
+                                    content: messageText,
+                                    timestamp: new Date()
+                                });
+                                continue;
+                            }
+
                             const result = await processChatMessage(senderPhone, messageText);
                             await sendWhatsAppMessage(senderPhone, result.reply, result.documentAttachment);
                         }
@@ -2592,6 +2616,213 @@ app.post('/webhook', async (req, res) => {
         }
     } catch (error) {
         console.error('❌ Error procesando el webhook de WhatsApp:', error);
+    }
+});
+
+// ==========================================
+// 15.5. Endpoints de Bandeja de Entrada en Vivo (Live Inbox & Human Handover)
+// ==========================================
+
+// Obtener lista completa de conversaciones activas e históricas
+app.get('/api/conversations', async (req, res) => {
+    try {
+        let dbAspirantes = [];
+        try {
+            const [rows] = await dbPool.query('SELECT * FROM aspirantes ORDER BY created_at DESC');
+            dbAspirantes = rows;
+        } catch (e) {
+            console.warn('Advertencia consultando aspirantes para conversaciones:', e.message);
+        }
+
+        const convMap = new Map();
+
+        // 1. Cargar desde base de datos (MariaDB)
+        for (const asp of dbAspirantes) {
+            const phone = asp.telefono_celular || `asp_${asp.id}`;
+            const cleanPhone = String(phone).replace(/[\s\-\+]/g, '');
+            const history = conversationMemory.get(phone) || conversationMemory.get(cleanPhone) || [];
+            const session = userSessionState.get(phone) || userSessionState.get(cleanPhone) || {};
+
+            let lastMsg = 'Ficha registrada en MariaDB';
+            let lastTime = asp.created_at || new Date();
+            if (history.length > 0) {
+                const lastEntry = history[history.length - 1];
+                lastMsg = lastEntry.content;
+                lastTime = lastEntry.timestamp || new Date();
+            }
+
+            convMap.set(cleanPhone, {
+                phone: asp.telefono_celular || phone,
+                cleanPhone: cleanPhone,
+                name: asp.nombre_completo || 'Aspirante Registrado',
+                carrera: asp.carrera_interes || 'Sin carrera especificada',
+                campus: asp.campus_interes || 'Campus Campeche',
+                modalidad: asp.modalidad_estudios || 'Presencial',
+                isPaused: Boolean(session.isPaused),
+                estado_prospecto: asp.estado_prospecto || 'nuevo',
+                nivel_interes: asp.nivel_interes || 'Alto',
+                leadData: asp,
+                isRegistered: true,
+                messages: history.map((m, idx) => ({
+                    id: idx + 1,
+                    sender: m.role === 'user' ? 'user' : (m.role === 'human_advisor' ? 'advisor' : 'bot'),
+                    senderName: m.role === 'human_advisor' ? (m.senderName || 'Asesor Admisiones') : (m.role === 'user' ? (asp.nombre_completo || 'Aspirante') : 'Metal-Uriel'),
+                    text: m.content,
+                    time: m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+                    timestamp: m.timestamp || new Date(),
+                    documentAttachment: m.documentAttachment || null
+                })),
+                lastMessage: lastMsg,
+                lastMessageTime: lastTime
+            });
+        }
+
+        // 2. Cargar conversaciones en memoria que aún no estén en MariaDB (o en progreso)
+        for (const [phoneKey, history] of conversationMemory.entries()) {
+            const cleanKey = String(phoneKey).replace(/[\s\-\+]/g, '');
+            const session = userSessionState.get(phoneKey) || {};
+            const partial = extractPartialFieldsFromHistory(history);
+
+            if (!convMap.has(cleanKey)) {
+                let lastMsg = 'Iniciando conversación...';
+                let lastTime = new Date();
+                if (history.length > 0) {
+                    const lastEntry = history[history.length - 1];
+                    lastMsg = lastEntry.content;
+                    lastTime = lastEntry.timestamp || new Date();
+                }
+
+                convMap.set(cleanKey, {
+                    phone: phoneKey,
+                    cleanPhone: cleanKey,
+                    name: session.leadData?.nombre_completo || partial.nombre_completo || `Aspirante (${phoneKey})`,
+                    carrera: session.leadData?.carrera_interes || partial.carrera_interes || 'Por definir',
+                    campus: session.leadData?.campus_interes || partial.campus_interes || 'Campus Campeche',
+                    modalidad: session.leadData?.modalidad_estudios || partial.modalidad_estudios || 'Presencial',
+                    isPaused: Boolean(session.isPaused),
+                    estado_prospecto: 'nuevo',
+                    nivel_interes: 'Alto',
+                    leadData: session.leadData || partial,
+                    isRegistered: Boolean(session.isRegistered),
+                    messages: history.map((m, idx) => ({
+                        id: idx + 1,
+                        sender: m.role === 'user' ? 'user' : (m.role === 'human_advisor' ? 'advisor' : 'bot'),
+                        senderName: m.role === 'human_advisor' ? (m.senderName || 'Asesor Admisiones') : (m.role === 'user' ? (session.leadData?.nombre_completo || 'Aspirante') : 'Metal-Uriel'),
+                        text: m.content,
+                        time: m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+                        timestamp: m.timestamp || new Date(),
+                        documentAttachment: m.documentAttachment || null
+                    })),
+                    lastMessage: lastMsg,
+                    lastMessageTime: lastTime
+                });
+            }
+        }
+
+        // Ordenar por fecha del último mensaje (más reciente arriba)
+        const conversations = Array.from(convMap.values()).sort((a, b) => {
+            return new Date(b.lastMessageTime) - new Date(a.lastMessageTime);
+        });
+
+        res.json({ success: true, count: conversations.length, conversations });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Enviar mensaje manual desde el Asesor de Admisiones a WhatsApp
+app.post('/api/conversations/send-message', async (req, res) => {
+    try {
+        const { phone, message, pauseAi, senderName } = req.body;
+        if (!phone || !message) {
+            return res.status(400).json({ error: 'Teléfono y mensaje requeridos.' });
+        }
+
+        if (!conversationMemory.has(phone)) {
+            conversationMemory.set(phone, []);
+        }
+
+        const history = conversationMemory.get(phone);
+        const msgObj = {
+            role: 'human_advisor',
+            senderName: senderName || 'Lic. Admisiones UNID',
+            content: message.trim(),
+            timestamp: new Date()
+        };
+        history.push(msgObj);
+
+        if (!userSessionState.has(phone)) {
+            userSessionState.set(phone, { isRegistered: false, isPaused: false });
+        }
+        if (pauseAi !== undefined) {
+            userSessionState.get(phone).isPaused = Boolean(pauseAi);
+        }
+
+        // Enviar a WhatsApp Cloud API
+        await sendWhatsAppMessage(phone, message.trim());
+
+        res.json({ success: true, message: msgObj, isPaused: userSessionState.get(phone).isPaused });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Alternar pausa de la IA para un aspirante específico (Human Handover)
+app.post('/api/conversations/toggle-ai', (req, res) => {
+    try {
+        const { phone, isPaused } = req.body;
+        if (!phone) return res.status(400).json({ error: 'Teléfono requerido.' });
+
+        if (!userSessionState.has(phone)) {
+            userSessionState.set(phone, { isRegistered: false, isPaused: false });
+        }
+        userSessionState.get(phone).isPaused = Boolean(isPaused);
+
+        console.log(`🤖 [HUMAN HANDOVER] IA para [${phone}] ahora está: ${isPaused ? '⏸️ PAUSADA (Control Asesor Humano)' : '▶️ ACTIVA (Metal-Uriel)'}`);
+
+        res.json({ success: true, isPaused: userSessionState.get(phone).isPaused });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Enviar folleto PDF directamente desde la interfaz
+app.post('/api/conversations/send-brochure', async (req, res) => {
+    try {
+        const { phone, brochureId } = req.body;
+        if (!phone || !brochureId) return res.status(400).json({ error: 'Teléfono y brochureId requeridos.' });
+
+        const brochure = UNID_BROCHURES.find(b => b.id === brochureId) || UNID_BROCHURES[0];
+        if (!brochure) return res.status(404).json({ error: 'Folleto no encontrado.' });
+
+        const attachment = {
+            id: brochure.id,
+            title: `Plan de Estudios: ${brochure.carrera}`,
+            fileName: brochure.fileName,
+            size: brochure.size,
+            rvoe: brochure.rvoe,
+            modalidad: brochure.modalidad,
+            pdfUrl: brochure.pdfUrl,
+            downloadUrl: `/api/brochures/${brochure.id}/download`
+        };
+
+        const textReply = `Te comparto con mucho gusto el Plan de Estudios oficial y mapa curricular de *${brochure.carrera}* (${brochure.modalidad}). Cuenta con Reconocimiento de Validez Oficial SEP: *${brochure.rvoe}*.`;
+
+        if (!conversationMemory.has(phone)) {
+            conversationMemory.set(phone, []);
+        }
+        conversationMemory.get(phone).push({
+            role: 'assistant',
+            content: textReply,
+            documentAttachment: attachment,
+            timestamp: new Date()
+        });
+
+        await sendWhatsAppMessage(phone, textReply, attachment);
+
+        res.json({ success: true, brochure: attachment });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
 });
 
