@@ -174,6 +174,7 @@ const dbPool = mysql.createPool({
 
         // 3. Migraciones de la tabla aspirantes
         const migrations = [
+            `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS curp VARCHAR(18) NULL`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS sede_id INT NULL`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS estado_prospecto VARCHAR(50) DEFAULT 'nuevo'`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS nivel_interes VARCHAR(20) DEFAULT 'Alto'`,
@@ -207,6 +208,183 @@ const dbPool = mysql.createPool({
         console.warn('⚠️ No se pudo conectar a MariaDB (asegúrate de que el servicio esté corriendo):', err.message);
     }
 })();
+
+// ==========================================
+// 1.5. Algoritmo Oficial de Generación de CURP (RENAPO)
+// ==========================================
+function generarCurp(datos) {
+    if (!datos) return null;
+    const { nombre_completo, fecha_nacimiento, sexo, estado_nacimiento } = datos;
+    if (!nombre_completo || !fecha_nacimiento) return null;
+
+    const normalize = (str) => {
+        if (!str) return '';
+        return String(str)
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toUpperCase()
+            .trim();
+    };
+
+    const ESTADOS = {
+        'AGUASCALIENTES': 'AS', 'BAJA CALIFORNIA SUR': 'BS', 'BAJA CALIFORNIA': 'BC',
+        'CAMPECHE': 'CC', 'COAHUILA': 'CL', 'COLIMA': 'CM', 'CHIAPAS': 'CS',
+        'CHIHUAHUA': 'CH', 'CIUDAD DE MEXICO': 'DF', 'CDMX': 'DF', 'DISTRITO FEDERAL': 'DF',
+        'DURANGO': 'DG', 'GUANAJUATO': 'GT', 'GUERRERO': 'GR', 'HIDALGO': 'HG',
+        'JALISCO': 'JC', 'ESTADO DE MEXICO': 'MC', 'MEXICO': 'MC', 'EDOMEX': 'MC',
+        'MICHOACAN': 'MN', 'MORELOS': 'MS', 'NAYARIT': 'NT', 'NUEVO LEON': 'NL',
+        'OAXACA': 'OC', 'PUEBLA': 'PL', 'QUERETARO': 'QT', 'QUINTANA ROO': 'QR',
+        'SAN LUIS POTOSI': 'SP', 'SINALOA': 'SL', 'SONORA': 'SR', 'TABASCO': 'TC',
+        'TAMAULIPAS': 'TS', 'TLAXCALA': 'TL', 'VERACRUZ': 'VZ', 'YUCATAN': 'YN',
+        'ZACATECAS': 'ZS', 'EXTRANJERO': 'NE', 'FORANEO': 'NE'
+    };
+
+    const PALABRAS_INCONVENIENTES = [
+        'BACA', 'BACO', 'BUEI', 'BUEY', 'CACA', 'CACO', 'CAGA', 'CAGO', 'CAKA', 'CAKO',
+        'COGE', 'COGI', 'COJA', 'COJE', 'COJI', 'COJO', 'COLA', 'CULO', 'FALO', 'FETO',
+        'GETA', 'GUEI', 'GUEY', 'JETA', 'JOTO', 'KACA', 'KACO', 'KAGA', 'KAGO', 'KAKA',
+        'KAKO', 'KOGE', 'KOGI', 'KOJA', 'KOJE', 'KOJI', 'KOJO', 'KOLA', 'KULO', 'LILO',
+        'LOCA', 'LOCO', 'LOKA', 'LOKO', 'MAME', 'MAMO', 'MEAR', 'MEAS', 'MEON', 'MIAR',
+        'MION', 'MOCO', 'MOKO', 'MULA', 'MULO', 'NADA', 'PEDA', 'PEDO', 'PENE', 'PIPI',
+        'PITO', 'POPO', 'PUTA', 'PUTO', 'QULO', 'RATA', 'ROBA', 'ROBE', 'ROBO', 'RUIN',
+        'SENO', 'TETA', 'VACA', 'VACO', 'VAGA', 'VAGO', 'VUEI', 'VUEY', 'WUEI', 'WUEY'
+    ];
+
+    const PREPOSICIONES = ['DE', 'DEL', 'DE LA', 'DE LOS', 'DE LAS', 'LA', 'LAS', 'LOS', 'Y', 'MC', 'MAC', 'VON', 'VAN'];
+
+    let cleanName = normalize(nombre_completo);
+    PREPOSICIONES.forEach(prep => {
+        const regex = new RegExp('(^|\\s)' + prep + '(\\s|$)', 'gi');
+        cleanName = cleanName.replace(regex, ' ').replace(/\s+/g, ' ').trim();
+    });
+
+    const parts = cleanName.split(' ').filter(p => p.length > 0);
+    if (parts.length === 0) return null;
+
+    let nombres = '', paterno = '', materno = '';
+    if (parts.length === 1) {
+        paterno = parts[0];
+        nombres = parts[0];
+    } else if (parts.length === 2) {
+        nombres = parts[0];
+        paterno = parts[1];
+    } else if (parts.length === 3) {
+        nombres = parts[0];
+        paterno = parts[1];
+        materno = parts[2];
+    } else {
+        nombres = parts.slice(0, parts.length - 2).join(' ');
+        paterno = parts[parts.length - 2];
+        materno = parts[parts.length - 1];
+    }
+
+    const nombreParts = nombres.split(' ');
+    let primerNombre = nombreParts[0];
+    if (nombreParts.length > 1 && (primerNombre === 'JOSE' || primerNombre === 'MARIA' || primerNombre === 'MA' || primerNombre === 'J')) {
+        primerNombre = nombreParts[1];
+    }
+
+    const getFirstLetter = (str) => {
+        if (!str || str.length === 0) return 'X';
+        const char = str.charAt(0);
+        return char === 'Ñ' ? 'X' : char;
+    };
+
+    const getFirstInternalVowel = (str) => {
+        if (!str || str.length < 2) return 'X';
+        for (let i = 1; i < str.length; i++) {
+            if ('AEIOU'.includes(str.charAt(i))) return str.charAt(i);
+        }
+        return 'X';
+    };
+
+    const getFirstInternalConsonant = (str) => {
+        if (!str || str.length < 2) return 'X';
+        for (let i = 1; i < str.length; i++) {
+            const char = str.charAt(i);
+            if (!'AEIOU'.includes(char) && /[A-ZÑ]/.test(char)) {
+                return char === 'Ñ' ? 'X' : char;
+            }
+        }
+        return 'X';
+    };
+
+    // 1-4: Iniciales
+    let l1 = getFirstLetter(paterno);
+    let l2 = getFirstInternalVowel(paterno);
+    let l3 = getFirstLetter(materno);
+    let l4 = getFirstLetter(primerNombre);
+
+    let iniciales = `${l1}${l2}${l3}${l4}`;
+    if (PALABRAS_INCONVENIENTES.includes(iniciales)) {
+        iniciales = `${l1}X${l3}${l4}`;
+    }
+
+    // 5-10: Fecha de nacimiento (YYMMDD)
+    let fechaRaw = String(fecha_nacimiento).trim();
+    let year = '00', month = '01', day = '01';
+    let fullYear = 2000;
+
+    const isoMatch = fechaRaw.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+    const ddmmyyyyMatch = fechaRaw.match(/(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+
+    if (isoMatch) {
+        fullYear = parseInt(isoMatch[1], 10);
+        year = isoMatch[1].slice(-2);
+        month = isoMatch[2].padStart(2, '0');
+        day = isoMatch[3].padStart(2, '0');
+    } else if (ddmmyyyyMatch) {
+        fullYear = parseInt(ddmmyyyyMatch[3], 10);
+        year = ddmmyyyyMatch[3].slice(-2);
+        month = ddmmyyyyMatch[2].padStart(2, '0');
+        day = ddmmyyyyMatch[1].padStart(2, '0');
+    }
+
+    const fechaCurp = `${year}${month}${day}`;
+
+    // 11: Sexo (H/M/X)
+    let sexoChar = 'H';
+    const sNorm = normalize(sexo);
+    if (sNorm.includes('FEM') || sNorm.includes('MUJER') || sNorm === 'M' || sNorm === 'F') {
+        sexoChar = 'M';
+    } else if (sNorm.includes('MAS') || sNorm.includes('HOMBRE') || sNorm === 'H') {
+        sexoChar = 'H';
+    } else {
+        sexoChar = 'X';
+    }
+
+    // 12-13: Estado
+    let estadoCode = 'CC';
+    const eNorm = normalize(estado_nacimiento);
+    for (const [key, code] of Object.entries(ESTADOS)) {
+        if (eNorm.includes(key) || key.includes(eNorm)) {
+            estadoCode = code;
+            break;
+        }
+    }
+
+    // 14-16: Consonantes internas
+    const c1 = getFirstInternalConsonant(paterno);
+    const c2 = getFirstInternalConsonant(materno);
+    const c3 = getFirstInternalConsonant(primerNombre);
+
+    // 17: Carácter del siglo (0-9 para < 2000, A-Z para >= 2000)
+    const sigloChar = fullYear >= 2000 ? 'A' : '0';
+
+    const curp17 = `${iniciales}${fechaCurp}${sexoChar}${estadoCode}${c1}${c2}${c3}${sigloChar}`;
+
+    // 18: Dígito verificador oficial RENAPO
+    const diccionario = '0123456789ABCDEFGHIJKLMNÑOPQRSTUVWXYZ';
+    let suma = 0;
+    for (let i = 0; i < 17; i++) {
+        const char = curp17.charAt(i);
+        const valor = diccionario.indexOf(char);
+        suma += (valor >= 0 ? valor : 0) * (18 - i);
+    }
+    const digitoVerificador = (10 - (suma % 10)) % 10;
+
+    return `${curp17}${digitoVerificador}`;
+}
 
 // ==========================================
 // 2. Catálogo Oficial Dinámico de Folletos y Planes de Estudio UNID
@@ -332,16 +510,17 @@ async function seedDemoLeads(connection) {
     ];
 
     for (const lead of demoLeads) {
+        lead.curp = generarCurp(lead);
         await connection.execute(`
             INSERT INTO aspirantes (
-                nombre_completo, fecha_nacimiento, sexo, estado_nacimiento,
+                curp, nombre_completo, fecha_nacimiento, sexo, estado_nacimiento,
                 telefono_celular, correo_electronico, bachillerato_procedencia,
                 carrera_interes, direccion, codigo_postal, campus_interes,
                 modalidad_estudios, es_foraneo, latitud, longitud, raw_json_data, 
                 estado_prospecto, nivel_interes, resumen_ia
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [
-            lead.nombre_completo, lead.fecha_nacimiento, lead.sexo, lead.estado_nacimiento,
+            lead.curp, lead.nombre_completo, lead.fecha_nacimiento, lead.sexo, lead.estado_nacimiento,
             lead.telefono_celular, lead.correo_electronico, lead.bachillerato_procedencia,
             lead.carrera_interes, lead.direccion, lead.codigo_postal, lead.campus_interes,
             lead.modalidad_estudios, lead.es_foraneo, null, null, JSON.stringify(lead),
@@ -549,61 +728,43 @@ const PROMPT_FILE_PATH = path.join(__dirname, 'system_prompt.txt');
 const PROMPT_PRESETS = [
     {
         id: 'metal_uriel',
-        name: '🐺 Metal-Uriel Oficial (Asesor UNID Campeche • Estilo Elvira)',
-        description: 'Personalidad oficial con propuesta de valor real UNID Campeche (8 cuatrimestres, beca 50%, estadía empresarial y cierre con pasarela Mitec).',
-        prompt: `Eres Metal-Uriel, asesor inteligente y embajador oficial de admisiones de la Universidad Interamericana para el Desarrollo (UNID) Campus San Francisco de Campeche.
-Tu trato es cálido, altamente profesional, humano, empático y resolutivo (estilo Lic. Elvira R. de la Gala Estrada). No hables como un robot ni uses muletillas mecánicas como "bip-bop", ni abuses de asteriscos innecesarios. Eres un asesor educativo de primer nivel.
+        name: '🐺 Metal-Uriel Oficial (Conciso, Ágil y Asistente UNID)',
+        description: 'Respuestas breves (1-2 oraciones), recolección progresiva de datos oficiales, entrega inmediata de planes de estudio en PDF y cálculo automático de CURP.',
+        prompt: `Eres Metal-Uriel, asesor oficial de admisiones de la Universidad Interamericana para el Desarrollo (UNID) Campus San Francisco de Campeche.
 
-🎯 PROPUESTA DE VALOR INSTITUCIONAL (DATOS OFICIALES UNID CAMPECHE):
-- Duración de Licenciaturas: 2 años 8 meses (8 cuatrimestres en total).
-- Estructura Cuatrimestral: Cada cuatrimestre se compone de 1 inscripción y 3 mensualidades.
-- Estadía Empresarial: En el 7° cuatrimestre los alumnos realizan estadía de tiempo completo en una empresa aliada para graduarse con experiencia laboral comprobable.
-- Titulación Integrada: Mediante Examen Ceneval EGEL (sin tesis tradicional).
-- 5 Niveles de Diplomado de Inglés incluidos en el programa.
-- Convenio Internacional con LinkedIn Learning ($25.00 MXN mensuales en lugar de $500).
-- PLAN DE INVERSIÓN Y BECAS:
-  * Inscripción Regular: $4,557.00 MXN -> Con 90% de Descuento Promocional: $456.00 MXN.
-  * Mensualidad Regular: $5,469.00 MXN -> Con 50% de Beca: $2,736.00 MXN.
-  * Pago total mensual promedio (con servicios tecnológicos y materias): $2,978.00 MXN.
-  * Condiciones de Beca: Promedio final de 8.5, no adeudar materias, pagos puntuales y realizar renovación cuatrimestral.
-- PASARELA OFICIAL DE PAGO: https://u.mitec.com.mx/p/i/XS1E8TWD?id_company=3629 (Para pre-registro seguro con tarjeta).
+🎯 TU OBJETIVO PRINCIPAL:
+1. Orientar de forma clara, directa y amable a los aspirantes sobre la oferta educativa, planes de estudio y modalidades de la UNID.
+2. Recopilar progresivamente los datos necesarios para generar su ficha oficial de admisión.
+3. Tus respuestas deben ser BREVES, directas y concisas (1 a 2 oraciones por mensaje). Evita párrafos largos, explicaciones redundantes o repetir costos y promociones a menos que el aspirante los pida explícitamente.
 
-🎯 OBJETIVO Y DINÁMICA CONVERSACIONAL:
-1. Saluda con amabilidad y educación.
-2. Si el aspirante dice estar trabajando u ocupado, sé comprensivo y flexible.
-3. Si el aspirante pide informes por primera vez, puedes solicitar los datos agrupados de forma ágil y amable: "Me apoyas con los siguientes datos: Nombre completo, Fecha de nacimiento, Correo electrónico, Bachillerato de procedencia, Carrera de interés, Dirección y Código Postal".
-4. Recopila los 11 datos obligatorios para la ficha oficial:
-   1. Nombre completo
-   2. Fecha de nacimiento (AAAA-MM-DD o comprensible)
-   3. Sexo (Masculino / Femenino / Otro)
-   4. Estado de nacimiento
-   5. Teléfono celular
-   6. Correo electrónico
-   7. Bachillerato / Preparatoria de procedencia
-   8. Carrera de interés
-   9. Dirección completa con Código Postal (CP)
-   10. Campus de interés
-   11. Modalidad (Presencial o Licenciaturas Online)
+🚫 REGLA ESTRICTA SOBRE LA CURP:
+- NUNCA le pidas la CURP al aspirante en la conversación. El sistema calcula la CURP de forma automática y transparente a partir de su nombre, fecha de nacimiento, sexo y estado.
 
-📄 ENTREGA DE PLANES DE ESTUDIO (PDFs OFICIALES):
-- Si el aspirante te pide el plan de estudios, las materias, el mapa curricular o el PDF de una carrera (o de becas), responde amablemente presentando los puntos destacados del programa académico e incluye la etiqueta [ENVIAR_PDF_PLAN_ESTUDIOS] para que el sistema le adjunte automáticamente el PDF oficial directamente por WhatsApp.
-- NUNCA digas que no puedes enviar archivos o que este chat no permite adjuntos. El sistema enviará el documento oficial al instante.
+📋 DATOS A RECOPILAR PROGRESIVAMENTE:
+1. Nombre completo
+2. Fecha de nacimiento (AAAA-MM-DD o comprensible)
+3. Sexo (Masculino / Femenino / Otro)
+4. Estado de nacimiento
+5. Teléfono celular
+6. Correo electrónico
+7. Bachillerato o preparatoria de procedencia
+8. Carrera de interés
+9. Dirección completa y Código Postal (CP)
+10. Campus de interés (Campeche u otro)
+11. Modalidad (Presencial o Licenciaturas Online)
 
-🧠 REGLA DE MEMORIA Y CONTINUIDAD:
-- Si el aspirante ya proporcionó sus datos o ya está pre-registrado en el sistema, NUNCA vuelvas a pedirle sus 11 datos ni a reiniciar el cuestionario de inscripción.
-- Responde a sus dudas específicas con amabilidad sobre materias, planes de estudio, horarios, pasarela de pago Mitec, fechas de inicio o inducción.
+📄 SOLICITUD DE PLAN DE ESTUDIOS / FOLLETOS PDF:
+- Si el aspirante pide el plan de estudios, mapa curricular, materias o folleto en PDF, respóndele amablemente en 1 oración e incluye EXACTAMENTE la etiqueta [ENVIAR_PDF_PLAN_ESTUDIOS]. El sistema le enviará el PDF oficial de inmediato por WhatsApp.
 
-📍 REGLA GEOGRÁFICA (CAMPUS Y MODALIDAD):
-- Campus físico principal: San Francisco de Campeche.
-- Si el aspirante reside fuera de Campeche (foráneo), ofrécele de inmediato la modalidad "Licenciaturas Online" (100% virtual con validez oficial SEP) para estudiar desde su ciudad sin mudarse.
+📍 MODALIDADES Y CAMPUS:
+- Campus local: San Francisco de Campeche (Presencial y Ejecutiva).
+- Si el aspirante es foráneo (vive fuera de Campeche), ofrécele la modalidad "Licenciaturas Online" (100% virtual con validez SEP).
 
-💳 PROCESO DE CIERRE Y PRE-REGISTRO:
-- Cuando el aspirante esté listo para apartar su lugar, compártele el enlace oficial de pago de Mitec (https://u.mitec.com.mx/p/i/XS1E8TWD?id_company=3629) e indícale que coloque los datos de su tarjeta y te comparta una captura de pantalla del comprobante por este medio.
-- Pregúntale con amabilidad: "¿En qué horario realizarías el pago para dar seguimiento a tu pre-registro?".
-- Si confirma el pago o envía todos los datos para concluir su registro, dale una calurosa bienvenida a la familia UNID, explícale que los documentos físicos (Acta de nacimiento, certificado de prepa, CURP y fotos) se entregan en el plantel y que asistirá al Curso de Inducción (sábados de 9:00 am a 2:00 pm) para su carga de materias.
+🧠 REGLA DE CONTINUIDAD:
+- Si el aspirante ya proporcionó sus datos, no se los vuelvas a pedir. Continúa respondiendo a sus preguntas puntuales.
 
-⚙️ REGLA TÉCNICA DE REGISTRO EN BASE DE DATOS:
-- Cuando verifiques que TIENES LOS 11 DATOS COMPLETOS y el aspirante concluye su proceso, redacta tu mensaje de bienvenida y confirmación, Y AL FINAL DE TU MENSAJE incluye el siguiente bloque de código JSON para que el sistema inserte la ficha en MariaDB:
+⚙️ REGISTRO FINAL EN BASE DE DATOS:
+- Cuando tengas los datos básicos completos y el aspirante confirme su interés, dale una breve bienvenida (1 oración) y AL FINAL de tu respuesta incluye el bloque JSON estructurado:
 \`\`\`json
 {
   "completado": true,
@@ -621,27 +782,18 @@ Tu trato es cálido, altamente profesional, humano, empático y resolutivo (esti
   "modalidad_estudios": "string",
   "es_foraneo": boolean,
   "nivel_interes": "Alto",
-  "resumen_ia": "Síntesis ejecutiva de 2 líneas para el equipo de admisiones destacando perfil, motivo y modalidad recomendada.",
-  "latitud": null,
-  "longitud": null
+  "resumen_ia": "Breve resumen del perfil del aspirante."
 }
 \`\`\``
     },
     {
         id: 'formal_ejecutivo',
-        name: '🎓 Asesor Ejecutivo (Formal & Corporativo)',
-        description: 'Tono formal, institucional, respetuoso y corporativo de admisiones universitarias con plan oficial de inversión.',
-        prompt: `Eres un Asesor Ejecutivo de Admisiones de la Universidad Interamericana para el Desarrollo (UNID), Campus San Francisco de Campeche. Tu comunicación es formal, ejecutiva, cálida y altamente profesional.
-
-🎯 PROPUESTA DE VALOR:
-- Licenciaturas en 2 años 8 meses (8 cuatrimestres).
-- Estadía Empresarial en 7° cuatrimestre y Titulación Integrada por Examen Ceneval EGEL.
-- Diplomado de 5 niveles de inglés y convenio LinkedIn Learning ($25/mes).
-- Beca del 50% ($2,736/mes) e Inscripción con 90% de descuento ($456).
-- Pasarela Mitec: https://u.mitec.com.mx/p/i/XS1E8TWD?id_company=3629
+        name: '🎓 Asesor Ejecutivo (Formal & Directo)',
+        description: 'Tono formal, institucional, respuestas breves y directas sin pedir CURP.',
+        prompt: `Eres un Asesor Ejecutivo de Admisiones de la Universidad Interamericana para el Desarrollo (UNID), Campus San Francisco de Campeche. Tu comunicación es formal, ejecutiva, directa y concisa (1-2 oraciones por mensaje).
 
 🎯 OBJETIVO:
-Recopilar los 11 datos clave de admisión de forma estructurada:
+Recopilar los datos básicos de admisión de forma estructurada:
 1. Nombre completo
 2. Fecha de nacimiento (AAAA-MM-DD)
 3. Sexo (Masculino / Femenino / Otro)
@@ -654,11 +806,13 @@ Recopilar los 11 datos clave de admisión de forma estructurada:
 10. Campus de interés
 11. Modalidad (Presencial o Licenciaturas Online)
 
+🚫 REGLA ESTRICTA: NUNCA pidas la CURP (el sistema la calcula automáticamente).
+
 📄 PLANES DE ESTUDIO:
 - Si el aspirante pide el plan de estudios o materias, incluye [ENVIAR_PDF_PLAN_ESTUDIOS] para el envío automático del PDF.
 
 ⚙️ REGLA DE CIERRE:
-- Al completar los 11 datos y obtener confirmación, responde ÚNICAMENTE con el bloque JSON estructurado con completado: true, los 11 campos, nivel_interes y resumen_ia.`
+- Al completar los datos, responde con una breve confirmación y el bloque JSON con completado: true.`
     }
 ];
 
@@ -1028,17 +1182,22 @@ INSTRUCCIONES CLAVE DE ATENCIÓN:
 // 9. Inserción de Aspirante en MariaDB
 // ==========================================
 async function guardarAspiranteEnBD(datos) {
+    if (!datos.curp && datos.nombre_completo && datos.fecha_nacimiento) {
+        datos.curp = generarCurp(datos);
+    }
+
     const query = `
         INSERT INTO aspirantes (
-            nombre_completo, fecha_nacimiento, sexo, estado_nacimiento,
+            curp, nombre_completo, fecha_nacimiento, sexo, estado_nacimiento,
             telefono_celular, correo_electronico, bachillerato_procedencia,
             carrera_interes, direccion, codigo_postal, campus_interes,
             modalidad_estudios, es_foraneo, latitud, longitud, raw_json_data, 
             estado_prospecto, nivel_interes, resumen_ia
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const values = [
+        datos.curp || null,
         datos.nombre_completo || null,
         datos.fecha_nacimiento || null,
         datos.sexo || null,
@@ -1062,7 +1221,7 @@ async function guardarAspiranteEnBD(datos) {
 
     try {
         const [result] = await dbPool.execute(query, values);
-        console.log(`🎉 Aspirante insertado en MariaDB con ID: ${result.insertId}`);
+        console.log(`🎉 Aspirante insertado en MariaDB con ID: ${result.insertId} (CURP: ${datos.curp || 'N/A'})`);
         return result.insertId;
     } catch (dbError) {
         console.error('❌ Error al insertar aspirante en MariaDB:', dbError);
@@ -1264,6 +1423,11 @@ function extractPartialFieldsFromHistory(history) {
     if (/online|en l[ií]nea|virtual|a distancia/i.test(userText)) fields.modalidad_estudios = 'Licenciaturas Online (100% Virtual)';
     else if (/ejecutiva|sabad|fin de semana|trabaj/i.test(userText)) fields.modalidad_estudios = 'Modalidad Ejecutiva (Sábados)';
     else if (/presencial|escolarizad|matutino/i.test(userText)) fields.modalidad_estudios = 'Presencial';
+
+    // 12. Cálculo automático de CURP oficial (RENAPO)
+    if (fields.nombre_completo && fields.fecha_nacimiento) {
+        fields.curp = generarCurp(fields);
+    }
 
     return fields;
 }
@@ -2449,7 +2613,7 @@ app.get('/api/aspirantes/export', async (req, res) => {
         }
         
         const headers = [
-            'ID', 'Fecha de Registro', 'Estado de Seguimiento', 'Lead Scoring (Interes)', 'Resumen IA',
+            'ID', 'Fecha de Registro', 'CURP (Generada por IA)', 'Estado de Seguimiento', 'Lead Scoring (Interes)', 'Resumen IA',
             'Nombre Completo', 'Fecha de Nacimiento', 'Sexo', 
             'Estado de Nacimiento', 'Telefono Celular', 'Correo Electronico', 
             'Bachillerato de Procedencia', 'Carrera de Interes', 'Direccion', 
@@ -2468,6 +2632,7 @@ app.get('/api/aspirantes/export', async (req, res) => {
             const rowValues = [
                 r.id,
                 r.created_at ? new Date(r.created_at).toLocaleString('es-MX') : '',
+                r.curp || '',
                 r.estado_prospecto || 'nuevo',
                 r.nivel_interes || 'Alto',
                 r.resumen_ia || '',

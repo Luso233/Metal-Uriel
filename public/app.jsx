@@ -54,28 +54,28 @@ const DEFAULT_CAMPUSES = [
 // Casos de Prueba para el Laboratorio Flotante
 const TEST_SUITE_CATEGORIES = [
   {
-    id: 'caso_real_elvira',
-    title: '⭐ 0. Caso Real de Éxito: Flujo Elvira (Inscripción & Pasarela Mitec)',
+    id: 'caso_oficial_admisiones',
+    title: '⭐ 0. Flujo Oficial UNID: Recopilación Progresiva & CURP Automática',
     cases: [
       {
         title: 'Paso 1: Solicitud de Información (Ing. Software y Sistemas)',
-        desc: 'Inicia plática como Luis Felipe preguntando por la ingeniería',
+        desc: 'Inicia plática preguntando por la ingeniería y plan de estudios',
         text: 'Buenas tardes, me gustaría pedir informes sobre la Ingeniería en Software y Sistemas Computacionales para el campus Campeche.'
       },
       {
-        title: 'Paso 2: Entrega de los 11 Datos Obligatorios',
-        desc: 'Datos reales de aspirante para ficha oficial',
+        title: 'Paso 2: Entrega de Datos Clave (Cálculo Automático de CURP)',
+        desc: 'Datos de aspirante; la IA calcula la CURP sin pedirla',
         text: 'Claro que sí, me llamo Luis Felipe Pérez, nací el 2003-08-14 en Campeche. Hombre. Mi cel es 9811234567, correo luis.felipe@gmail.com. Egresé del COBACAM 01. Me interesa Ing. en Software y Sistemas Computacionales en modalidad Presencial en Campus Campeche. Vivo en Calle 10 #45 Col. Miramar, CP 24020.'
       },
       {
-        title: 'Paso 3: Consulta de Costos, Beca y Pasarela Mitec',
-        desc: 'Pregunta sobre la promoción del 90% en inscripción y mensualidades',
-        text: '¿Cuánto sería el costo de la inscripción con descuento y la mensualidad con la beca del 50%? ¿Cómo puedo realizar el pago en línea?'
+        title: 'Paso 3: Solicitud del Plan de Estudios en PDF',
+        desc: 'Petición directa que activa el envío del folleto oficial',
+        text: '¿Me puedes compartir el plan de estudios en PDF con las materias de la carrera?'
       },
       {
-        title: 'Paso 4: Solicitud de Requisitos y Curso de Inducción',
-        desc: 'Pregunta qué documentos llevar al campus y horarios',
-        text: 'Ya realicé el pago en Mitec. ¿Qué papelería debo entregar en el campus y cuándo es el curso de inducción?'
+        title: 'Paso 4: Confirmación Final de Registro',
+        desc: 'Aspirante confirma su inscripción para generar la ficha oficial',
+        text: '¡Excelente! Estoy de acuerdo con toda la información y confirmo mi pre-registro para iniciar mi proceso.'
       }
     ]
   },
@@ -1946,6 +1946,22 @@ function App() {
                     </div>
                   </div>
 
+                  {/* Tarjeta de CURP Oficial Calculada por IA */}
+                  <div className="p-3 bg-[#182229] rounded-xl border border-sky-500/40 space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-sky-300 flex items-center gap-1">
+                        <i data-lucide="shield-check" className="w-3.5 h-3.5 text-sky-400"></i>
+                        <span>CURP Oficial (RENAPO)</span>
+                      </span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-sky-950 text-sky-300 font-mono font-bold border border-sky-500/30">
+                        IA AUTO
+                      </span>
+                    </div>
+                    <p className="text-xs font-mono font-bold text-sky-200 tracking-wider">
+                      {(liveExtractedFields.curp || activeConversation?.leadData?.curp) || 'Generando con datos clave...'}
+                    </p>
+                  </div>
+
                   {/* Lista de los 11 Campos con Indicador de Completitud */}
                   <div className="space-y-2">
                     <span className="text-xs font-bold text-slate-300 block">Campos Capturados por IA:</span>
@@ -2086,6 +2102,12 @@ function App() {
                                   {lead.es_foraneo ? 'Online' : 'Presencial'}
                                 </span>
                               </p>
+                              {lead.curp && (
+                                <p className="text-[10px] font-mono text-sky-300 font-bold truncate flex items-center gap-1 bg-sky-950/40 px-1.5 py-0.5 rounded border border-sky-500/20">
+                                  <span>🆔</span>
+                                  <span>{lead.curp}</span>
+                                </p>
+                              )}
                             </div>
 
                             {/* Timestamp de último contacto */}
@@ -2275,6 +2297,22 @@ function App() {
               </div>
             </div>
 
+            {/* Banner de CURP Oficial Calculada por IA */}
+            <div className="p-4 rounded-2xl bg-[#0F172A] border border-sky-500/40 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="space-y-0.5">
+                <span className="text-xs font-bold text-sky-300 flex items-center gap-1.5">
+                  <i data-lucide="shield-check" className="w-4 h-4 text-sky-400"></i>
+                  <span>CURP Oficial de Renapo (Cálculo Automático por Algoritmo)</span>
+                </span>
+                <p className="text-[11px] text-slate-400">
+                  Metal-Uriel calcula la clave única de registro en el backend sin pedirla al alumno en el chat.
+                </p>
+              </div>
+              <div className="px-3.5 py-1.5 rounded-xl bg-sky-950 border border-sky-500/40 font-mono font-black text-sm text-sky-300 tracking-widest self-start sm:self-auto shadow-inner">
+                {liveExtractedFields.curp || 'PENDIENTE DE DATOS BÁSICOS'}
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {REQUIRED_FIELDS.map((field) => {
                 const val = liveExtractedFields[field.key];
@@ -2344,6 +2382,7 @@ function App() {
                   <thead className="bg-[#1E293B] text-slate-300 font-bold border-b border-slate-800">
                     <tr>
                       <th className="p-3">ID</th>
+                      <th className="p-3">CURP (IA)</th>
                       <th className="p-3">Nombre Completo</th>
                       <th className="p-3">Teléfono</th>
                       <th className="p-3">Correo</th>
@@ -2356,7 +2395,7 @@ function App() {
                   <tbody className="divide-y divide-slate-800 text-slate-200">
                     {aspirantes.length === 0 ? (
                       <tr>
-                        <td colSpan="8" className="p-8 text-center text-slate-500 italic">
+                        <td colSpan="9" className="p-8 text-center text-slate-500 italic">
                           Base de datos vacía. No hay aspirantes registrados.
                         </td>
                       </tr>
@@ -2364,6 +2403,7 @@ function App() {
                       aspirantes.map((a) => (
                         <tr key={a.id} className="hover:bg-slate-800/40 transition">
                           <td className="p-3 font-mono text-amber-400">#{a.id}</td>
+                          <td className="p-3 font-mono font-bold text-sky-400">{a.curp || 'N/A'}</td>
                           <td className="p-3 font-bold text-white">{a.nombre_completo}</td>
                           <td className="p-3 font-mono">{a.telefono_celular}</td>
                           <td className="p-3">{a.correo_electronico}</td>
