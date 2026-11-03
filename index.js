@@ -95,7 +95,12 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '25mb' }));
+app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+const UPLOADS_DIR = path.join(__dirname, 'public', 'uploads', 'recursos');
+if (!fs.existsSync(UPLOADS_DIR)) {
+    fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
 app.use(express.static(path.join(__dirname, 'public')));
 
 const PORT = process.env.PORT || 3000;
@@ -262,11 +267,12 @@ const dbPool = mysql.createPool({
             console.warn('⚠️ Error poblando usuarios RBAC iniciales:', userSeedErr.message);
         }
 
-        // 4. Migraciones de la tabla aspirantes y historial
+        // 4. Migraciones de la tabla aspirantes, historial, ciclos escolares y pool multimedia
         const migrations = [
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS curp VARCHAR(18) NULL`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS sede_id VARCHAR(50) NULL DEFAULT 'campeche'`,
             `ALTER TABLE aspirantes MODIFY COLUMN sede_id VARCHAR(50) NULL DEFAULT 'campeche'`,
+            `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS ciclo_escolar VARCHAR(60) DEFAULT '2026-3 Septiembre'`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS estado_prospecto VARCHAR(50) DEFAULT 'nuevo'`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS nivel_interes VARCHAR(20) DEFAULT 'Alto'`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS resumen_ia TEXT`,
@@ -275,12 +281,44 @@ const dbPool = mysql.createPool({
             `CREATE TABLE IF NOT EXISTS historial_conversaciones (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
                 sede_id VARCHAR(50) NULL DEFAULT 'campeche',
+                ciclo_escolar VARCHAR(60) DEFAULT '2026-3 Septiembre',
                 telefono_celular VARCHAR(30) NOT NULL,
                 rol ENUM('user', 'assistant', 'system', 'human_advisor') NOT NULL,
                 mensaje TEXT NOT NULL,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_historial_telefono (telefono_celular, timestamp),
-                INDEX idx_historial_sede (sede_id)
+                INDEX idx_historial_sede (sede_id),
+                INDEX idx_historial_ciclo (ciclo_escolar)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+            `ALTER TABLE historial_conversaciones ADD COLUMN IF NOT EXISTS ciclo_escolar VARCHAR(60) DEFAULT '2026-3 Septiembre'`,
+            `CREATE TABLE IF NOT EXISTS ciclos_escolares_sede (
+                sede_id VARCHAR(50) PRIMARY KEY,
+                ciclo_activo VARCHAR(60) NOT NULL DEFAULT '2026-3 Septiembre',
+                ciclos_disponibles TEXT NULL,
+                updated_by VARCHAR(150) NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+            `CREATE TABLE IF NOT EXISTS pool_recursos_multimedia (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                codigo_recurso VARCHAR(80) NOT NULL UNIQUE,
+                sede_id VARCHAR(50) DEFAULT 'campeche',
+                ciclo_escolar VARCHAR(60) DEFAULT '2026-3 Septiembre',
+                categoria ENUM('plan_estudios', 'oferta_educativa', 'horarios', 'instalaciones', 'becas_costos') NOT NULL DEFAULT 'plan_estudios',
+                titulo VARCHAR(200) NOT NULL,
+                descripcion_ia TEXT NULL,
+                tags TEXT NULL,
+                tipo_archivo ENUM('pdf', 'imagen', 'info') NOT NULL DEFAULT 'pdf',
+                url_recurso VARCHAR(500) NULL,
+                file_name VARCHAR(200) NULL,
+                modalidad VARCHAR(120) DEFAULT 'Presencial & Online',
+                duracion VARCHAR(100) DEFAULT '3 años (9 cuatrimestres)',
+                rvoe VARCHAR(100) DEFAULT 'SEP-RVOE-OFICIAL',
+                tamano VARCHAR(40) DEFAULT '1.2 MB',
+                activo TINYINT(1) DEFAULT 1,
+                updated_by VARCHAR(150) NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_pool_sede_cat (sede_id, categoria)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
         ];
 
@@ -294,15 +332,29 @@ const dbPool = mysql.createPool({
                 } catch (_) {}
             }
         }
-        
-        // Comprobar si hay datos iniciales; si está vacía, sembrar prospectos profesionales
+
+        // 5. Inicializar Ciclo Escolar Activo por defecto si no existe
         try {
-            const [rows] = await connection.query('SELECT COUNT(*) as count FROM aspirantes');
-            if (rows[0].count === 0) {
-                console.log('🌱 Sembrando prospectos iniciales de demostración para el Centro de Mando...');
-                await seedDemoLeads(connection);
+            const [cicloRows] = await connection.query('SELECT COUNT(*) as count FROM ciclos_escolares_sede');
+            if (cicloRows[0].count === 0) {
+                const defaultCiclos = JSON.stringify(['2026-1 Enero', '2026-2 Mayo', '2026-3 Septiembre', '2027-1 Enero']);
+                await connection.execute(
+                    `INSERT INTO ciclos_escolares_sede (sede_id, ciclo_activo, ciclos_disponibles, updated_by) VALUES ('campeche', '2026-3 Septiembre', ?, 'Sistema')`,
+                    [defaultCiclos]
+                );
             }
         } catch (_) {}
+
+        // 6. Sembrar Pool Multimedia de Admisiones desde brochures.json + recursos iniciales de horarios/instalaciones/oferta
+        try {
+            const [poolRows] = await connection.query('SELECT COUNT(*) as count FROM pool_recursos_multimedia');
+            if (poolRows[0].count === 0) {
+                console.log('📦 Inicializando Pool Multimedia de Admisiones en MariaDB...');
+                await seedInitialPoolResources(connection);
+            }
+        } catch (poolErr) {
+            console.warn('⚠️ Error poblando pool_recursos_multimedia:', poolErr.message);
+        }
 
         connection.release();
     } catch (err) {
@@ -515,8 +567,113 @@ function saveBrochuresToDisk() {
 
 loadBrochuresFromDisk();
 
-// Función para sembrar prospectos profesionales de demostración
+// Memoria en caché del Ciclo Escolar Activo por sede
+const activeSchoolCyclesMemory = new Map([['campeche', '2026-3 Septiembre']]);
+
+async function getActiveCicloEscolar(sedeId = 'campeche') {
+    const cleanSede = sedeId || 'campeche';
+    try {
+        const [rows] = await dbPool.query('SELECT ciclo_activo FROM ciclos_escolares_sede WHERE sede_id = ? LIMIT 1', [cleanSede]);
+        if (rows.length > 0 && rows[0].ciclo_activo) {
+            activeSchoolCyclesMemory.set(cleanSede, rows[0].ciclo_activo);
+            return rows[0].ciclo_activo;
+        }
+    } catch (_) {}
+    return activeSchoolCyclesMemory.get(cleanSede) || '2026-3 Septiembre';
+}
+
+// Sembrar recursos iniciales del Pool Multimedia en MariaDB (Planes de Estudio, Oferta Educativa, Horarios e Instalaciones)
+async function seedInitialPoolResources(connection) {
+    // 1. Migrar todos los folletos de UNID_BROCHURES al Pool Multimedia
+    for (const b of UNID_BROCHURES) {
+        const cat = b.id === 'becas' ? 'becas_costos' : 'plan_estudios';
+        const tagsStr = Array.isArray(b.tags) ? b.tags.join(', ') : String(b.tags || b.id);
+        const descIa = b.id === 'becas'
+            ? `Guía oficial de becas académicas (hasta 50%), descuentos de inscripción (90%) y financiamiento educativo UNID.`
+            : `Plan de estudios oficial de ${b.carrera}. Modalidad: ${b.modalidad}. Duración: ${b.duracion}. Reconocimiento SEP: ${b.rvoe}. Incluye mapa curricular por cuatrimestre y Estadía Empresarial.`;
+
+        await connection.execute(`
+            INSERT IGNORE INTO pool_recursos_multimedia (
+                codigo_recurso, sede_id, ciclo_escolar, categoria, titulo, descripcion_ia,
+                tags, tipo_archivo, url_recurso, file_name, modalidad, duracion, rvoe, tamano, activo, updated_by
+            ) VALUES (?, 'campeche', '2026-3 Septiembre', ?, ?, ?, ?, 'pdf', ?, ?, ?, ?, ?, ?, 1, 'Sistema UNID')
+        `, [
+            b.id,
+            cat,
+            b.carrera,
+            descIa,
+            tagsStr,
+            b.pdfUrl || `/api/brochures/${b.id}/download`,
+            b.fileName || `Plan_${b.id}.pdf`,
+            b.modalidad || 'Presencial & Online',
+            b.duracion || '3 años (9 cuatrimestres)',
+            b.rvoe || 'SEP-RVOE-OFICIAL',
+            b.size || '1.3 MB'
+        ]);
+    }
+
+    // 2. Recursos adicionales de Oferta Educativa, Horarios de Clase e Instalaciones del Campus
+    const extraResources = [
+        {
+            codigo_recurso: 'oferta_educativa_campeche_2026',
+            categoria: 'oferta_educativa',
+            titulo: 'Catálogo General de Oferta Educativa UNID Campeche 2026',
+            descripcion_ia: 'Resumen completo de las 14 licenciaturas e ingenierías en Campus Campeche (Presencial, Ejecutiva Sabatina y UNID Online Nacional), duración de 3 años (9 cuatrimestres) y Modelo Dual.',
+            tags: 'oferta educativa, carreras, licenciaturas, ingenierias, catalogo, todas las carreras, que carreras tienen',
+            tipo_archivo: 'pdf',
+            url_recurso: '/api/brochures/software/download',
+            file_name: 'Oferta_Educativa_UNID_Campeche_2026.pdf',
+            modalidad: 'Presencial, Ejecutiva y Online',
+            duracion: '3 años (9 cuatrimestres)',
+            rvoe: 'Validez Oficial SEP',
+            tamano: '2.0 MB'
+        },
+        {
+            codigo_recurso: 'horarios_clases_presencial_2026',
+            categoria: 'horarios',
+            titulo: 'Horarios de Clases 1er Cuatrimestre (Escolarizado Matutino y Ejecutivo)',
+            descripcion_ia: 'Horarios oficiales del ciclo activo: Modalidad Presencial Escolarizada de lunes a viernes (07:00 a 14:00 hrs) y Modalidad Ejecutiva Sabatina (08:00 a 16:00 hrs + plataforma digital). Actualizado por Coordinación Académica.',
+            tags: 'horarios, horario de clases, turnos, matutino, vespertino, sabatino, a que hora, dias de clase',
+            tipo_archivo: 'pdf',
+            url_recurso: '/api/brochures/administracion_empresarial/download',
+            file_name: 'Horarios_Clases_UNID_2026_3.pdf',
+            modalidad: 'Presencial & Ejecutiva',
+            duracion: 'Ciclo 2026-3 Septiembre',
+            rvoe: 'Coordinación Académica UNID',
+            tamano: '950 KB'
+        },
+        {
+            codigo_recurso: 'instalaciones_cabina_comunicacion_mac',
+            categoria: 'instalaciones',
+            titulo: 'Instalaciones: Cabina de Radio/TV, Laboratorio Mac y Sala de Juicios Orales',
+            descripcion_ia: 'Galería y ficha técnica de instalaciones del Campus Campeche: Estudio de Televisión y Cabina de Radio para Ciencias de la Comunicación, Centro de Cómputo y Diseño Digital, Sala de Juicios Orales para Derecho y áreas deportivas.',
+            tags: 'instalaciones, fotos, campus, laboratorios, cabina de radio, television, sala de juicios orales, salones, cafeteria',
+            tipo_archivo: 'imagen',
+            url_recurso: 'https://images.unsplash.com/photo-1562774053-701939374585?auto=format&fit=crop&w=1000&q=80',
+            file_name: 'Instalaciones_Campus_UNID_Campeche.jpg',
+            modalidad: 'Campus San Francisco de Campeche',
+            duracion: 'Recorrido Visual',
+            rvoe: 'Infraestructura UNID',
+            tamano: '1.1 MB'
+        }
+    ];
+
+    for (const r of extraResources) {
+        await connection.execute(`
+            INSERT IGNORE INTO pool_recursos_multimedia (
+                codigo_recurso, sede_id, ciclo_escolar, categoria, titulo, descripcion_ia,
+                tags, tipo_archivo, url_recurso, file_name, modalidad, duracion, rvoe, tamano, activo, updated_by
+            ) VALUES (?, 'campeche', '2026-3 Septiembre', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'Coordinación UNID')
+        `, [
+            r.codigo_recurso, r.categoria, r.titulo, r.descripcion_ia, r.tags,
+            r.tipo_archivo, r.url_recurso, r.file_name, r.modalidad, r.duracion, r.rvoe, r.tamano
+        ]);
+    }
+}
+
+// Función para sembrar prospectos profesionales de demostración (bajo demanda del Desarrollador)
 async function seedDemoLeads(connection) {
+    const cicloActivo = await getActiveCicloEscolar('campeche');
     const demoLeads = [
         {
             nombre_completo: 'Carlos Alpuche Canul',
@@ -614,14 +771,14 @@ async function seedDemoLeads(connection) {
         lead.curp = generarCurp(lead);
         await connection.execute(`
             INSERT INTO aspirantes (
-                curp, nombre_completo, fecha_nacimiento, sexo, estado_nacimiento,
+                sede_id, ciclo_escolar, curp, nombre_completo, fecha_nacimiento, sexo, estado_nacimiento,
                 telefono_celular, correo_electronico, bachillerato_procedencia,
                 carrera_interes, direccion, codigo_postal, campus_interes,
                 modalidad_estudios, es_foraneo, latitud, longitud, raw_json_data, 
                 estado_prospecto, nivel_interes, resumen_ia
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES ('campeche', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [
-            lead.curp, lead.nombre_completo, lead.fecha_nacimiento, lead.sexo, lead.estado_nacimiento,
+            cicloActivo, lead.curp, lead.nombre_completo, lead.fecha_nacimiento, lead.sexo, lead.estado_nacimiento,
             lead.telefono_celular, lead.correo_electronico, lead.bachillerato_procedencia,
             lead.carrera_interes, lead.direccion, lead.codigo_postal, lead.campus_interes,
             lead.modalidad_estudios, lead.es_foraneo, null, null, JSON.stringify(lead),
@@ -943,66 +1100,191 @@ function setActivePrompt(newPrompt) {
 }
 
 // ==========================================
-// 6. Detección de Folletos PDF
+// 6. Motor Inteligente del Pool Multimedia (Planes, Oferta, Horarios, Instalaciones)
 // ==========================================
-function detectBrochureRequest(userMessage, senderPhone = null, llmReply = '') {
-    const userText = (userMessage || '').toLowerCase();
-    const hasExplicitAiTag = /\[ENVIAR_PDF/i.test(llmReply || '');
-    
-    // Solo activar si la IA lo pidió explícitamente O si el usuario pide el documento con palabras clave claras
-    const isUserAskingForDoc = /\b(?:plan de estudios?|temario|malla curricular|folleto|pdf|brochure|materias|plan de carrera|gu[ií]a de becas)\b/i.test(userText) &&
-                               /\b(?:mand|envi|pas|quier|tienes|ver|descarg|compart|mostrar|proporcion|facilit|solicit|podr[ií]as)\b/i.test(userText);
+function normalizeForMatch(str) {
+    return String(str || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .trim();
+}
 
-    if (!hasExplicitAiTag && !isUserAskingForDoc) {
-        return null; // ¡Cero falsos positivos en saludos o conversaciones normales!
+async function getActivePoolItems(sedeId = null) {
+    try {
+        let query = 'SELECT * FROM pool_recursos_multimedia WHERE activo = 1';
+        const params = [];
+        if (sedeId && sedeId !== 'all' && sedeId !== 'todas') {
+            query += ' AND (sede_id = ? OR sede_id = "global" OR sede_id IS NULL)';
+            params.push(sedeId);
+        }
+        query += ' ORDER BY id ASC';
+        const [rows] = await dbPool.query(query, params);
+        if (rows && rows.length > 0) {
+            return rows.map(r => {
+                let parsedTags = [];
+                try {
+                    parsedTags = typeof r.tags === 'string' ? JSON.parse(r.tags) : (Array.isArray(r.tags) ? r.tags : []);
+                } catch (_) {
+                    parsedTags = String(r.tags || '').split(',').map(t => t.trim()).filter(Boolean);
+                }
+                return {
+                    id: r.codigo_recurso || String(r.id),
+                    dbId: r.id,
+                    codigo_recurso: r.codigo_recurso || String(r.id),
+                    sede_id: r.sede_id || 'campeche',
+                    ciclo_escolar: r.ciclo_escolar || '2026-3 Septiembre',
+                    categoria: r.categoria || 'plan_estudios',
+                    titulo: r.titulo,
+                    carrera: r.titulo,
+                    descripcion_ia: r.descripcion_ia || '',
+                    scope: r.scope || 'campus_campeche',
+                    scopeLabel: r.scope_label || '🏛️ Campus Campeche',
+                    modalidad: r.modalidad || 'Presencial',
+                    duracion: r.duracion || '3 años (9 cuatrimestres)',
+                    rvoe: r.rvoe || 'SEP-RVOE-OFICIAL',
+                    tipo_archivo: r.tipo_archivo || 'pdf',
+                    fileName: r.file_name || `${r.codigo_recurso}.pdf`,
+                    pdfUrl: r.url_recurso || `/api/brochures/${r.codigo_recurso}/download`,
+                    url_recurso: r.url_recurso || `/api/brochures/${r.codigo_recurso}/download`,
+                    size: r.tamano || '1.2 MB',
+                    tags: parsedTags
+                };
+            });
+        }
+    } catch (_) {}
+
+    // Fallback a UNID_BROCHURES en memoria si la BD no está lista
+    return UNID_BROCHURES.map(b => ({
+        ...b,
+        codigo_recurso: b.id,
+        categoria: b.id === 'becas' ? 'becas_costos' : 'plan_estudios',
+        titulo: b.carrera,
+        descripcion_ia: `${b.carrera} (${b.modalidad}). Duración: ${b.duracion}. RVOE: ${b.rvoe}.`,
+        tipo_archivo: 'pdf',
+        url_recurso: b.pdfUrl
+    }));
+}
+
+function detectBrochureRequest(userMessage, senderPhone = null, llmReply = '', poolItems = null) {
+    const catalog = Array.isArray(poolItems) && poolItems.length > 0 ? poolItems : UNID_BROCHURES.map(b => ({
+        ...b,
+        codigo_recurso: b.id,
+        categoria: b.id === 'becas' ? 'becas_costos' : 'plan_estudios',
+        titulo: b.carrera,
+        tipo_archivo: 'pdf',
+        url_recurso: b.pdfUrl
+    }));
+
+    // 1. Etiqueta explícita emitida por la IA: [ADJUNTAR_RECURSO: codigo] o [ENVIAR_PDF: codigo]
+    const explicitResourceMatch = (llmReply || '').match(/\[(?:ADJUNTAR_RECURSO|ENVIAR_PDF(?:_PLAN_ESTUDIOS)?)\s*:\s*([a-zA-Z0-9_\-]+)\]/i);
+    if (explicitResourceMatch) {
+        const targetCode = normalizeForMatch(explicitResourceMatch[1]);
+        const exactFound = catalog.find(item =>
+            normalizeForMatch(item.codigo_recurso || item.id) === targetCode ||
+            normalizeForMatch(item.titulo || item.carrera).includes(targetCode)
+        );
+        if (exactFound) return exactFound;
     }
 
-    const combinedText = `${userText} ${llmReply || ''}`.toLowerCase();
+    const userNorm = normalizeForMatch(userMessage);
+    const replyNorm = normalizeForMatch(llmReply);
+    const hasGenericAiTag = /\[(?:ENVIAR_PDF|ADJUNTAR_RECURSO)/i.test(llmReply || '');
 
-    // 1. Match directo con tags de carrera en el mensaje del usuario o respuesta de la IA
-    for (const b of UNID_BROCHURES) {
-        if (b.tags && Array.isArray(b.tags)) {
-            const matchTag = b.tags.some(t => combinedText.includes(String(t).toLowerCase()));
-            if (matchTag) {
-                return b;
-            }
+    // Detectar si el bot ofreció enviar un archivo en el mensaje inmediato anterior y el usuario acaba de confirmar ("sí", "por favor", "mándamelo")
+    let userConfirmedPreviousOffer = false;
+    let lastAssistantMessageNorm = '';
+    if (senderPhone) {
+        const history = conversationMemory.get(senderPhone) || [];
+        // history ya incluye el mensaje actual del usuario y la respuesta actual del asistente al final si fue llamado tras callMetalUrielLLM
+        const assistantMsgs = history.filter(h => h.role === 'assistant');
+        if (assistantMsgs.length >= 2) {
+            lastAssistantMessageNorm = normalizeForMatch(assistantMsgs[assistantMsgs.length - 2].content || '');
+        } else if (assistantMsgs.length === 1) {
+            lastAssistantMessageNorm = normalizeForMatch(assistantMsgs[0].content || '');
+        }
+        const botOfferedFile = /(?:te gustaria que te envie|quieres que te envie|te comparto el pdf|enviarte el plan|mandarte el pdf|enviarte la imagen|te envio el archivo|te mando el plan)/i.test(lastAssistantMessageNorm);
+        const userSaidYes = /\b(?:si|sii+|claro|por favor|porfa|mandamelo|enviamelo|pasamelo|adelante|va|ok|dale|me gustaria|si quiero)\b/i.test(userNorm);
+        if (botOfferedFile && userSaidYes) {
+            userConfirmedPreviousOffer = true;
         }
     }
 
-    // 2. Si el usuario pide el plan sin mencionar la carrera (ej. "puedes mandarme el plan de estudios"),
-    // buscar en su sesión registrada o en los mensajes previos de su historial
+    // Si la IA está haciendo apenas la pregunta de confirmación ("¿Te gustaría que te envíe...?"), NO adjuntar todavía a menos que haya puesto el tag explícito
+    const isAiJustAskingConfirmation = /\?\s*$/.test((llmReply || '').trim()) &&
+        /(?:te gustaria que te envie|quieres que te envie|te gustaria recibir el pdf|quieres que te mande)/i.test(replyNorm) &&
+        !hasGenericAiTag;
+
+    if (isAiJustAskingConfirmation && !userConfirmedPreviousOffer) {
+        return null;
+    }
+
+    const isUserAskingForDocDirectly = /\b(?:plan de estudios?|temario|malla curricular|folleto|pdf|brochure|horarios?|instalaciones|fotos?|oferta educativa|guia de becas)\b/i.test(userNorm) &&
+                                       /\b(?:mand\w*|envi\w*|pas\w*|descarg\w*|compart\w*|adjunt\w*)\b/i.test(userNorm);
+
+    if (!hasGenericAiTag && !userConfirmedPreviousOffer && !isUserAskingForDocDirectly) {
+        return null;
+    }
+
+    // Función auxiliar para buscar coincidencia normalizada (sin acentos) en un texto dado
+    const findMatchInText = (normText) => {
+        if (!normText) return null;
+        for (const item of catalog) {
+            const tags = Array.isArray(item.tags) ? item.tags : [];
+            const matchTag = tags.some(t => {
+                const cleanTag = normalizeForMatch(t);
+                return cleanTag.length >= 3 && normText.includes(cleanTag);
+            });
+            if (matchTag) return item;
+        }
+        return null;
+    };
+
+    // Prioridad 1: Mensaje actual del usuario
+    const matchFromUser = findMatchInText(userNorm);
+    if (matchFromUser) return matchFromUser;
+
+    // Prioridad 2: Mensaje previo donde el bot ofreció el recurso o respuesta actual de la IA
+    if (lastAssistantMessageNorm) {
+        const matchFromOffer = findMatchInText(lastAssistantMessageNorm);
+        if (matchFromOffer) return matchFromOffer;
+    }
+    const matchFromReply = findMatchInText(replyNorm);
+    if (matchFromReply) return matchFromReply;
+
+    // Prioridad 3: Sesión o historial en orden cronológico INVERSO (del más reciente al más antiguo)
     if (senderPhone) {
         const session = userSessionState.get(senderPhone);
         if (session && session.leadData && session.leadData.carrera_interes) {
-            const carreraTarget = String(session.leadData.carrera_interes).toLowerCase();
-            for (const b of UNID_BROCHURES) {
-                if (b.tags && Array.isArray(b.tags)) {
-                    if (b.tags.some(t => carreraTarget.includes(String(t).toLowerCase()))) {
-                        return b;
-                    }
-                }
-            }
+            const matchFromSession = findMatchInText(normalizeForMatch(session.leadData.carrera_interes));
+            if (matchFromSession) return matchFromSession;
         }
 
         const history = conversationMemory.get(senderPhone) || [];
-        const pastText = history.map(h => h.content || '').join(' ').toLowerCase();
-        for (const b of UNID_BROCHURES) {
-            if (b.tags && Array.isArray(b.tags)) {
-                if (b.tags.some(t => pastText.includes(String(t).toLowerCase()))) {
-                    return b;
-                }
-            }
+        for (let i = history.length - 1; i >= 0; i--) {
+            const hNorm = normalizeForMatch(history[i].content || '');
+            const matchFromHist = findMatchInText(hNorm);
+            if (matchFromHist) return matchFromHist;
         }
     }
 
-    // 3. Si pidió becas o costos específicamente
-    if (/\bbecas?\b|\bcostos?\b|\bfinanciamiento\b|\bprecios?\b/i.test(userText)) {
-        const becasBrochure = UNID_BROCHURES.find(b => b.id === 'becas');
-        if (becasBrochure) return becasBrochure;
+    // Prioridad 4: Categorías específicas (horarios, instalaciones, oferta educativa, becas)
+    if (/\bhorario/i.test(userNorm)) {
+        return catalog.find(i => i.categoria === 'horarios') || null;
+    }
+    if (/\binstalacion|\bfoto|\bcampus|\blaboratorio/i.test(userNorm)) {
+        return catalog.find(i => i.categoria === 'instalaciones') || null;
+    }
+    if (/\boferta educativa|\bcarreras disponibles|\btodas las carreras/i.test(userNorm)) {
+        return catalog.find(i => i.categoria === 'oferta_educativa') || null;
+    }
+    if (/\bbecas?\b|\bcostos?\b|\bfinanciamiento\b|\bprecios?\b/i.test(userNorm)) {
+        return catalog.find(i => i.categoria === 'becas_costos' || i.id === 'becas') || null;
     }
 
-    // Si explícitamente pidió un plan pero no sabemos de cuál, enviar el de software o el primero
-    return UNID_BROCHURES.length > 0 ? UNID_BROCHURES[0] : null;
+    // CRÍTICO: CERO FALLBACK CIEGO A UNID_BROCHURES[0] (Ingeniería en Sistemas).
+    // Si no hubo coincidencia exacta con lo que pidió el alumno, no adjuntar un archivo equivocado.
+    return null;
 }
 
 // ==========================================
@@ -1145,20 +1427,41 @@ const FALLBACK_PROVIDER_PIPELINE = [
     { provider: 'groq', fn: llamarAPI_Groq, defaultModel: 'llama-3.3-70b-versatile', check: () => isValidApiKey(process.env.GROQ_API_KEY) }
 ];
 
-async function callMetalUrielLLM(senderPhone, userMessage, requestedModelId = null) {
+async function callMetalUrielLLM(senderPhone, userMessage, requestedModelId = null, sedeId = 'campeche') {
     if (!conversationMemory.has(senderPhone)) {
         conversationMemory.set(senderPhone, []);
         totalConversationsStarted++;
     }
 
     const history = conversationMemory.get(senderPhone);
-    history.push({ role: 'user', content: userMessage });
+    history.push({ role: 'user', content: userMessage, timestamp: new Date() });
 
     if (history.length > 20) {
         history.splice(0, history.length - 20);
     }
 
     let currentPrompt = getActivePrompt();
+
+    // Cargar Ciclo Escolar Activo y Pool de Recursos Multimedia desde MariaDB
+    const cicloActivo = await getActiveCicloEscolar(sedeId);
+    const poolItems = await getActivePoolItems(sedeId);
+
+    const poolCatalogSummary = poolItems.map(item =>
+        `• [Código: ${item.codigo_recurso}] (${item.categoria.toUpperCase()} | ${item.tipo_archivo.toUpperCase()}) "${item.titulo}" — Modalidad: ${item.modalidad || 'Presencial'}. Info: ${item.descripcion_ia || ''}`
+    ).join('\n');
+
+    currentPrompt = `${currentPrompt}
+
+[📚 POOL OFICIAL DE RECURSOS MULTIMEDIA, PLANES, HORARIOS E INSTALACIONES (CICLO ACTIVO: ${cicloActivo})]
+Tienes acceso a los siguientes documentos oficiales (PDFs) e imágenes de la sede:
+${poolCatalogSummary}
+
+REGLA DE ORO PARA ENVÍO DE ARCHIVOS DEL POOL (CONFIRMACIÓN PREVIA):
+1. Cuando el aspirante pregunte por información de una carrera, plan de estudios, oferta educativa, horarios de clase o fotos de las instalaciones, respóndele primero de forma clara y cálida usando la información del Pool y **pregúntale primero**: "¿Te gustaría que te envíe por aquí el PDF/imagen oficial de [Nombre del Recurso]?" (NO incluyas la etiqueta de adjunto cuando apenas estás haciendo la pregunta).
+2. ÚNICAMENTE cuando el aspirante confirme que sí desea el archivo (ej. "sí", "claro", "por favor", "mándamelo", "pásamelo") o si te exige el envío directo del archivo tras habérselo mencionado, incluye al final de tu respuesta la etiqueta exacta:
+[ADJUNTAR_RECURSO: codigo_del_recurso]
+(Por ejemplo, para Ciencias de la Comunicación usa [ADJUNTAR_RECURSO: comunicacion], para Horarios usa [ADJUNTAR_RECURSO: horarios_escolarizado_campeche], para Instalaciones usa [ADJUNTAR_RECURSO: instalaciones_campus_campeche]).
+3. NUNCA adjuntes el plan de estudios de Ingeniería en Sistemas si el alumno preguntó por otra carrera como Ciencias de la Comunicación, Derecho o Psicología.`;
 
     // Inyección contextual según el estado del usuario en sesión
     const session = userSessionState.get(senderPhone);
@@ -1170,11 +1473,12 @@ async function callMetalUrielLLM(senderPhone, userMessage, requestedModelId = nu
 - Carrera: ${session.leadData.carrera_interes || 'Elegida'}
 - Modalidad: ${session.leadData.modalidad_estudios || 'Presencial'}
 - Campus: ${session.leadData.campus_interes || 'San Francisco de Campeche'}
+- Ciclo Escolar: ${cicloActivo}
 
 INSTRUCCIONES CLAVE DE ATENCIÓN:
 1. NUNCA vuelvas a solicitarle los 11 datos ni a reiniciar el cuestionario de inscripción.
-2. Responde con calidez humana, entusiasmo y precisión a sus dudas (planes de estudio, materias, costos, pasarela de pago Mitec, fechas de inicio o inducción).
-3. Si solicita el plan de estudios, materias o PDF, menciónale brevemente los puntos destacados de la carrera e incluye la etiqueta [ENVIAR_PDF_PLAN_ESTUDIOS] para que el sistema le adjunte el documento PDF oficial de inmediato.`;
+2. Responde con calidez humana, entusiasmo y precisión a sus dudas (planes de estudio, materias, horarios, instalaciones, costos, pasarela de pago Mitec, fechas de inicio o inducción).
+3. Sigue la REGLA DE ORO PARA ENVÍO DE ARCHIVOS DEL POOL usando [ADJUNTAR_RECURSO: codigo_del_recurso] cuando el aspirante confirme que desea recibir el documento o imagen.`;
     }
 
     const modelToUse = requestedModelId || globalActiveModelId;
@@ -1312,24 +1616,26 @@ async function registrarLeadInicialEnBD(senderPhone, primerMensaje, sedeId = 'ca
             return { isNew: false, insertId: existing[0].id, existingLead: existing[0] };
         }
 
+        const cicloActivo = await getActiveCicloEscolar(sedeId || 'campeche');
         const nombreTemp = `Prospecto WhatsApp (${senderPhone})`;
         const [result] = await dbPool.execute(`
             INSERT INTO aspirantes (
-                sede_id, nombre_completo, telefono_celular, carrera_interes,
+                sede_id, ciclo_escolar, nombre_completo, telefono_celular, carrera_interes,
                 campus_interes, modalidad_estudios, estado_prospecto, nivel_interes, resumen_ia
-            ) VALUES (?, ?, ?, ?, ?, ?, 'nuevo', 'Medio', ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'nuevo', 'Medio', ?)
         `, [
             sedeId || 'campeche',
+            cicloActivo,
             nombreTemp,
             senderPhone,
             'Por definir (En conversación)',
             'San Francisco de Campeche',
             'Presencial',
-            `Primer contacto vía WhatsApp: "${String(primerMensaje || '').substring(0, 120)}"`
+            `Primer contacto vía WhatsApp (${cicloActivo}): "${String(primerMensaje || '').substring(0, 120)}"`
         ]);
 
-        console.log(`🆕 [LEAD INICIAL CREADO] Nuevo contacto ${senderPhone} registrado con ID #${result.insertId}`);
-        return { isNew: true, insertId: result.insertId };
+        console.log(`🆕 [LEAD INICIAL CREADO] Nuevo contacto ${senderPhone} registrado con ID #${result.insertId} (${cicloActivo})`);
+        return { isNew: true, insertId: result.insertId, ciclo_escolar: cicloActivo };
     } catch (err) {
         console.warn('⚠️ Error registrando lead inicial en BD:', err.message);
         return { isNew: true, insertId: null };
@@ -1344,6 +1650,7 @@ async function guardarAspiranteEnBD(datos, senderPhone = null) {
     const phoneToUse = datos.telefono_celular || senderPhone || '';
     const cleanPhone = String(phoneToUse).replace(/[\s\-\+]/g, '');
     const sedeId = datos.sede_id || resolveSedeId(datos.campus_interes);
+    const cicloActivo = datos.ciclo_escolar || await getActiveCicloEscolar(sedeId);
 
     try {
         // Verificar si existe el lead inicial para actualizarlo en lugar de duplicar
@@ -1357,7 +1664,7 @@ async function guardarAspiranteEnBD(datos, senderPhone = null) {
                 const targetId = existing[0].id;
                 await dbPool.execute(`
                     UPDATE aspirantes SET
-                        sede_id = ?, curp = ?, nombre_completo = ?, fecha_nacimiento = ?, sexo = ?,
+                        sede_id = ?, ciclo_escolar = ?, curp = ?, nombre_completo = ?, fecha_nacimiento = ?, sexo = ?,
                         estado_nacimiento = ?, telefono_celular = ?, correo_electronico = ?,
                         bachillerato_procedencia = ?, carrera_interes = ?, direccion = ?,
                         codigo_postal = ?, campus_interes = ?, modalidad_estudios = ?,
@@ -1366,6 +1673,7 @@ async function guardarAspiranteEnBD(datos, senderPhone = null) {
                     WHERE id = ?
                 `, [
                     sedeId,
+                    cicloActivo,
                     datos.curp || null,
                     datos.nombre_completo || 'Aspirante UNID',
                     datos.fecha_nacimiento || null,
@@ -1382,7 +1690,7 @@ async function guardarAspiranteEnBD(datos, senderPhone = null) {
                     datos.es_foraneo ? 1 : 0,
                     JSON.stringify(datos),
                     datos.nivel_interes || 'Alto',
-                    datos.resumen_ia || `Ficha completada para ${datos.carrera_interes} en modalidad ${datos.modalidad_estudios}.`,
+                    datos.resumen_ia || `Ficha completada para ${datos.carrera_interes} en modalidad ${datos.modalidad_estudios} (${cicloActivo}).`,
                     targetId
                 ]);
                 console.log(`🎉 Expediente de aspirante actualizado en MariaDB con ID: #${targetId} (CURP: ${datos.curp || 'N/A'})`);
@@ -1392,16 +1700,17 @@ async function guardarAspiranteEnBD(datos, senderPhone = null) {
 
         const query = `
             INSERT INTO aspirantes (
-                sede_id, curp, nombre_completo, fecha_nacimiento, sexo, estado_nacimiento,
+                sede_id, ciclo_escolar, curp, nombre_completo, fecha_nacimiento, sexo, estado_nacimiento,
                 telefono_celular, correo_electronico, bachillerato_procedencia,
                 carrera_interes, direccion, codigo_postal, campus_interes,
                 modalidad_estudios, es_foraneo, latitud, longitud, raw_json_data, 
                 estado_prospecto, nivel_interes, resumen_ia
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
 
         const values = [
             sedeId,
+            cicloActivo,
             datos.curp || null,
             datos.nombre_completo || 'Aspirante UNID',
             datos.fecha_nacimiento || null,
@@ -1421,7 +1730,7 @@ async function guardarAspiranteEnBD(datos, senderPhone = null) {
             JSON.stringify(datos),
             datos.estado_prospecto || 'nuevo',
             datos.nivel_interes || 'Alto',
-            datos.resumen_ia || `Aspirante registrado para ${datos.carrera_interes} en modalidad ${datos.modalidad_estudios}.`
+            datos.resumen_ia || `Aspirante registrado para ${datos.carrera_interes} en modalidad ${datos.modalidad_estudios} (${cicloActivo}).`
         ];
 
         const [result] = await dbPool.execute(query, values);
@@ -1798,10 +2107,10 @@ function extractJsonFromLlmReply(rawText) {
         }
     }
 
-    // 3. Limpiar tags técnicos del sistema ([ENVIAR_PDF...], ```json, etc.) para que el usuario NUNCA vea códigos
+    // 3. Limpiar tags técnicos del sistema ([ENVIAR_PDF...], [ADJUNTAR_RECURSO...], ```json, etc.) para que el usuario NUNCA vea códigos
     cleanReply = cleanReply
-        .replace(/\[ENVIAR_PDF_[A-Z_]+\]/gi, '')
-        .replace(/\[ENVIAR_PDF\]/gi, '')
+        .replace(/\[ADJUNTAR_RECURSO\s*:\s*[^\]]+\]/gi, '')
+        .replace(/\[ENVIAR_PDF[^\]]*\]/gi, '')
         .replace(/```json/gi, '')
         .replace(/```/g, '')
         .trim();
@@ -1814,11 +2123,40 @@ function extractJsonFromLlmReply(rawText) {
 // ==========================================
 async function guardarMensajeHistorialBD(senderPhone, rol, mensaje, sedeId = 'campeche') {
     try {
+        const cicloActivo = await getActiveCicloEscolar(sedeId || 'campeche');
         await dbPool.execute(
-            'INSERT INTO historial_conversaciones (sede_id, telefono_celular, rol, mensaje) VALUES (?, ?, ?, ?)',
-            [sedeId || 'campeche', senderPhone, rol, String(mensaje || '')]
+            'INSERT INTO historial_conversaciones (sede_id, ciclo_escolar, telefono_celular, rol, mensaje) VALUES (?, ?, ?, ?, ?)',
+            [sedeId || 'campeche', cicloActivo, senderPhone, rol, String(mensaje || '')]
         );
     } catch (_) {}
+}
+
+function buildAttachmentObject(resourceItem) {
+    if (!resourceItem) return null;
+    const isImage = resourceItem.tipo_archivo === 'imagen';
+    const rawUrl = resourceItem.url_recurso || resourceItem.pdfUrl || `/api/brochures/${resourceItem.codigo_recurso || resourceItem.id}/download`;
+    const categoryTitles = {
+        plan_estudios: 'Plan de Estudios',
+        oferta_educativa: 'Oferta Educativa',
+        horarios: 'Horario Oficial',
+        instalaciones: 'Instalaciones UNID',
+        becas_costos: 'Guía de Becas y Costos'
+    };
+    const prefix = categoryTitles[resourceItem.categoria] || 'Recurso Oficial';
+    return {
+        id: resourceItem.codigo_recurso || resourceItem.id,
+        codigo_recurso: resourceItem.codigo_recurso || resourceItem.id,
+        categoria: resourceItem.categoria || 'plan_estudios',
+        tipo_archivo: resourceItem.tipo_archivo || 'pdf',
+        title: `${prefix}: ${resourceItem.titulo || resourceItem.carrera}`,
+        fileName: resourceItem.fileName || resourceItem.file_name || `${resourceItem.codigo_recurso || resourceItem.id}.${isImage ? 'png' : 'pdf'}`,
+        size: resourceItem.size || resourceItem.tamano || '1.2 MB',
+        rvoe: resourceItem.rvoe || 'Oficial UNID',
+        modalidad: resourceItem.modalidad || 'Presencial',
+        pdfUrl: rawUrl,
+        url_recurso: rawUrl,
+        downloadUrl: rawUrl.startsWith('/uploads/') || rawUrl.startsWith('http') ? rawUrl : `/api/brochures/${resourceItem.codigo_recurso || resourceItem.id}/download`
+    };
 }
 
 async function processChatMessage(senderPhone, messageText, requestedModelId = null, sedeId = 'campeche') {
@@ -1840,13 +2178,24 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
 
     await guardarMensajeHistorialBD(senderPhone, 'user', messageText, sedeId);
 
-    const { reply: llmReply, modelUsed } = await callMetalUrielLLM(senderPhone, messageText, requestedModelId);
+    const { reply: llmReply, modelUsed } = await callMetalUrielLLM(senderPhone, messageText, requestedModelId, sedeId);
     
     // Separar y limpiar cualquier JSON y tags técnicos
     const { cleanReply, jsonData } = extractJsonFromLlmReply(llmReply);
-    const brochureDetected = detectBrochureRequest(messageText, senderPhone, llmReply);
+    const poolItems = await getActivePoolItems(sedeId);
+    const brochureDetected = detectBrochureRequest(messageText, senderPhone, llmReply, poolItems);
+    const formattedAttachment = buildAttachmentObject(brochureDetected);
 
+    // Actualizar el último mensaje de assistant en conversationMemory con cleanReply y el documentAttachment si aplica
     const currentHistory = conversationMemory.get(senderPhone) || [];
+    if (currentHistory.length > 0 && currentHistory[currentHistory.length - 1].role === 'assistant') {
+        currentHistory[currentHistory.length - 1].content = cleanReply || llmReply;
+        currentHistory[currentHistory.length - 1].timestamp = new Date();
+        if (formattedAttachment) {
+            currentHistory[currentHistory.length - 1].documentAttachment = formattedAttachment;
+        }
+    }
+
     const partialFields = extractPartialFieldsFromHistory(currentHistory);
 
     // Si el LLM generó el JSON de registro completo o completó la ficha (Evento B)
@@ -1891,16 +2240,7 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
             partialFields: jsonData,
             insertId,
             modelUsed,
-            documentAttachment: brochureDetected ? {
-                id: brochureDetected.id,
-                title: `Plan de Estudios: ${brochureDetected.carrera}`,
-                fileName: brochureDetected.fileName,
-                size: brochureDetected.size,
-                rvoe: brochureDetected.rvoe,
-                modalidad: brochureDetected.modalidad,
-                pdfUrl: brochureDetected.pdfUrl,
-                downloadUrl: `/api/brochures/${brochureDetected.id}/download`
-            } : null
+            documentAttachment: formattedAttachment
         };
     }
 
@@ -1914,21 +2254,12 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
         leadData: null,
         partialFields: partialFields,
         modelUsed,
-        documentAttachment: brochureDetected ? {
-            id: brochureDetected.id,
-            title: `Plan de Estudios: ${brochureDetected.carrera}`,
-            fileName: brochureDetected.fileName,
-            size: brochureDetected.size,
-            rvoe: brochureDetected.rvoe,
-            modalidad: brochureDetected.modalidad,
-            pdfUrl: brochureDetected.pdfUrl,
-            downloadUrl: `/api/brochures/${brochureDetected.id}/download`
-        } : null
+        documentAttachment: formattedAttachment
     };
 }
 
 // ==========================================
-// 12. Enviar mensaje de vuelta a WhatsApp Cloud API
+// 12. Enviar mensaje de vuelta a WhatsApp Cloud API (Soporta Texto, PDF e Imágenes)
 // ==========================================
 async function sendWhatsAppMessage(to, messageText, documentAttachment = null) {
     if (!WHATSAPP_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) {
@@ -1960,37 +2291,60 @@ async function sendWhatsAppMessage(to, messageText, documentAttachment = null) {
             console.log(`💬 [WHATSAPP ENVIADO] Texto enviado con éxito a ${to}`);
         }
 
-        // 2. Enviar documento adjunto si se solicitó o detectó
+        // 2. Enviar documento PDF o Imagen adjunta si se solicitó o detectó
         if (documentAttachment) {
-            let docUrl = documentAttachment.pdfUrl;
+            let docUrl = documentAttachment.url_recurso || documentAttachment.pdfUrl;
             if (!docUrl || (!docUrl.startsWith('http://') && !docUrl.startsWith('https://'))) {
                 const baseUrl = process.env.PUBLIC_URL || process.env.APP_URL || 'https://digitalmedia.talisis.com';
-                docUrl = `${baseUrl}${documentAttachment.downloadUrl}`;
+                docUrl = `${baseUrl}${documentAttachment.downloadUrl || docUrl}`;
             }
 
-            console.log(`📄 [WHATSAPP PDF] Enviando documento "${documentAttachment.fileName}" (${docUrl}) a ${to}...`);
-
-            await axios.post(
-                url,
-                {
-                    messaging_product: 'whatsapp',
-                    recipient_type: 'individual',
-                    to: to,
-                    type: 'document',
-                    document: {
-                        link: docUrl,
-                        filename: documentAttachment.fileName || 'Plan_Estudios_UNID.pdf',
-                        caption: `📄 ${documentAttachment.title} (Validez Oficial SEP: ${documentAttachment.rvoe || 'Oficial UNID'})`
+            if (documentAttachment.tipo_archivo === 'imagen') {
+                console.log(`🖼️ [WHATSAPP IMAGEN] Enviando imagen "${documentAttachment.fileName}" (${docUrl}) a ${to}...`);
+                await axios.post(
+                    url,
+                    {
+                        messaging_product: 'whatsapp',
+                        recipient_type: 'individual',
+                        to: to,
+                        type: 'image',
+                        image: {
+                            link: docUrl,
+                            caption: `🏛️ ${documentAttachment.title} (${documentAttachment.modalidad || 'UNID'})`
+                        }
+                    },
+                    {
+                        headers: {
+                            'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
+                            'Content-Type': 'application/json'
+                        }
                     }
-                },
-                {
-                    headers: {
-                        'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
-                        'Content-Type': 'application/json'
+                );
+                console.log(`✅ [IMAGEN ENVIADA] ${documentAttachment.fileName} enviada exitosamente a WhatsApp ${to}`);
+            } else {
+                console.log(`📄 [WHATSAPP PDF] Enviando documento "${documentAttachment.fileName}" (${docUrl}) a ${to}...`);
+                await axios.post(
+                    url,
+                    {
+                        messaging_product: 'whatsapp',
+                        recipient_type: 'individual',
+                        to: to,
+                        type: 'document',
+                        document: {
+                            link: docUrl,
+                            filename: documentAttachment.fileName || 'Plan_Estudios_UNID.pdf',
+                            caption: `📄 ${documentAttachment.title} (Validez Oficial SEP: ${documentAttachment.rvoe || 'Oficial UNID'})`
+                        }
+                    },
+                    {
+                        headers: {
+                            'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
+                            'Content-Type': 'application/json'
+                        }
                     }
-                }
-            );
-            console.log(`✅ [DOCUMENTO ENVIADO] ${documentAttachment.fileName} enviado exitosamente a WhatsApp ${to}`);
+                );
+                console.log(`✅ [DOCUMENTO ENVIADO] ${documentAttachment.fileName} enviado exitosamente a WhatsApp ${to}`);
+            }
         }
     } catch (error) {
         console.error('❌ Error enviando mensaje a WhatsApp API:', error.response?.data || error.message);
@@ -2057,152 +2411,462 @@ function authorizeRoles(...allowedRoles) {
 }
 
 // ==========================================
-// 14. Endpoints API: Centro de Mando, Folletos, Modelos Filtrados & Seed
+// 14. Endpoints API: Pool Multimedia, Oferta, Horarios, Instalaciones & Ciclos Escolares
 // ==========================================
 
-// ==========================================
-// 14. Endpoints API: Gestión de Planes de Estudio & Folletos (CRUD)
-// ==========================================
+// Helper para guardar archivo subido en base64 a /public/uploads/recursos/
+function saveUploadedBase64File(fileData, originalFileName, prefixCode = 'recurso') {
+    if (!fileData || typeof fileData !== 'string' || !fileData.startsWith('data:')) {
+        return null;
+    }
+    const matches = fileData.match(/^data:([A-Za-z0-9-+\/]+);base64,(.+)$/);
+    if (!matches || matches.length !== 3) return null;
 
-// 1. Obtener catálogo completo de folletos
-app.get('/api/brochures', (req, res) => {
-    res.json({ success: true, count: UNID_BROCHURES.length, brochures: UNID_BROCHURES });
+    const mimeType = matches[1].toLowerCase();
+    const buffer = Buffer.from(matches[2], 'base64');
+
+    let ext = '.pdf';
+    if (mimeType.includes('png')) ext = '.png';
+    else if (mimeType.includes('jpeg') || mimeType.includes('jpg')) ext = '.jpg';
+    else if (mimeType.includes('webp')) ext = '.webp';
+    else if (originalFileName && path.extname(originalFileName)) {
+        ext = path.extname(originalFileName).toLowerCase();
+    }
+
+    const safeBase = (originalFileName ? path.basename(originalFileName, path.extname(originalFileName)) : prefixCode)
+        .replace(/[^a-zA-Z0-9_\-]/g, '_')
+        .substring(0, 50);
+    const finalFileName = `${Date.now()}_${safeBase}${ext}`;
+    const fullDiskPath = path.join(UPLOADS_DIR, finalFileName);
+    fs.writeFileSync(fullDiskPath, buffer);
+
+    const sizeKB = Math.round(buffer.length / 1024);
+    const sizeFormatted = sizeKB >= 1024 ? `${(sizeKB / 1024).toFixed(1)} MB` : `${sizeKB} KB`;
+    const tipoArchivo = ['.png', '.jpg', '.jpeg', '.webp'].includes(ext) ? 'imagen' : 'pdf';
+
+    return {
+        url_recurso: `/uploads/recursos/${finalFileName}`,
+        file_name: originalFileName || finalFileName,
+        tamano: sizeFormatted,
+        tipo_archivo: tipoArchivo
+    };
+}
+
+// 0. Ciclos Escolares por Sede (GET & POST) - Abierto a los 3 roles
+app.get('/api/ciclos', optionalAuthMiddleware, async (req, res) => {
+    try {
+        let sedeId = req.query.sede_id || req.query.campus || 'campeche';
+        if (req.user && req.user.rol !== 'desarrollador' && req.user.sede_id) {
+            sedeId = req.user.sede_id;
+        }
+        if (sedeId === 'all' || sedeId === 'todas') sedeId = 'campeche';
+
+        const [rows] = await dbPool.query(
+            'SELECT * FROM ciclos_escolares_sede WHERE sede_id = ? ORDER BY id ASC',
+            [sedeId]
+        );
+        const activeRow = rows.find(r => Boolean(r.es_activo)) || rows[0] || { ciclo_escolar: '2026-3 Septiembre' };
+        res.json({
+            success: true,
+            sede_id: sedeId,
+            activeCiclo: activeRow.ciclo_escolar,
+            ciclos: rows.length > 0 ? rows : [
+                { id: 1, sede_id: sedeId, ciclo_escolar: '2026-2 Mayo', es_activo: 0 },
+                { id: 2, sede_id: sedeId, ciclo_escolar: '2026-3 Septiembre', es_activo: 1 },
+                { id: 3, sede_id: sedeId, ciclo_escolar: '2027-1 Enero', es_activo: 0 }
+            ]
+        });
+    } catch (err) {
+        res.json({
+            success: true,
+            sede_id: 'campeche',
+            activeCiclo: '2026-3 Septiembre',
+            ciclos: [
+                { id: 1, sede_id: 'campeche', ciclo_escolar: '2026-2 Mayo', es_activo: 0 },
+                { id: 2, sede_id: 'campeche', ciclo_escolar: '2026-3 Septiembre', es_activo: 1 },
+                { id: 3, sede_id: 'campeche', ciclo_escolar: '2027-1 Enero', es_activo: 0 }
+            ]
+        });
+    }
 });
 
-// 2. Crear nuevo folleto / programa
-app.post('/api/brochures', (req, res) => {
+app.post('/api/ciclos', optionalAuthMiddleware, async (req, res) => {
     try {
-        const { carrera, scope, modalidad, duracion, rvoe, fileName, pdfUrl, size, tags } = req.body;
-        if (!carrera || !modalidad) {
-            return res.status(400).json({ success: false, error: 'La carrera y modalidad son campos obligatorios.' });
+        let sedeId = req.body.sede_id || 'campeche';
+        if (req.user && req.user.rol !== 'desarrollador' && req.user.sede_id) {
+            sedeId = req.user.sede_id;
+        }
+        if (sedeId === 'all' || sedeId === 'todas') sedeId = 'campeche';
+
+        const { ciclo_escolar } = req.body;
+        if (!ciclo_escolar || !String(ciclo_escolar).trim()) {
+            return res.status(400).json({ success: false, error: 'El nombre del ciclo escolar es obligatorio.' });
+        }
+        const cleanCiclo = String(ciclo_escolar).trim();
+
+        // Desactivar todos los ciclos de esa sede y activar o insertar el seleccionado
+        await dbPool.execute('UPDATE ciclos_escolares_sede SET es_activo = 0 WHERE sede_id = ?', [sedeId]);
+        await dbPool.execute(`
+            INSERT INTO ciclos_escolares_sede (sede_id, ciclo_escolar, es_activo)
+            VALUES (?, ?, 1)
+            ON DUPLICATE KEY UPDATE es_activo = 1
+        `, [sedeId, cleanCiclo]);
+
+        console.log(`📅 [CICLO ESCOLAR ACTIVO] Sede '${sedeId}' actualizada a ciclo: ${cleanCiclo}`);
+        const [rows] = await dbPool.query('SELECT * FROM ciclos_escolares_sede WHERE sede_id = ? ORDER BY id ASC', [sedeId]);
+        res.json({
+            success: true,
+            message: `Ciclo escolar activo actualizado a ${cleanCiclo}`,
+            activeCiclo: cleanCiclo,
+            ciclos: rows
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// 1. Obtener catálogo completo del Pool Multimedia (y compatible con /api/brochures)
+app.get('/api/pool', optionalAuthMiddleware, async (req, res) => {
+    try {
+        let sedeId = req.query.sede_id || req.query.campus || null;
+        if (req.user && req.user.rol !== 'desarrollador' && req.user.sede_id) {
+            sedeId = req.user.sede_id;
+        }
+        const items = await getActivePoolItems(sedeId);
+        res.json({ success: true, count: items.length, items, brochures: items });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.get('/api/brochures', optionalAuthMiddleware, async (req, res) => {
+    try {
+        let sedeId = req.query.sede_id || req.query.campus || null;
+        if (req.user && req.user.rol !== 'desarrollador' && req.user.sede_id) {
+            sedeId = req.user.sede_id;
+        }
+        const items = await getActivePoolItems(sedeId);
+        res.json({ success: true, count: items.length, brochures: items, items });
+    } catch (err) {
+        res.json({ success: true, count: UNID_BROCHURES.length, brochures: UNID_BROCHURES });
+    }
+});
+
+// 2. Crear nuevo recurso en el Pool Multimedia (Planes, Oferta, Horarios, Instalaciones, Becas) - Abierto a los 3 roles
+async function handleCreatePoolResource(req, res) {
+    try {
+        const {
+            titulo, carrera, categoria, descripcion_ia, scope, modalidad,
+            duracion, rvoe, fileName, pdfUrl, url_recurso, size, tags,
+            ciclo_escolar, tipo_archivo, fileData
+        } = req.body;
+
+        const finalTitle = (titulo || carrera || '').trim();
+        if (!finalTitle) {
+            return res.status(400).json({ success: false, error: 'El título o nombre de la carrera/recurso es obligatorio.' });
         }
 
-        const id = (req.body.id || carrera.toLowerCase().replace(/[^a-z0-9]/g, '_')).substring(0, 40);
-        
+        let sedeId = req.body.sede_id || 'campeche';
+        if (req.user && req.user.rol !== 'desarrollador' && req.user.sede_id) {
+            sedeId = req.user.sede_id;
+        }
+
+        const codigoRecurso = (req.body.codigo_recurso || req.body.id || finalTitle.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '_')).substring(0, 55);
+        const finalCategoria = categoria || 'plan_estudios';
+        const finalModalidad = (modalidad || 'Presencial').trim();
+        const finalCiclo = ciclo_escolar || await getActiveCicloEscolar(sedeId);
+
         let scopeLabel = '🏛️ Campus Campeche (Presencial)';
         if (scope === 'unid_nacional') scopeLabel = '🌐 UNID Online (Nacional)';
         else if (scope === 'ejecutiva_campeche') scopeLabel = '👔 Campus Campeche (Ejecutiva / Dual)';
-        else if (scope === 'todas') scopeLabel = '🎓 Programa Institucional UNID';
+        else if (scope === 'todas') scopeLabel = '🎓 Recurso Institucional UNID';
 
-        const newBrochure = {
-            id,
-            carrera: carrera.trim(),
+        // Procesar subida híbrida (Archivo directo en Base64 o URL externa)
+        let uploadedMeta = null;
+        if (fileData && String(fileData).startsWith('data:')) {
+            uploadedMeta = saveUploadedBase64File(fileData, fileName, codigoRecurso);
+        }
+
+        const finalTipoArchivo = uploadedMeta ? uploadedMeta.tipo_archivo : (tipo_archivo || 'pdf');
+        const finalFileName = uploadedMeta ? uploadedMeta.file_name : (fileName ? fileName.trim() : `${codigoRecurso}.${finalTipoArchivo === 'imagen' ? 'png' : 'pdf'}`);
+        const finalUrl = uploadedMeta ? uploadedMeta.url_recurso : ((url_recurso || pdfUrl || '').trim() || `/api/brochures/${codigoRecurso}/download`);
+        const finalSize = uploadedMeta ? uploadedMeta.tamano : (size ? size.trim() : '1.2 MB');
+        const parsedTags = Array.isArray(tags)
+            ? tags
+            : (tags ? String(tags).split(',').map(t => t.trim().toLowerCase()).filter(Boolean) : [codigoRecurso, finalTitle.toLowerCase()]);
+
+        const finalDescripcionIa = (descripcion_ia || '').trim() ||
+            `${finalTitle} (${finalCategoria}) en modalidad ${finalModalidad}. Duración: ${duracion || '3 años (9 cuatrimestres)'}. RVOE: ${rvoe || 'SEP-RVOE-OFICIAL'}.`;
+
+        await dbPool.execute(`
+            INSERT INTO pool_recursos_multimedia (
+                codigo_recurso, sede_id, ciclo_escolar, categoria, titulo, descripcion_ia,
+                scope, scope_label, modalidad, duracion, rvoe, tipo_archivo,
+                file_name, url_recurso, tamano, tags, subido_por, activo
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        `, [
+            codigoRecurso,
+            sedeId,
+            finalCiclo,
+            finalCategoria,
+            finalTitle,
+            finalDescripcionIa,
+            scope || 'campus_campeche',
+            scopeLabel,
+            finalModalidad,
+            duracion ? duracion.trim() : '3 años (9 cuatrimestres)',
+            rvoe ? rvoe.trim() : 'SEP-RVOE-OFICIAL',
+            finalTipoArchivo,
+            finalFileName,
+            finalUrl,
+            finalSize,
+            JSON.stringify(parsedTags),
+            req.user?.correo_institucional || 'admin@red.unid.mx'
+        ]);
+
+        const newBrochureCompat = {
+            id: codigoRecurso,
+            codigo_recurso: codigoRecurso,
+            sede_id: sedeId,
+            ciclo_escolar: finalCiclo,
+            categoria: finalCategoria,
+            titulo: finalTitle,
+            carrera: finalTitle,
+            descripcion_ia: finalDescripcionIa,
             scope: scope || 'campus_campeche',
             scopeLabel,
-            modalidad: modalidad.trim(),
+            modalidad: finalModalidad,
             duracion: duracion ? duracion.trim() : '3 años (9 cuatrimestres)',
             rvoe: rvoe ? rvoe.trim() : 'SEP-RVOE-OFICIAL',
-            fileName: fileName ? fileName.trim() : `Plan_Estudios_${id}.pdf`,
-            pdfUrl: pdfUrl ? pdfUrl.trim() : `https://digitalmedia.talisis.com/unid/plan-de-estudios/2024/${id}.pdf`,
-            size: size ? size.trim() : '1.2 MB',
-            tags: Array.isArray(tags) ? tags : (tags ? String(tags).split(',').map(t => t.trim().toLowerCase()) : [id])
+            tipo_archivo: finalTipoArchivo,
+            fileName: finalFileName,
+            pdfUrl: finalUrl,
+            url_recurso: finalUrl,
+            size: finalSize,
+            tags: parsedTags
         };
 
-        UNID_BROCHURES.push(newBrochure);
+        // Mantener sincronizado brochures.json si es plan de estudios o becas
+        const existingIdx = UNID_BROCHURES.findIndex(b => b.id === codigoRecurso);
+        if (existingIdx >= 0) {
+            UNID_BROCHURES[existingIdx] = newBrochureCompat;
+        } else {
+            UNID_BROCHURES.push(newBrochureCompat);
+        }
         saveBrochuresToDisk();
 
-        console.log(`➕ [FOLLETO CREADO] ${newBrochure.carrera} (${newBrochure.id})`);
-        return res.status(201).json({ success: true, brochure: newBrochure });
+        console.log(`➕ [POOL MULTIMEDIA CREADO] [${finalCategoria.toUpperCase()}] ${finalTitle} (${codigoRecurso})`);
+        return res.status(201).json({ success: true, item: newBrochureCompat, brochure: newBrochureCompat });
     } catch (err) {
-        console.error('Error creando folleto:', err);
+        console.error('Error creando recurso en Pool Multimedia:', err);
         return res.status(500).json({ success: false, error: err.message });
     }
-});
+}
 
-// 3. Modificar / Actualizar folleto existente
-app.put('/api/brochures/:id', (req, res) => {
+app.post('/api/pool', optionalAuthMiddleware, handleCreatePoolResource);
+app.post('/api/brochures', optionalAuthMiddleware, handleCreatePoolResource);
+
+// 3. Modificar / Actualizar recurso existente en el Pool Multimedia - Abierto a los 3 roles
+async function handleUpdatePoolResource(req, res) {
     try {
         const { id } = req.params;
-        const index = UNID_BROCHURES.findIndex(b => b.id === id);
-        if (index === -1) {
-            return res.status(404).json({ success: false, error: 'Folleto / Carrera no encontrada.' });
+        const {
+            titulo, carrera, categoria, descripcion_ia, scope, modalidad,
+            duracion, rvoe, fileName, pdfUrl, url_recurso, size, tags,
+            ciclo_escolar, tipo_archivo, fileData
+        } = req.body;
+
+        const [rows] = await dbPool.query(
+            'SELECT * FROM pool_recursos_multimedia WHERE codigo_recurso = ? OR id = ? LIMIT 1',
+            [id, id]
+        );
+
+        const current = rows[0] || UNID_BROCHURES.find(b => b.id === id);
+        if (!current) {
+            return res.status(404).json({ success: false, error: 'Recurso no encontrado en el Pool.' });
         }
 
-        const current = UNID_BROCHURES[index];
-        const { carrera, scope, modalidad, duracion, rvoe, fileName, pdfUrl, size, tags } = req.body;
+        const codigoRecurso = current.codigo_recurso || current.id || id;
+        let uploadedMeta = null;
+        if (fileData && String(fileData).startsWith('data:')) {
+            uploadedMeta = saveUploadedBase64File(fileData, fileName, codigoRecurso);
+        }
 
-        let scopeLabel = current.scopeLabel;
-        if (scope === 'unid_nacional') scopeLabel = '🌐 UNID Online (Nacional)';
-        else if (scope === 'ejecutiva_campeche') scopeLabel = '👔 Campus Campeche (Ejecutiva / Dual)';
-        else if (scope === 'campus_campeche') scopeLabel = '🏛️ Campus Campeche (Presencial)';
-        else if (scope === 'todas') scopeLabel = '🎓 Programa Institucional UNID';
+        const finalTitle = (titulo || carrera || current.titulo || current.carrera || '').trim();
+        const finalCategoria = categoria || current.categoria || 'plan_estudios';
+        const finalModalidad = modalidad ? modalidad.trim() : (current.modalidad || 'Presencial');
+        const finalCiclo = ciclo_escolar || current.ciclo_escolar || '2026-3 Septiembre';
+        const finalScope = scope || current.scope || 'campus_campeche';
 
-        UNID_BROCHURES[index] = {
-            ...current,
-            carrera: carrera ? carrera.trim() : current.carrera,
-            scope: scope || current.scope,
-            scopeLabel: scopeLabel || current.scopeLabel,
-            modalidad: modalidad ? modalidad.trim() : current.modalidad,
-            duracion: duracion ? duracion.trim() : current.duracion,
-            rvoe: rvoe ? rvoe.trim() : current.rvoe,
-            fileName: fileName ? fileName.trim() : current.fileName,
-            pdfUrl: pdfUrl !== undefined ? pdfUrl.trim() : current.pdfUrl,
-            size: size ? size.trim() : current.size,
-            tags: Array.isArray(tags) ? tags : (tags ? String(tags).split(',').map(t => t.trim().toLowerCase()) : current.tags)
+        let scopeLabel = current.scope_label || current.scopeLabel || '🏛️ Campus Campeche (Presencial)';
+        if (finalScope === 'unid_nacional') scopeLabel = '🌐 UNID Online (Nacional)';
+        else if (finalScope === 'ejecutiva_campeche') scopeLabel = '👔 Campus Campeche (Ejecutiva / Dual)';
+        else if (finalScope === 'campus_campeche') scopeLabel = '🏛️ Campus Campeche (Presencial)';
+        else if (finalScope === 'todas') scopeLabel = '🎓 Recurso Institucional UNID';
+
+        const finalTipoArchivo = uploadedMeta ? uploadedMeta.tipo_archivo : (tipo_archivo || current.tipo_archivo || 'pdf');
+        const finalFileName = uploadedMeta ? uploadedMeta.file_name : (fileName ? fileName.trim() : (current.file_name || current.fileName));
+        const finalUrl = uploadedMeta ? uploadedMeta.url_recurso : ((url_recurso !== undefined ? url_recurso : (pdfUrl !== undefined ? pdfUrl : (current.url_recurso || current.pdfUrl))) || '').trim();
+        const finalSize = uploadedMeta ? uploadedMeta.tamano : (size ? size.trim() : (current.tamano || current.size || '1.2 MB'));
+        const finalDuracion = duracion ? duracion.trim() : (current.duracion || '3 años (9 cuatrimestres)');
+        const finalRvoe = rvoe ? rvoe.trim() : (current.rvoe || 'SEP-RVOE-OFICIAL');
+        const finalDescripcionIa = descripcion_ia !== undefined ? descripcion_ia.trim() : (current.descripcion_ia || '');
+
+        let parsedTags = [];
+        if (Array.isArray(tags)) parsedTags = tags;
+        else if (tags !== undefined) parsedTags = String(tags).split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
+        else {
+            try {
+                parsedTags = typeof current.tags === 'string' ? JSON.parse(current.tags) : (current.tags || []);
+            } catch (_) {
+                parsedTags = [];
+            }
+        }
+
+        if (rows.length > 0) {
+            await dbPool.execute(`
+                UPDATE pool_recursos_multimedia SET
+                    ciclo_escolar = ?, categoria = ?, titulo = ?, descripcion_ia = ?,
+                    scope = ?, scope_label = ?, modalidad = ?, duracion = ?, rvoe = ?,
+                    tipo_archivo = ?, file_name = ?, url_recurso = ?, tamano = ?, tags = ?
+                WHERE id = ?
+            `, [
+                finalCiclo, finalCategoria, finalTitle, finalDescripcionIa,
+                finalScope, scopeLabel, finalModalidad, finalDuracion, finalRvoe,
+                finalTipoArchivo, finalFileName, finalUrl, finalSize, JSON.stringify(parsedTags),
+                rows[0].id
+            ]);
+        }
+
+        const updatedObj = {
+            id: codigoRecurso,
+            codigo_recurso: codigoRecurso,
+            ciclo_escolar: finalCiclo,
+            categoria: finalCategoria,
+            titulo: finalTitle,
+            carrera: finalTitle,
+            descripcion_ia: finalDescripcionIa,
+            scope: finalScope,
+            scopeLabel,
+            modalidad: finalModalidad,
+            duracion: finalDuracion,
+            rvoe: finalRvoe,
+            tipo_archivo: finalTipoArchivo,
+            fileName: finalFileName,
+            pdfUrl: finalUrl,
+            url_recurso: finalUrl,
+            size: finalSize,
+            tags: parsedTags
         };
 
-        saveBrochuresToDisk();
-        console.log(`✏️ [FOLLETO ACTUALIZADO] ${UNID_BROCHURES[index].carrera} (${id})`);
-        return res.json({ success: true, brochure: UNID_BROCHURES[index] });
-    } catch (err) {
-        console.error('Error actualizando folleto:', err);
-        return res.status(500).json({ success: false, error: err.message });
-    }
-});
-
-// 4. Eliminar folleto
-app.delete('/api/brochures/:id', (req, res) => {
-    try {
-        const { id } = req.params;
-        const index = UNID_BROCHURES.findIndex(b => b.id === id);
-        if (index === -1) {
-            return res.status(404).json({ success: false, error: 'Folleto / Carrera no encontrada.' });
+        const bIndex = UNID_BROCHURES.findIndex(b => b.id === codigoRecurso);
+        if (bIndex !== -1) {
+            UNID_BROCHURES[bIndex] = { ...UNID_BROCHURES[bIndex], ...updatedObj };
+            saveBrochuresToDisk();
         }
 
-        const deleted = UNID_BROCHURES.splice(index, 1);
-        saveBrochuresToDisk();
-        console.log(`🗑️ [FOLLETO ELIMINADO] ${deleted[0].carrera} (${id})`);
-        return res.json({ success: true, message: 'Folleto eliminado exitosamente.' });
+        console.log(`✏️ [POOL MULTIMEDIA ACTUALIZADO] ${finalTitle} (${codigoRecurso})`);
+        return res.json({ success: true, item: updatedObj, brochure: updatedObj });
+    } catch (err) {
+        console.error('Error actualizando recurso en Pool:', err);
+        return res.status(500).json({ success: false, error: err.message });
+    }
+}
+
+app.put('/api/pool/:id', optionalAuthMiddleware, handleUpdatePoolResource);
+app.put('/api/brochures/:id', optionalAuthMiddleware, handleUpdatePoolResource);
+
+// 4. Eliminar recurso del Pool Multimedia - Abierto a los 3 roles
+async function handleDeletePoolResource(req, res) {
+    try {
+        const { id } = req.params;
+        await dbPool.execute('DELETE FROM pool_recursos_multimedia WHERE codigo_recurso = ? OR id = ?', [id, id]);
+        const index = UNID_BROCHURES.findIndex(b => b.id === id);
+        if (index !== -1) {
+            UNID_BROCHURES.splice(index, 1);
+            saveBrochuresToDisk();
+        }
+        console.log(`🗑️ [POOL MULTIMEDIA ELIMINADO] Recurso (${id})`);
+        return res.json({ success: true, message: 'Recurso eliminado exitosamente del Pool.' });
     } catch (err) {
         return res.status(500).json({ success: false, error: err.message });
     }
-});
+}
 
-// 5. Descarga o redirección de Folleto Oficial UNID (PDF)
-app.get('/api/brochures/:id/download', (req, res) => {
-    const brochure = UNID_BROCHURES.find(b => b.id === req.params.id) || UNID_BROCHURES[0];
-    
+app.delete('/api/pool/:id', optionalAuthMiddleware, handleDeletePoolResource);
+app.delete('/api/brochures/:id', optionalAuthMiddleware, handleDeletePoolResource);
+
+// 5. Descarga o redirección de Recurso Oficial UNID (PDF o Imagen subida)
+app.get('/api/brochures/:id/download', async (req, res) => {
+    const reqId = req.params.id;
+    let resource = null;
+    try {
+        const [rows] = await dbPool.query(
+            'SELECT * FROM pool_recursos_multimedia WHERE codigo_recurso = ? OR id = ? LIMIT 1',
+            [reqId, reqId]
+        );
+        if (rows.length > 0) {
+            resource = {
+                id: rows[0].codigo_recurso,
+                carrera: rows[0].titulo,
+                modalidad: rows[0].modalidad,
+                duracion: rows[0].duracion,
+                rvoe: rows[0].rvoe,
+                fileName: rows[0].file_name,
+                pdfUrl: rows[0].url_recurso,
+                descripcion_ia: rows[0].descripcion_ia
+            };
+        }
+    } catch (_) {}
+
+    if (!resource) {
+        resource = UNID_BROCHURES.find(b => b.id === reqId) || UNID_BROCHURES[0];
+    }
+
+    // Si apunta a un archivo local subido en /uploads/recursos/...
+    if (resource && resource.pdfUrl && resource.pdfUrl.startsWith('/uploads/')) {
+        const localFile = path.join(__dirname, 'public', resource.pdfUrl);
+        if (fs.existsSync(localFile)) {
+            return res.sendFile(localFile);
+        }
+    }
+
     // Si tiene una URL externa válida configurada por el usuario (ej. digitalmedia.talisis.com), redirigir
-    if (brochure && brochure.pdfUrl && (brochure.pdfUrl.startsWith('http://') || brochure.pdfUrl.startsWith('https://'))) {
-        return res.redirect(brochure.pdfUrl);
+    if (resource && resource.pdfUrl && (resource.pdfUrl.startsWith('http://') || resource.pdfUrl.startsWith('https://'))) {
+        return res.redirect(resource.pdfUrl);
     }
 
     // Si no, generar plantilla PDF institucional estilizada con membrete UNID
+    const safeTitle = String(resource?.carrera || 'Programa Oficial UNID').replace(/[()]/g, '');
+    const safeMod = String(resource?.modalidad || 'Presencial').replace(/[()]/g, '');
+    const safeDur = String(resource?.duracion || '3 anos').replace(/[()]/g, '');
+    const safeRvoe = String(resource?.rvoe || 'SEP-RVOE-OFICIAL').replace(/[()]/g, '');
+
     const pdfContent = `%PDF-1.4
 1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
 2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
 3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
-4 0 obj << /Length 420 >> stream
+4 0 obj << /Length 440 >> stream
 BT
-/F1 20 Tf
+/F1 18 Tf
 50 720 Td
 (:UNID TALISIS - CAMPUS SAN FRANCISCO DE CAMPECHE) Tj
 0 -30 Td
 /F1 14 Tf
-(PLAN DE ESTUDIOS OFICIAL 2026) Tj
+(DOCUMENTO OFICIAL DEL POOL MULTIMEDIA 2026) Tj
 0 -25 Td
 /F1 12 Tf
-(Programa: ${brochure.carrera}) Tj
+(Recurso: ${safeTitle}) Tj
 0 -20 Td
-(Modalidad: ${brochure.modalidad} | Duracion: ${brochure.duracion}) Tj
+(Modalidad: ${safeMod} | Duracion: ${safeDur}) Tj
 0 -20 Td
-(Validez Oficial: ${brochure.rvoe}) Tj
+(Validez / Referencia: ${safeRvoe}) Tj
 0 -40 Td
-(1er Cuatrimestre: Fundamentos Universitarios, Metodologia y Comunicacion) Tj
+(1er Cuatrimestre: Tronco Comun Universitario y Competencias Digitales) Tj
 0 -20 Td
-(2do Cuatrimestre: Especialidad y Formacion Profesional UNID) Tj
+(2do a 5to Cuatrimestre: Especialidad Profesional UNID) Tj
 0 -20 Td
-(Estadia Empresarial en Empresa Lider en 6to Cuatrimestre) Tj
+(6to Cuatrimestre: Estadia Empresarial en Empresa Lider) Tj
 ET
 endstream
 endobj
@@ -2214,25 +2878,30 @@ xref
 0000000058 00000 n 
 0000000115 00000 n 
 0000000234 00000 n 
-0000000705 00000 n 
+0000000725 00000 n 
 trailer << /Size 6 /Root 1 0 R >>
 startxref
-785
+805
 %%EOF`;
 
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${brochure.fileName || 'plan_estudios_unid.pdf'}"`);
+    res.setHeader('Content-Disposition', `inline; filename="${resource?.fileName || 'recurso_oficial_unid.pdf'}"`);
     res.status(200).send(Buffer.from(pdfContent));
 });
 
-// Sembrar datos de demostración
+// Sembrar datos de demostración (Poblar DB)
 app.post('/api/aspirantes/seed', async (req, res) => {
     try {
         const connection = await dbPool.getConnection();
         await connection.query('DELETE FROM aspirantes');
+        await connection.query('DELETE FROM historial_conversaciones');
         await seedDemoLeads(connection);
         connection.release();
-        res.json({ success: true, message: 'Datos demo de alta fidelidad cargados con éxito.' });
+        conversationMemory.clear();
+        userSessionState.clear();
+        processedMessageIds.clear();
+        console.log('🌱 [DB SEED] Base de datos poblada con 5 prospectos demo.');
+        res.json({ success: true, message: 'Datos demo de alta fidelidad cargados con éxito (5 prospectos).' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -2493,12 +3162,88 @@ app.delete('/api/users/:id', authMiddleware, authorizeRoles('desarrollador'), as
 });
 
 // ==========================================
-// 14.6. Endpoints de Auditoría y Prueba de Notificaciones por Correo
+// 14.6. Endpoints de Configuración SMTP en Vivo, Auditoría y Prueba de Correos
 // ==========================================
+app.get('/api/settings/smtp', optionalAuthMiddleware, (req, res) => {
+    const smtpHost = process.env.SMTP_HOST || 'smtp.gmail.com';
+    const smtpPort = process.env.SMTP_PORT || '587';
+    const smtpUser = process.env.SMTP_USER || TESTING_NOTIFICATION_EMAIL;
+    const smtpPass = process.env.SMTP_PASS || '';
+    const isLiveConfigured = Boolean(smtpHost && smtpUser && smtpPass && !smtpPass.includes('tu_app_password') && smtpPass.trim().length >= 8);
+
+    res.json({
+        success: true,
+        smtp: {
+            host: smtpHost,
+            port: smtpPort,
+            user: smtpUser,
+            hasPass: isLiveConfigured,
+            maskedPass: isLiveConfigured ? `${smtpPass.substring(0, 2)}••••••••••••${smtpPass.slice(-2)}` : '',
+            targetEmail: TESTING_NOTIFICATION_EMAIL,
+            mode: isLiveConfigured ? 'smtp_live' : 'ethereal_test'
+        }
+    });
+});
+
+app.post('/api/settings/smtp', optionalAuthMiddleware, async (req, res) => {
+    try {
+        const { host, port, user, pass } = req.body;
+        const cleanHost = (host || 'smtp.gmail.com').trim();
+        const cleanPort = String(port || '587').trim();
+        const cleanUser = (user || TESTING_NOTIFICATION_EMAIL).trim();
+        // Gmail App Passwords suelen copiarse con espacios (ej. "abcd efgh ijkl mnop"); quitar espacios internos
+        const cleanPass = pass ? String(pass).replace(/\s+/g, '').trim() : (process.env.SMTP_PASS || '');
+
+        if (!cleanUser || !cleanPass) {
+            return res.status(400).json({ success: false, error: 'El correo remitente y la Contraseña de Aplicación (16 letras) son obligatorios.' });
+        }
+
+        // Actualizar variables de entorno en caliente (Hot-Reload)
+        process.env.SMTP_HOST = cleanHost;
+        process.env.SMTP_PORT = cleanPort;
+        process.env.SMTP_USER = cleanUser;
+        process.env.SMTP_PASS = cleanPass;
+        process.env.ADMISSIONS_NOTIFICATION_EMAIL = TESTING_NOTIFICATION_EMAIL;
+
+        // Persistir en archivo .env para que sobreviva reinicios
+        const envPath = path.join(__dirname, '.env');
+        let envContent = '';
+        if (fs.existsSync(envPath)) {
+            envContent = fs.readFileSync(envPath, 'utf-8');
+        }
+        const upsertEnvVar = (key, val) => {
+            const regex = new RegExp(`^${key}=.*$`, 'm');
+            if (regex.test(envContent)) {
+                envContent = envContent.replace(regex, `${key}=${val}`);
+            } else {
+                envContent += `${envContent.endsWith('\n') || envContent === '' ? '' : '\n'}${key}=${val}\n`;
+            }
+        };
+        upsertEnvVar('SMTP_HOST', cleanHost);
+        upsertEnvVar('SMTP_PORT', cleanPort);
+        upsertEnvVar('SMTP_USER', cleanUser);
+        upsertEnvVar('SMTP_PASS', cleanPass);
+        upsertEnvVar('ADMISSIONS_NOTIFICATION_EMAIL', TESTING_NOTIFICATION_EMAIL);
+        fs.writeFileSync(envPath, envContent, 'utf-8');
+
+        console.log(`✉️ [SMTP HOT-RELOAD] Credenciales SMTP actualizadas para ${cleanUser} (${cleanHost}:${cleanPort}).`);
+        res.json({
+            success: true,
+            message: `Configuración SMTP en vivo guardada para ${cleanUser}. Ya puedes disparar pruebas reales a tu bandeja de Gmail.`,
+            mode: 'smtp_live'
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: 'Error guardando configuración SMTP: ' + err.message });
+    }
+});
+
 app.get('/api/notifications/history', optionalAuthMiddleware, (req, res) => {
+    const smtpPass = process.env.SMTP_PASS || '';
+    const isLive = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && smtpPass && !smtpPass.includes('tu_app_password') && smtpPass.trim().length >= 8);
     res.json({
         success: true,
         targetEmail: TESTING_NOTIFICATION_EMAIL,
+        smtpMode: isLive ? 'smtp_live' : 'ethereal_test',
         history: emailNotificationHistory
     });
 });
@@ -2556,19 +3301,35 @@ app.post('/api/notifications/test', optionalAuthMiddleware, async (req, res) => 
     }
 });
 
-// Vaciar completamente la base de datos de aspirantes (Para testing)
-app.delete('/api/aspirantes/all', async (req, res) => {
+// Vaciar completamente la base de datos de aspirantes, historial de chats y memoria caché (Para testing)
+async function handleClearAllDatabaseAndCache(req, res) {
     try {
         const connection = await dbPool.getConnection();
         await connection.query('DELETE FROM aspirantes');
+        await connection.query('DELETE FROM historial_conversaciones');
+        try {
+            await connection.query('ALTER TABLE aspirantes AUTO_INCREMENT = 1');
+            await connection.query('ALTER TABLE historial_conversaciones AUTO_INCREMENT = 1');
+        } catch (_) {}
         connection.release();
+
         conversationMemory.clear();
-        console.log('🗑️ [DB RESET] Base de datos de aspirantes vaciada exitosamente por el usuario.');
-        res.json({ success: true, message: 'Base de datos de aspirantes vaciada exitosamente.' });
+        userSessionState.clear();
+        processedMessageIds.clear();
+        totalConversationsStarted = 0;
+
+        console.log('🗑️ [DB + CACHE RESET] Base de datos (aspirantes + historial_conversaciones) y memoria caché vaciadas al 100%.');
+        res.json({
+            success: true,
+            message: 'Base de datos (aspirantes e historial) y memoria caché vaciadas al 100% para testing.'
+        });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
-});
+}
+
+app.delete('/api/aspirantes/all', handleClearAllDatabaseAndCache);
+app.post('/api/database/clear-all', handleClearAllDatabaseAndCache);
 
 // Verificar token JWT
 app.get('/api/auth/me', authMiddleware, (req, res) => {
@@ -3504,6 +4265,7 @@ app.get('/api/conversations', optionalAuthMiddleware, async (req, res) => {
                 phone: asp.telefono_celular || phone,
                 cleanPhone: cleanPhone,
                 sede_id: asp.sede_id || resolveSedeId(asp.campus_interes),
+                ciclo_escolar: asp.ciclo_escolar || '2026-3 Septiembre',
                 name: asp.nombre_completo || 'Aspirante Registrado',
                 carrera: asp.carrera_interes || 'Sin carrera especificada',
                 campus: asp.campus_interes || 'Campus Campeche',
@@ -3528,6 +4290,7 @@ app.get('/api/conversations', optionalAuthMiddleware, async (req, res) => {
         }
 
         // 2. Cargar conversaciones en memoria que aún no estén en MariaDB (o en progreso)
+        const activeCicloDefault = await getActiveCicloEscolar(targetSede || 'campeche');
         for (const [phoneKey, history] of conversationMemory.entries()) {
             const cleanKey = String(phoneKey).replace(/[\s\-\+]/g, '');
             const session = userSessionState.get(phoneKey) || {};
@@ -3551,6 +4314,7 @@ app.get('/api/conversations', optionalAuthMiddleware, async (req, res) => {
                     phone: phoneKey,
                     cleanPhone: cleanKey,
                     sede_id: convSede,
+                    ciclo_escolar: session.leadData?.ciclo_escolar || activeCicloDefault,
                     name: session.leadData?.nombre_completo || partial.nombre_completo || `Aspirante (${phoneKey})`,
                     carrera: session.leadData?.carrera_interes || partial.carrera_interes || 'Por definir',
                     campus: session.leadData?.campus_interes || partial.campus_interes || 'Campus Campeche',
@@ -3643,27 +4407,19 @@ app.post('/api/conversations/toggle-ai', (req, res) => {
     }
 });
 
-// Enviar folleto PDF directamente desde la interfaz
+// Enviar recurso del Pool Multimedia (PDF o Imagen) directamente desde la interfaz al chat
 app.post('/api/conversations/send-brochure', async (req, res) => {
     try {
         const { phone, brochureId } = req.body;
         if (!phone || !brochureId) return res.status(400).json({ error: 'Teléfono y brochureId requeridos.' });
 
-        const brochure = UNID_BROCHURES.find(b => b.id === brochureId) || UNID_BROCHURES[0];
-        if (!brochure) return res.status(404).json({ error: 'Folleto no encontrado.' });
+        const poolItems = await getActivePoolItems();
+        const foundItem = poolItems.find(b => b.id === brochureId || b.codigo_recurso === brochureId) ||
+                          UNID_BROCHURES.find(b => b.id === brochureId);
+        if (!foundItem) return res.status(404).json({ error: 'Recurso no encontrado en el Pool.' });
 
-        const attachment = {
-            id: brochure.id,
-            title: `Plan de Estudios: ${brochure.carrera}`,
-            fileName: brochure.fileName,
-            size: brochure.size,
-            rvoe: brochure.rvoe,
-            modalidad: brochure.modalidad,
-            pdfUrl: brochure.pdfUrl,
-            downloadUrl: `/api/brochures/${brochure.id}/download`
-        };
-
-        const textReply = `Te comparto con mucho gusto el Plan de Estudios oficial y mapa curricular de *${brochure.carrera}* (${brochure.modalidad}). Cuenta con Reconocimiento de Validez Oficial SEP: *${brochure.rvoe}*.`;
+        const attachment = buildAttachmentObject(foundItem);
+        const textReply = `Te comparto con mucho gusto el recurso oficial de *${foundItem.titulo || foundItem.carrera}* (${foundItem.modalidad || 'UNID'}). ${foundItem.descripcion_ia || `Referencia Oficial: ${foundItem.rvoe || 'SEP'}`}`;
 
         if (!conversationMemory.has(phone)) {
             conversationMemory.set(phone, []);
@@ -3675,6 +4431,7 @@ app.post('/api/conversations/send-brochure', async (req, res) => {
             timestamp: new Date()
         });
 
+        await guardarMensajeHistorialBD(phone, 'assistant', textReply, foundItem.sede_id || 'campeche');
         await sendWhatsAppMessage(phone, textReply, attachment);
 
         res.json({ success: true, brochure: attachment });

@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS `aspirantes` (
     `codigo_postal` VARCHAR(10) NULL,
     `campus_interes` VARCHAR(100) NOT NULL,
     `modalidad_estudios` VARCHAR(100) NOT NULL,
+    `ciclo_escolar` VARCHAR(60) DEFAULT '2026-3 Septiembre',
     `es_foraneo` BOOLEAN DEFAULT FALSE,
     `estado_prospecto` VARCHAR(50) DEFAULT 'nuevo',
     `nivel_interes` VARCHAR(20) DEFAULT 'Alto',
@@ -62,6 +63,7 @@ CREATE TABLE IF NOT EXISTS `aspirantes` (
     INDEX `idx_telefono` (`telefono_celular`),
     INDEX `idx_carrera` (`carrera_interes`),
     INDEX `idx_campus` (`campus_interes`),
+    INDEX `idx_ciclo` (`ciclo_escolar`),
     INDEX `idx_estado` (`estado_prospecto`),
     INDEX `idx_archivado` (`archivado`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -70,12 +72,14 @@ CREATE TABLE IF NOT EXISTS `aspirantes` (
 CREATE TABLE IF NOT EXISTS `historial_conversaciones` (
     `id` BIGINT AUTO_INCREMENT PRIMARY KEY,
     `sede_id` VARCHAR(50) NULL,
+    `ciclo_escolar` VARCHAR(60) DEFAULT '2026-3 Septiembre',
     `telefono_celular` VARCHAR(30) NOT NULL,
     `rol` ENUM('user', 'assistant', 'system', 'human_advisor') NOT NULL,
     `mensaje` TEXT NOT NULL,
     `timestamp` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     INDEX `idx_historial_telefono` (`telefono_celular`, `timestamp`),
-    INDEX `idx_historial_sede` (`sede_id`)
+    INDEX `idx_historial_sede` (`sede_id`),
+    INDEX `idx_historial_ciclo` (`ciclo_escolar`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Tabla de Usuarios y Control de Acceso Basado en Roles (RBAC)
@@ -95,4 +99,39 @@ CREATE TABLE IF NOT EXISTS `usuarios` (
     INDEX `idx_rol` (`rol`),
     INDEX `idx_sede_usuario` (`sede_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Tabla del Pool Multimedia de Admisiones (Agrupado por Categoría General y Sede)
+CREATE TABLE IF NOT EXISTS `pool_recursos_multimedia` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `codigo_recurso` VARCHAR(80) NOT NULL UNIQUE,
+    `sede_id` VARCHAR(50) DEFAULT 'campeche' COMMENT 'Slug de la sede o global',
+    `ciclo_escolar` VARCHAR(60) DEFAULT '2026-3 Septiembre',
+    `categoria` ENUM('plan_estudios', 'oferta_educativa', 'horarios', 'instalaciones', 'becas_costos') NOT NULL DEFAULT 'plan_estudios',
+    `titulo` VARCHAR(200) NOT NULL,
+    `descripcion_ia` TEXT NULL COMMENT 'Contexto que lee la IA para responder dudas y ofrecer el archivo',
+    `tags` TEXT NULL COMMENT 'Palabras clave separadas por coma',
+    `tipo_archivo` ENUM('pdf', 'imagen', 'info') NOT NULL DEFAULT 'pdf',
+    `url_recurso` VARCHAR(500) NULL,
+    `file_name` VARCHAR(200) NULL,
+    `modalidad` VARCHAR(120) DEFAULT 'Presencial & Online',
+    `duracion` VARCHAR(100) DEFAULT '3 años (9 cuatrimestres)',
+    `rvoe` VARCHAR(100) DEFAULT 'SEP-RVOE-OFICIAL',
+    `tamano` VARCHAR(40) DEFAULT '1.2 MB',
+    `activo` BOOLEAN DEFAULT TRUE,
+    `updated_by` VARCHAR(150) NULL,
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX `idx_pool_sede_cat` (`sede_id`, `categoria`),
+    INDEX `idx_pool_activo` (`activo`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Tabla de Ciclo Escolar Activo por Sede (Controlado manualmente por Administradores y Asesores)
+CREATE TABLE IF NOT EXISTS `ciclos_escolares_sede` (
+    `sede_id` VARCHAR(50) PRIMARY KEY,
+    `ciclo_activo` VARCHAR(60) NOT NULL DEFAULT '2026-3 Septiembre',
+    `ciclos_disponibles` TEXT NULL COMMENT 'JSON array de ciclos disponibles',
+    `updated_by` VARCHAR(150) NULL,
+    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 

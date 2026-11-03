@@ -343,6 +343,40 @@ function App() {
   const [emailLogs, setEmailLogs] = useState([]);
   const [emailTesting, setEmailTesting] = useState(false);
 
+  // Estados de Configuración SMTP en Vivo (Gmail App Password)
+  const [smtpInfo, setSmtpInfo] = useState({ mode: 'ethereal_test', hasPass: false, maskedPass: '', user: 'Luisquintero2001@gmail.com' });
+  const [smtpForm, setSmtpForm] = useState({
+    host: 'smtp.gmail.com',
+    port: '587',
+    user: 'Luisquintero2001@gmail.com',
+    pass: ''
+  });
+  const [smtpSaving, setSmtpSaving] = useState(false);
+  const [smtpMsg, setSmtpMsg] = useState({ text: '', type: '' });
+
+  // Estados del Pool Multimedia (Planes, Oferta, Horarios, Instalaciones) y Ciclos Escolares
+  const [ciclosList, setCiclosList] = useState([]);
+  const [activeCiclo, setActiveCiclo] = useState('2026-3 Septiembre');
+  const [newCicloInput, setNewCicloInput] = useState('');
+  const [selectedCicloFilter, setSelectedCicloFilter] = useState('all');
+  const [poolCategoryFilter, setPoolCategoryFilter] = useState('all');
+  const [showPoolModal, setShowPoolModal] = useState(false);
+  const [editingPoolId, setEditingPoolId] = useState(null);
+  const [poolSaving, setPoolSaving] = useState(false);
+  const [poolForm, setPoolForm] = useState({
+    titulo: '',
+    categoria: 'plan_estudios',
+    modalidad: 'Presencial',
+    duracion: '3 años (9 cuatrimestres)',
+    rvoe: 'SEP-RVOE-OFICIAL',
+    descripcion_ia: '',
+    tags: '',
+    url_recurso: '',
+    tipo_archivo: 'pdf',
+    fileName: '',
+    fileData: ''
+  });
+
   // Helper de cabeceras autenticadas con JWT
   const getAuthHeaders = (extra = {}) => {
     const token = authToken || localStorage.getItem('metal_uriel_jwt');
@@ -363,6 +397,7 @@ function App() {
     fetchHealthFull();
     loadCampuses();
     loadModels();
+    loadCiclos();
     loadAspirantes();
     loadConversations();
     loadPromptData();
@@ -372,6 +407,7 @@ function App() {
     loadTenantDetails('campeche');
     loadUsers();
     loadEmailHistory();
+    loadSmtpSettings();
 
     // Polling en vivo para sincronización de WhatsApp en tiempo real (cada 3.5 segundos)
     const liveInterval = setInterval(() => {
@@ -620,15 +656,153 @@ function App() {
     }
   };
 
-  const loadBrochures = async () => {
+  const loadCiclos = async () => {
     try {
-      const res = await fetch('/api/brochures');
+      const res = await fetch('/api/ciclos', { headers: getAuthHeaders() });
       const data = await res.json();
-      if (data.brochures) {
-        setBrochures(data.brochures);
+      if (data.success) {
+        if (data.activeCiclo) setActiveCiclo(data.activeCiclo);
+        if (Array.isArray(data.ciclos)) setCiclosList(data.ciclos);
       }
     } catch (e) {
-      console.error('Error cargando planes de estudio:', e);
+      console.error('Error cargando ciclos escolares:', e);
+    }
+  };
+
+  const handleSetActiveCiclo = async (targetCiclo) => {
+    const clean = (targetCiclo || '').trim();
+    if (!clean) return;
+    try {
+      const res = await fetch('/api/ciclos', {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ ciclo_escolar: clean, sede_id: selectedCampus })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setActiveCiclo(data.activeCiclo || clean);
+        if (Array.isArray(data.ciclos)) setCiclosList(data.ciclos);
+        setNewCicloInput('');
+      }
+    } catch (e) {
+      alert('Error cambiando ciclo escolar activo: ' + e.message);
+    }
+  };
+
+  const loadBrochures = async () => {
+    try {
+      const res = await fetch('/api/pool', { headers: getAuthHeaders() });
+      const data = await res.json();
+      if (data.items || data.brochures) {
+        setBrochures(data.items || data.brochures);
+      }
+    } catch (e) {
+      console.error('Error cargando Pool Multimedia:', e);
+    }
+  };
+
+  const handlePoolFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 18 * 1024 * 1024) {
+      alert('El archivo supera los 18 MB permitidos.');
+      return;
+    }
+    const isImg = file.type.startsWith('image/');
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      setPoolForm(prev => ({
+        ...prev,
+        fileName: file.name,
+        fileData: ev.target.result,
+        tipo_archivo: isImg ? 'imagen' : 'pdf'
+      }));
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSavePoolItem = async (e) => {
+    if (e) e.preventDefault();
+    if (!poolForm.titulo.trim()) {
+      alert('El título del recurso o carrera es obligatorio.');
+      return;
+    }
+    setPoolSaving(true);
+    try {
+      const url = editingPoolId ? `/api/pool/${editingPoolId}` : '/api/pool';
+      const method = editingPoolId ? 'PUT' : 'POST';
+      const payload = {
+        ...poolForm,
+        carrera: poolForm.titulo,
+        ciclo_escolar: activeCiclo,
+        sede_id: selectedCampus === 'all' ? 'campeche' : selectedCampus
+      };
+      const res = await fetch(url, {
+        method,
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (data.success) {
+        setShowPoolModal(false);
+        setEditingPoolId(null);
+        setPoolForm({
+          titulo: '',
+          categoria: 'plan_estudios',
+          modalidad: 'Presencial',
+          duracion: '3 años (9 cuatrimestres)',
+          rvoe: 'SEP-RVOE-OFICIAL',
+          descripcion_ia: '',
+          tags: '',
+          url_recurso: '',
+          tipo_archivo: 'pdf',
+          fileName: '',
+          fileData: ''
+        });
+        loadBrochures();
+      } else {
+        alert('Error guardando recurso: ' + (data.error || 'Error desconocido'));
+      }
+    } catch (err) {
+      alert('Error de conexión: ' + err.message);
+    } finally {
+      setPoolSaving(false);
+    }
+  };
+
+  const handleEditPoolItem = (b) => {
+    setEditingPoolId(b.codigo_recurso || b.id);
+    setPoolForm({
+      titulo: b.titulo || b.carrera || '',
+      categoria: b.categoria || 'plan_estudios',
+      modalidad: b.modalidad || 'Presencial',
+      duracion: b.duracion || '3 años (9 cuatrimestres)',
+      rvoe: b.rvoe || 'SEP-RVOE-OFICIAL',
+      descripcion_ia: b.descripcion_ia || '',
+      tags: Array.isArray(b.tags) ? b.tags.join(', ') : (b.tags || ''),
+      url_recurso: b.url_recurso || b.pdfUrl || '',
+      tipo_archivo: b.tipo_archivo || 'pdf',
+      fileName: b.fileName || '',
+      fileData: ''
+    });
+    setShowPoolModal(true);
+  };
+
+  const handleDeletePoolItem = async (id, title) => {
+    if (!confirm(`¿Seguro que deseas eliminar "${title || id}" del Pool Multimedia?`)) return;
+    try {
+      const res = await fetch(`/api/pool/${id}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
+      const data = await res.json();
+      if (data.success) {
+        loadBrochures();
+      } else {
+        alert('No se pudo eliminar: ' + (data.error || 'Error'));
+      }
+    } catch (err) {
+      alert('Error eliminando recurso: ' + err.message);
     }
   };
 
@@ -690,15 +864,15 @@ function App() {
   };
 
   const handleSeedDemo = async () => {
-    if (!confirm('¿Deseas recargar la base de datos con prospectos institucionales de demostración?')) return;
+    if (!confirm('🌱 ¿Deseas poblar la base de datos con 5 prospectos institucionales de demostración?')) return;
     try {
       const res = await fetch('/api/aspirantes/seed', { method: 'POST' });
       const data = await res.json();
       if (data.success) {
-        loadAspirantes();
-        loadConversations();
-        loadAnalytics();
-        alert('✅ Datos de demostración cargados exitosamente.');
+        await loadAspirantes();
+        await loadConversations();
+        await loadAnalytics();
+        alert('🌱 Base de datos poblada exitosamente con 5 prospectos demo.');
       }
     } catch (e) {
       alert('Error cargando demo: ' + e.message);
@@ -706,18 +880,20 @@ function App() {
   };
 
   const handleTruncateDb = async () => {
-    if (!confirm('⚠️ ¿Estás COMPLETAMENTE seguro de eliminar TODOS los prospectos de MariaDB? Esta acción es para propósitos de testing.')) return;
+    if (!confirm('🗑️ ¿Estás seguro de VACIAR por completo la base de datos (aspirantes + historial de chats) y limpiar toda la memoria caché para testing desde cero?')) return;
     try {
       const res = await fetch('/api/aspirantes/all', { method: 'DELETE' });
       const data = await res.json();
       if (data.success) {
         setAspirantes([]);
+        setConversations([]);
+        setMessages([]);
+        setSelectedChatPhone(null);
         setSelectedLead(null);
         setLastCompletedLead(null);
         setLiveExtractedFields({});
-        loadConversations();
-        loadAnalytics();
-        alert('🗑️ Base de datos vaciada exitosamente. 0 registros.');
+        await loadAnalytics();
+        alert('🗑️ Base de datos (aspirantes + historial) y memoria caché vaciadas al 100%. Lista para testing desde cero.');
       } else {
         alert('Error al vaciar base de datos: ' + (data.error || 'Error desconocido'));
       }
@@ -770,6 +946,49 @@ function App() {
       }
     } catch (e) {
       console.error('Error cargando bitácora de correos:', e);
+    }
+  };
+
+  const loadSmtpSettings = async () => {
+    try {
+      const res = await fetch('/api/settings/smtp', { headers: getAuthHeaders() });
+      const data = await res.json();
+      if (data.success && data.smtp) {
+        setSmtpInfo(data.smtp);
+        setSmtpForm(prev => ({
+          ...prev,
+          host: data.smtp.host || 'smtp.gmail.com',
+          port: data.smtp.port || '587',
+          user: data.smtp.user || 'Luisquintero2001@gmail.com'
+        }));
+      }
+    } catch (e) {
+      console.error('Error cargando estado SMTP:', e);
+    }
+  };
+
+  const handleSaveSmtpSettings = async (e) => {
+    if (e) e.preventDefault();
+    setSmtpSaving(true);
+    setSmtpMsg({ text: '', type: '' });
+    try {
+      const res = await fetch('/api/settings/smtp', {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(smtpForm)
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSmtpMsg({ text: '✅ ' + data.message, type: 'success' });
+        setSmtpForm(prev => ({ ...prev, pass: '' }));
+        loadSmtpSettings();
+      } else {
+        setSmtpMsg({ text: '❌ ' + (data.error || 'Error guardando SMTP'), type: 'error' });
+      }
+    } catch (err) {
+      setSmtpMsg({ text: '❌ Error de conexión: ' + err.message, type: 'error' });
+    } finally {
+      setSmtpSaving(false);
     }
   };
 
@@ -1071,9 +1290,11 @@ function App() {
         modelUsed: data.modelUsed,
         documentAttachment: data.documentAttachment ? {
           title: data.documentAttachment.title,
-          caption: `Reconocimiento de Validez Oficial SEP: ${data.documentAttachment.rvoe} (${data.documentAttachment.modalidad})`,
+          caption: data.documentAttachment.descripcion_ia || `Validez Oficial SEP: ${data.documentAttachment.rvoe} (${data.documentAttachment.modalidad})`,
           fileName: data.documentAttachment.fileName,
-          url: data.documentAttachment.pdfUrl || data.documentAttachment.downloadUrl
+          tipo_archivo: data.documentAttachment.tipo_archivo || 'pdf',
+          categoria: data.documentAttachment.categoria || 'plan_estudios',
+          url: data.documentAttachment.pdfUrl || data.documentAttachment.url_recurso || data.documentAttachment.downloadUrl
         } : null
       };
 
@@ -1208,12 +1429,20 @@ function App() {
   }, [selectedCampus, campusesList]);
 
   const activeLeads = useMemo(() => {
-    return aspirantes.filter(a => !a.archivado);
-  }, [aspirantes]);
+    return aspirantes.filter(a => {
+      if (a.archivado) return false;
+      if (selectedCicloFilter !== 'all' && (a.ciclo_escolar || '2026-3 Septiembre') !== selectedCicloFilter) return false;
+      return true;
+    });
+  }, [aspirantes, selectedCicloFilter]);
 
   const archivedLeads = useMemo(() => {
-    return aspirantes.filter(a => Boolean(a.archivado));
-  }, [aspirantes]);
+    return aspirantes.filter(a => {
+      if (!a.archivado) return false;
+      if (selectedCicloFilter !== 'all' && (a.ciclo_escolar || '2026-3 Septiembre') !== selectedCicloFilter) return false;
+      return true;
+    });
+  }, [aspirantes, selectedCicloFilter]);
 
   const activeLeadsCount = activeLeads.length;
   const archivedLeadsCount = archivedLeads.length;
@@ -1234,6 +1463,9 @@ function App() {
   // Filtrado de la lista de conversaciones en WhatsApp Web
   const filteredConversations = useMemo(() => {
     return conversations.filter(c => {
+      // Filtro por Ciclo Escolar
+      if (selectedCicloFilter !== 'all' && (c.ciclo_escolar || '2026-3 Septiembre') !== selectedCicloFilter) return false;
+
       // Filtro por tab
       if (chatFilterTab === 'nuevo' && c.estado_prospecto !== 'nuevo') return false;
       if (chatFilterTab === 'contactado' && (c.estado_prospecto !== 'contactado' && c.estado_prospecto !== 'en_proceso')) return false;
@@ -1251,7 +1483,7 @@ function App() {
       }
       return true;
     });
-  }, [conversations, chatFilterTab, chatSearchQuery]);
+  }, [conversations, chatFilterTab, chatSearchQuery, selectedCicloFilter]);
 
   // Conversación seleccionada actual
   const activeConversation = useMemo(() => {
@@ -1358,26 +1590,24 @@ function App() {
             </span>
           </button>
 
-          {/* Planes de Estudio (Exclusivo Desarrollador) */}
-          {isDesarrollador && (
-            <button
-              onClick={() => setActiveTab('brochures')}
-              className={`w-11 h-11 rounded-xl flex items-center justify-center transition relative group ${
-                activeTab === 'brochures'
-                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow-sm'
-                  : 'text-slate-400 hover:text-slate-100 hover:bg-[#202C33]'
-              }`}
-              title="Catálogo de Planes de Estudio (PDF)"
-            >
-              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M22 10v6M2 10l10-5 10 5-10 5z" />
-                <path d="M6 12v5c3 3 9 3 12 0v-5" />
-              </svg>
-              <span className="absolute left-16 bg-[#111B21] text-xs px-2.5 py-1 rounded-md border border-[#222E35] text-white opacity-0 group-hover:opacity-100 transition whitespace-nowrap shadow-xl pointer-events-none z-50">
-                📚 Planes de Estudio ({brochures.length})
-              </span>
-            </button>
-          )}
+          {/* Pool Multimedia: Planes de Estudio, Oferta, Horarios e Instalaciones (Abierto a los 3 roles) */}
+          <button
+            onClick={() => setActiveTab('brochures')}
+            className={`w-11 h-11 rounded-xl flex items-center justify-center transition relative group ${
+              activeTab === 'brochures'
+                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow-sm'
+                : 'text-slate-400 hover:text-slate-100 hover:bg-[#202C33]'
+            }`}
+            title="Pool Multimedia: Planes de Estudio, Horarios e Instalaciones"
+          >
+            <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22 10v6M2 10l10-5 10 5-10 5z" />
+              <path d="M6 12v5c3 3 9 3 12 0v-5" />
+            </svg>
+            <span className="absolute left-16 bg-[#111B21] text-xs px-2.5 py-1 rounded-md border border-[#222E35] text-white opacity-0 group-hover:opacity-100 transition whitespace-nowrap shadow-xl pointer-events-none z-50">
+              📚 Pool Multimedia & Planes ({brochures.length})
+            </span>
+          </button>
 
           {/* 11 Datos IA (Exclusivo Desarrollador) */}
           {isDesarrollador && (
@@ -1482,6 +1712,7 @@ function App() {
                   setActiveTab('users_crud');
                   loadUsers();
                   loadEmailHistory();
+                  loadSmtpSettings();
                 }}
                 className={`w-11 h-11 rounded-xl flex items-center justify-center transition relative group ${
                   activeTab === 'users_crud'
@@ -1632,6 +1863,26 @@ function App() {
               )}
             </div>
 
+            {/* Selector Rápido de Ciclo Escolar Activo */}
+            <div className="hidden lg:flex items-center gap-1.5 bg-[#202C33] px-2.5 py-1 rounded-lg border border-amber-500/30" title="Ciclo Escolar Activo para nuevos registros y chats">
+              <span className="text-[10px] text-amber-400 font-bold">📅 Ciclo:</span>
+              <select
+                value={activeCiclo}
+                onChange={(e) => handleSetActiveCiclo(e.target.value)}
+                className="bg-transparent text-xs text-amber-300 font-bold focus:outline-none cursor-pointer"
+              >
+                {(ciclosList.length > 0 ? ciclosList : [
+                  { ciclo_escolar: '2026-2 Mayo' },
+                  { ciclo_escolar: '2026-3 Septiembre' },
+                  { ciclo_escolar: '2027-1 Enero' }
+                ]).map((c, idx) => (
+                  <option key={c.ciclo_escolar || idx} value={c.ciclo_escolar} className="bg-[#111B21] text-slate-200">
+                    {c.ciclo_escolar}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             {/* Selector de Modelo IA (Exclusivo Desarrollador) */}
             {isDesarrollador && (
               <div className="hidden md:flex items-center gap-1 bg-[#202C33] px-2.5 py-1 rounded-lg border border-slate-700/60">
@@ -1690,16 +1941,26 @@ function App() {
               </a>
             )}
 
-            {/* Cargar Demo (Exclusivo Desarrollador) */}
+            {/* Botones de Testing para Desarrollador: Vaciar DB + Caché y Poblar DB (Demo) */}
             {isDesarrollador && (
-              <button
-                onClick={handleSeedDemo}
-                className="px-2.5 py-1 rounded-lg bg-amber-950/60 hover:bg-amber-900/80 text-amber-300 border border-amber-500/40 text-xs font-bold flex items-center gap-1 transition"
-                title="Cargar prospectos institucionales demo"
-              >
-                <i data-lucide="sparkles" className="w-3.5 h-3.5"></i>
-                <span className="hidden lg:inline">Demo</span>
-              </button>
+              <>
+                <button
+                  onClick={handleTruncateDb}
+                  className="px-2.5 py-1 rounded-lg bg-red-950/70 hover:bg-red-900 text-red-300 border border-red-500/40 text-xs font-bold flex items-center gap-1 transition"
+                  title="Vaciar Base de Datos y Memoria Caché al 100%"
+                >
+                  <span>🗑️</span>
+                  <span className="hidden xl:inline">Vaciar DB + Caché</span>
+                </button>
+                <button
+                  onClick={handleSeedDemo}
+                  className="px-2.5 py-1 rounded-lg bg-amber-950/60 hover:bg-amber-900/80 text-amber-300 border border-amber-500/40 text-xs font-bold flex items-center gap-1 transition"
+                  title="Poblar Base de Datos con 5 prospectos institucionales demo"
+                >
+                  <span>🌱</span>
+                  <span className="hidden lg:inline">Poblar DB</span>
+                </button>
+              </>
             )}
           </div>
         </header>
@@ -1726,6 +1987,23 @@ function App() {
                   </h2>
 
                   <div className="flex items-center gap-1 text-slate-400">
+                    <select
+                      value={selectedCicloFilter}
+                      onChange={(e) => setSelectedCicloFilter(e.target.value)}
+                      className="bg-[#202C33] text-[10px] text-amber-300 font-bold rounded-lg px-2 py-1 border border-slate-700 focus:outline-none cursor-pointer"
+                      title="Filtrar chats por Ciclo Escolar"
+                    >
+                      <option value="all">Todos los Ciclos</option>
+                      {(ciclosList.length > 0 ? ciclosList : [
+                        { ciclo_escolar: '2026-2 Mayo' },
+                        { ciclo_escolar: '2026-3 Septiembre' },
+                        { ciclo_escolar: '2027-1 Enero' }
+                      ]).map((c, idx) => (
+                        <option key={c.ciclo_escolar || idx} value={c.ciclo_escolar}>
+                          {c.ciclo_escolar}
+                        </option>
+                      ))}
+                    </select>
                     <button
                       onClick={() => loadConversations()}
                       className="p-1.5 rounded-lg hover:text-slate-100 hover:bg-[#202C33] transition"
@@ -1953,34 +2231,38 @@ function App() {
                     <span>{activeConversation?.isPaused ? 'Reanudar Metal-Uriel' : 'Pausar IA (Control Asesor)'}</span>
                   </button>
 
-                  {/* Botón Enviar Plan de Estudios (PDF) */}
+                  {/* Botón Enviar Recurso del Pool (PDF / Imagen / Horario) */}
                   <div className="relative">
                     <button
                       onClick={() => setShowBrochurePicker(!showBrochurePicker)}
                       className="px-2.5 py-1.5 rounded-xl bg-[#202C33] hover:bg-[#2A3942] text-amber-300 border border-amber-500/30 text-xs font-bold flex items-center gap-1.5 transition"
-                      title="Enviar Folleto Oficial en PDF a este aspirante"
+                      title="Enviar Plan de Estudios, Horario o Imagen del Pool a este aspirante"
                     >
                       <i data-lucide="file-text" className="w-3.5 h-3.5 text-amber-400"></i>
-                      <span className="hidden md:inline">Enviar Plan PDF</span>
+                      <span className="hidden md:inline">Enviar del Pool</span>
                     </button>
 
-                    {/* Menú Flotante de Selección de Folleto */}
+                    {/* Menú Flotante de Selección de Recurso del Pool */}
                     {showBrochurePicker && (
-                      <div className="absolute right-0 top-11 w-72 bg-[#111B21] border border-[#222E35] rounded-2xl shadow-2xl p-2 z-50 space-y-1">
+                      <div className="absolute right-0 top-11 w-80 bg-[#111B21] border border-[#222E35] rounded-2xl shadow-2xl p-2 z-50 space-y-1">
                         <div className="px-2 py-1 text-[11px] font-bold text-slate-400 flex items-center justify-between border-b border-slate-800 pb-1.5">
-                          <span>Seleccionar Plan de Estudios:</span>
+                          <span>Seleccionar Recurso del Pool Multimedia:</span>
                           <button onClick={() => setShowBrochurePicker(false)} className="hover:text-white">✕</button>
                         </div>
-                        <div className="max-h-60 overflow-y-auto space-y-1 pt-1">
+                        <div className="max-h-64 overflow-y-auto space-y-1 pt-1">
                           {brochures.map(b => (
                             <button
                               key={b.id}
                               onClick={() => handleSendBrochureQuick(b.id)}
-                              className="w-full text-left p-2 rounded-xl hover:bg-[#202C33] text-xs text-slate-200 flex items-center justify-between group transition"
+                              className="w-full text-left p-2 rounded-xl hover:bg-[#202C33] text-xs text-slate-200 flex items-center justify-between group transition gap-2"
                             >
-                              <span className="truncate pr-2 font-medium">{b.carrera}</span>
-                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-950 text-amber-300 font-mono shrink-0">
-                                PDF
+                              <span className="truncate font-medium">{b.titulo || b.carrera}</span>
+                              <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono shrink-0 ${
+                                b.tipo_archivo === 'imagen'
+                                  ? 'bg-sky-950 text-sky-300 border border-sky-500/30'
+                                  : 'bg-amber-950 text-amber-300 border border-amber-500/30'
+                              }`}>
+                                {b.tipo_archivo === 'imagen' ? 'IMG' : 'PDF'}
                               </span>
                             </button>
                           ))}
@@ -2059,28 +2341,39 @@ function App() {
                         >
                           <p className="whitespace-pre-wrap">{m.text}</p>
 
-                          {/* Card de Documento PDF Adjunto Oficial */}
+                          {/* Card de Documento PDF o Imagen Adjunta del Pool Multimedia */}
                           {m.documentAttachment && (
                             <div className="mt-2 p-2.5 rounded-xl bg-[#0A192F] border border-amber-500/40 space-y-1.5 shadow-inner">
                               <div className="flex items-center justify-between gap-2">
                                 <span className="font-extrabold text-[11px] text-amber-300 flex items-center gap-1.5 truncate">
-                                  <i data-lucide="file-text" className="w-3.5 h-3.5 text-amber-400 shrink-0"></i>
-                                  {m.documentAttachment.title || 'Plan de Estudios Oficial UNID'}
+                                  <span>{m.documentAttachment.tipo_archivo === 'imagen' ? '🖼️' : '📄'}</span>
+                                  <span className="truncate">{m.documentAttachment.title || 'Recurso Oficial UNID'}</span>
                                 </span>
-                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-950 text-amber-300 font-mono border border-amber-500/30">
-                                  PDF SEP
+                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-950 text-amber-300 font-mono border border-amber-500/30 shrink-0">
+                                  {m.documentAttachment.tipo_archivo === 'imagen' ? 'IMAGEN' : 'PDF SEP'}
                                 </span>
                               </div>
-                              <p className="text-[10px] text-slate-300 leading-tight">
-                                {m.documentAttachment.caption || 'Documento oficial con mapa curricular cuatrimestral y becas.'}
+                              {m.documentAttachment.tipo_archivo === 'imagen' && (m.documentAttachment.url || m.documentAttachment.pdfUrl || m.documentAttachment.url_recurso) && (
+                                <div className="rounded-lg overflow-hidden border border-slate-700 bg-slate-950">
+                                  <img
+                                    src={m.documentAttachment.url || m.documentAttachment.pdfUrl || m.documentAttachment.url_recurso}
+                                    alt={m.documentAttachment.title || 'Imagen UNID'}
+                                    className="w-full max-h-52 object-cover"
+                                  />
+                                </div>
+                              )}
+                              <p className="text-[10px] text-slate-300 leading-tight line-clamp-2">
+                                {m.documentAttachment.caption || 'Recurso oficial del Pool Multimedia UNID.'}
                               </p>
                               <a
-                                href={m.documentAttachment.url}
+                                href={m.documentAttachment.url || m.documentAttachment.pdfUrl || m.documentAttachment.url_recurso || m.documentAttachment.downloadUrl}
                                 target="_blank"
-                                download={m.documentAttachment.fileName || 'Plan_Estudios_UNID.pdf'}
+                                download={m.documentAttachment.fileName || 'Recurso_UNID'}
                                 className="mt-1 block text-center py-1 rounded-lg bg-gradient-to-r from-[#FFC72C] to-[#F59E0B] hover:from-[#F59E0B] hover:to-[#D97706] text-slate-950 font-black text-[10px] transition shadow"
                               >
-                                📥 Descargar / Abrir Plan de Estudios (PDF)
+                                {m.documentAttachment.tipo_archivo === 'imagen'
+                                  ? '🔍 Abrir / Descargar Imagen Oficial'
+                                  : '📥 Descargar / Abrir Documento (PDF)'}
                               </a>
                             </div>
                           )}
@@ -2303,28 +2596,46 @@ function App() {
                 </p>
               </div>
 
-              {/* Toggle Activos vs Archivados */}
-              <div className="flex items-center gap-2 bg-[#1E293B] p-1 rounded-xl border border-slate-700 self-start sm:self-auto">
-                <button
-                  onClick={() => setShowArchiveView(false)}
-                  className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
-                    !showArchiveView
-                      ? 'bg-amber-500 text-slate-950 shadow'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  Activos ({activeLeadsCount})
-                </button>
-                <button
-                  onClick={() => setShowArchiveView(true)}
-                  className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
-                    showArchiveView
-                      ? 'bg-amber-500 text-slate-950 shadow'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  Archivados ({archivedLeadsCount})
-                </button>
+              {/* Filtro por Ciclo Escolar + Toggle Activos vs Archivados */}
+              <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+                <div className="flex items-center gap-1.5 bg-[#1E293B] px-2.5 py-1 rounded-xl border border-slate-700">
+                  <span className="text-[11px] font-bold text-slate-400">Ciclo:</span>
+                  <select
+                    value={selectedCicloFilter}
+                    onChange={(e) => setSelectedCicloFilter(e.target.value)}
+                    className="bg-transparent text-xs text-emerald-300 font-bold focus:outline-none cursor-pointer"
+                  >
+                    <option value="all" className="bg-slate-900 text-slate-200">Todos los Ciclos</option>
+                    {ciclosList.map(c => (
+                      <option key={c.id || c.ciclo_escolar} value={c.ciclo_escolar} className="bg-slate-900 text-slate-200">
+                        {c.ciclo_escolar} {c.es_activo ? '★' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex items-center gap-2 bg-[#1E293B] p-1 rounded-xl border border-slate-700">
+                  <button
+                    onClick={() => setShowArchiveView(false)}
+                    className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
+                      !showArchiveView
+                        ? 'bg-amber-500 text-slate-950 shadow'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Activos ({activeLeadsCount})
+                  </button>
+                  <button
+                    onClick={() => setShowArchiveView(true)}
+                    className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
+                      showArchiveView
+                        ? 'bg-amber-500 text-slate-950 shadow'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Archivados ({archivedLeadsCount})
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -2505,67 +2816,415 @@ function App() {
           </div>
         )}
 
-        {/* ====== TAB 3: PLANES DE ESTUDIO (SOLO DESARROLLADOR) ====== */}
-        {activeTab === 'brochures' && isDesarrollador && (
+        {/* ====== TAB 3: POOL MULTIMEDIA, PLANES, OFERTA, HORARIOS E INSTALACIONES (TODOS LOS ROLES) ====== */}
+        {activeTab === 'brochures' && (
           <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            {/* Encabezado y Botón Nuevo Recurso */}
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
               <div>
-                <h2 className="font-extrabold text-sm sm:text-base text-white flex items-center gap-2">
-                  <span>Catálogo de Planes de Estudio Oficiales UNID</span>
+                <h2 className="font-extrabold text-sm sm:text-base text-white flex items-center gap-2 flex-wrap">
+                  <span>📂 Pool Multimedia IA • Planes, Oferta, Horarios e Instalaciones</span>
                   <span className="text-xs px-2 py-0.5 rounded-full bg-amber-950 text-amber-300 font-mono border border-amber-500/40">
-                    {brochures.length} Carreras
+                    {brochures.length} Recursos Activos
+                  </span>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 font-mono border border-emerald-500/40">
+                    Ciclo: {activeCiclo}
                   </span>
                 </h2>
                 <p className="text-xs text-slate-400">
-                  Mallas curriculares con validez oficial SEP, descarga directa en PDF y CDN de Talisis.
+                  Metal-Uriel consulta este Pool en tiempo real para responder dudas y (previa confirmación del alumno) adjuntar el PDF o imagen exacta por WhatsApp.
                 </p>
               </div>
 
-              {/* Búsqueda de Folleto */}
-              <div className="relative">
-                <i data-lucide="search" className="w-4 h-4 text-slate-400 absolute left-3 top-2.5"></i>
-                <input
-                  type="text"
-                  value={brochureSearch}
-                  onChange={(e) => setBrochureSearch(e.target.value)}
-                  placeholder="Buscar carrera o palabra clave..."
-                  className="bg-[#1E293B] text-xs text-slate-100 placeholder-slate-400 rounded-xl pl-9 pr-3 py-2 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400"
-                />
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Búsqueda de Recurso */}
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={brochureSearch}
+                    onChange={(e) => setBrochureSearch(e.target.value)}
+                    placeholder="Buscar carrera, horario, foto..."
+                    className="bg-[#1E293B] text-xs text-slate-100 placeholder-slate-400 rounded-xl px-3 py-2 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400 w-56"
+                  />
+                </div>
+
+                <button
+                  onClick={() => {
+                    setEditingPoolId(null);
+                    setPoolForm({
+                      categoria: poolCategoryFilter === 'all' ? 'plan_estudios' : poolCategoryFilter,
+                      ciclo_escolar: activeCiclo || '2026-3 Septiembre',
+                      titulo: '',
+                      descripcion_ia: '',
+                      tags: '',
+                      tipo_archivo: 'pdf',
+                      url_recurso: '',
+                      file_name: '',
+                      file_data_base64: '',
+                      modalidad: 'Ejecutiva / Escolarizada',
+                      duracion: '9 Cuatrimestres (3 años)',
+                      rvoe: 'RVOE SEP Oficial'
+                    });
+                    setPoolMsg({ type: '', text: '' });
+                    setShowPoolModal(true);
+                  }}
+                  className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-[#FFC72C] to-[#F59E0B] hover:brightness-110 text-slate-950 font-black text-xs transition shadow flex items-center gap-1.5"
+                >
+                  <span>➕ Subir / Nuevo Recurso al Pool</span>
+                </button>
               </div>
             </div>
 
-            {/* Grid de Carreras y PDFs */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
-              {brochures
-                .filter(b => !brochureSearch || b.carrera.toLowerCase().includes(brochureSearch.toLowerCase()))
-                .map((b) => (
-                  <div
-                    key={b.id}
-                    className="p-4 rounded-2xl bg-[#0F172A] border border-slate-800 hover:border-amber-400/50 transition shadow-sm space-y-2.5 flex flex-col justify-between"
+            {/* Barra de Control de Ciclo Escolar Activo Manual */}
+            <div className="p-3.5 rounded-2xl bg-[#0F172A] border border-emerald-500/30 flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div className="space-y-0.5">
+                <div className="text-xs font-extrabold text-emerald-300 flex items-center gap-2">
+                  <span>📅 Selector Manual de Ciclo Escolar Activo ({selectedCampusName})</span>
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  Cambia el periodo activo cuando inicie una nueva captación. Todos los nuevos leads y chats se etiquetarán con este ciclo.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={activeCiclo}
+                  onChange={(e) => handleSetActiveCiclo(e.target.value)}
+                  className="bg-[#1E293B] text-xs text-emerald-300 font-bold rounded-xl px-3 py-1.5 border border-emerald-500/40 focus:outline-none cursor-pointer"
+                >
+                  {ciclosList.map(c => (
+                    <option key={c.id || c.ciclo_escolar} value={c.ciclo_escolar}>
+                      {c.ciclo_escolar} {c.es_activo ? ' (ACTIVO ★)' : ''}
+                    </option>
+                  ))}
+                </select>
+
+                <div className="flex items-center gap-1">
+                  <input
+                    type="text"
+                    value={newCicloInput}
+                    onChange={(e) => setNewCicloInput(e.target.value)}
+                    placeholder="Nuevo ej: 2027-2 Mayo"
+                    className="bg-[#1E293B] text-xs text-slate-100 placeholder-slate-500 rounded-xl px-2.5 py-1.5 border border-slate-700 focus:outline-none w-40"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (newCicloInput.trim()) handleSetActiveCiclo(newCicloInput.trim());
+                    }}
+                    className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs transition"
                   >
-                    <div className="space-y-1.5">
-                      <div className="flex items-start justify-between gap-2">
-                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-950/80 text-amber-300 font-mono font-bold border border-amber-500/30">
-                          {b.rvoe}
-                        </span>
-                        <span className="text-[10px] text-slate-400 font-mono">{b.size}</span>
+                    Crear y Activar
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Pestañas de Categoría General del Pool */}
+            <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-800 pb-2.5">
+              {[
+                { id: 'all', label: '🌐 Todos los Recursos' },
+                { id: 'plan_estudios', label: '📚 Planes de Estudio' },
+                { id: 'oferta_educativa', label: '🎓 Oferta Educativa' },
+                { id: 'horarios', label: '🕒 Horarios de Clase' },
+                { id: 'instalaciones', label: '🏛️ Fotos e Instalaciones' },
+                { id: 'becas_costos', label: '💰 Becas y Costos' }
+              ].map(cat => (
+                <button
+                  key={cat.id}
+                  onClick={() => setPoolCategoryFilter(cat.id)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition ${
+                    poolCategoryFilter === cat.id
+                      ? 'bg-amber-500 text-slate-950 shadow font-black'
+                      : 'bg-[#0F172A] text-slate-300 hover:bg-slate-800 border border-slate-800'
+                  }`}
+                >
+                  {cat.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Modal para Crear / Editar Recurso del Pool (Subida Directa PDF/JPG/PNG o Link) */}
+            {showPoolModal && (
+              <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                <div className="bg-[#0F172A] border border-amber-500/40 rounded-2xl max-w-2xl w-full p-5 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                    <h3 className="font-extrabold text-sm text-white flex items-center gap-2">
+                      <span>{editingPoolId ? '✏️ Editar Recurso del Pool Multimedia' : '➕ Subir Nuevo Recurso al Pool Multimedia'}</span>
+                    </h3>
+                    <button onClick={() => setShowPoolModal(false)} className="text-slate-400 hover:text-white text-sm font-bold">✕</button>
+                  </div>
+
+                  <form onSubmit={handleSavePoolItem} className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-bold text-slate-300">Categoría del Pool</label>
+                        <select
+                          value={poolForm.categoria}
+                          onChange={(e) => setPoolForm({ ...poolForm, categoria: e.target.value })}
+                          className="w-full bg-[#1E293B] text-xs text-amber-300 font-bold rounded-xl px-3 py-2 border border-slate-700 focus:outline-none"
+                        >
+                          <option value="plan_estudios">📚 Plan de Estudios</option>
+                          <option value="oferta_educativa">🎓 Oferta Educativa General</option>
+                          <option value="horarios">🕒 Horarios de Clase</option>
+                          <option value="instalaciones">🏛️ Fotos / Instalaciones</option>
+                          <option value="becas_costos">💰 Becas y Costos</option>
+                        </select>
                       </div>
 
-                      <h3 className="font-bold text-xs text-white leading-snug">{b.carrera}</h3>
-                      <p className="text-[11px] text-slate-400">{b.modalidad} • {b.duracion}</p>
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-bold text-slate-300">Tipo de Archivo</label>
+                        <select
+                          value={poolForm.tipo_archivo}
+                          onChange={(e) => setPoolForm({ ...poolForm, tipo_archivo: e.target.value })}
+                          className="w-full bg-[#1E293B] text-xs text-sky-300 font-bold rounded-xl px-3 py-2 border border-slate-700 focus:outline-none"
+                        >
+                          <option value="pdf">📄 Documento PDF</option>
+                          <option value="imagen">🖼️ Imagen (JPG / PNG / WEBP)</option>
+                        </select>
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-bold text-slate-300">Ciclo Escolar</label>
+                        <input
+                          type="text"
+                          value={poolForm.ciclo_escolar}
+                          onChange={(e) => setPoolForm({ ...poolForm, ciclo_escolar: e.target.value })}
+                          placeholder="Ej. 2026-3 Septiembre"
+                          className="w-full bg-[#1E293B] text-xs text-emerald-300 font-bold rounded-xl px-3 py-2 border border-slate-700 focus:outline-none"
+                        />
+                      </div>
                     </div>
 
-                    <div className="pt-2 flex items-center gap-2 border-t border-slate-800">
-                      <a
-                        href={b.pdfUrl || `/api/brochures/${b.id}/download`}
-                        target="_blank"
-                        className="flex-1 py-1.5 rounded-xl bg-gradient-to-r from-[#FFC72C] to-[#F59E0B] hover:from-[#F59E0B] hover:to-[#D97706] text-slate-950 font-black text-xs text-center transition shadow"
-                      >
-                        📥 Abrir PDF Oficial
-                      </a>
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-slate-300">Título Oficial del Recurso / Carrera</label>
+                      <input
+                        type="text"
+                        required
+                        value={poolForm.titulo}
+                        onChange={(e) => setPoolForm({ ...poolForm, titulo: e.target.value })}
+                        placeholder="Ej. Licenciatura en Ciencias y Técnicas de la Comunicación / Horarios Mayo 2026"
+                        className="w-full bg-[#1E293B] text-xs text-slate-100 rounded-xl px-3 py-2 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                      />
                     </div>
-                  </div>
-                ))}
+
+                    {/* Subida Híbrida: Archivo Local o URL Externa */}
+                    <div className="p-3 rounded-xl bg-[#1E293B]/60 border border-slate-700 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[11px] font-extrabold text-amber-300">
+                          📤 Opción A: Subir Archivo desde tu Computadora (PDF, PNG, JPG, WEBP)
+                        </label>
+                        {poolForm.file_data_base64 && (
+                          <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 font-mono">
+                            ✓ Archivo listo: {poolForm.file_name}
+                          </span>
+                        )}
+                      </div>
+                      <input
+                        type="file"
+                        accept=".pdf,image/png,image/jpeg,image/webp"
+                        onChange={handlePoolFileChange}
+                        className="w-full text-xs text-slate-300 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-amber-500 file:text-slate-950 hover:file:bg-amber-400 cursor-pointer"
+                      />
+
+                      <div className="space-y-1 pt-1 border-t border-slate-800">
+                        <label className="text-[11px] font-bold text-slate-400">
+                          🔗 Opción B: O pegar URL externa (CDN / Drive / Web) si no subes archivo local
+                        </label>
+                        <input
+                          type="text"
+                          value={poolForm.url_recurso}
+                          onChange={(e) => setPoolForm({ ...poolForm, url_recurso: e.target.value })}
+                          placeholder="https://... o /uploads/recursos/..."
+                          className="w-full bg-[#0F172A] text-xs text-slate-200 rounded-xl px-3 py-1.5 border border-slate-700 focus:outline-none font-mono"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-bold text-slate-300">Modalidad / Turno</label>
+                        <input
+                          type="text"
+                          value={poolForm.modalidad}
+                          onChange={(e) => setPoolForm({ ...poolForm, modalidad: e.target.value })}
+                          placeholder="Escolarizada / Ejecutiva / Online"
+                          className="w-full bg-[#1E293B] text-xs text-slate-100 rounded-xl px-3 py-1.5 border border-slate-700 focus:outline-none"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-bold text-slate-300">Duración / Detalle</label>
+                        <input
+                          type="text"
+                          value={poolForm.duracion}
+                          onChange={(e) => setPoolForm({ ...poolForm, duracion: e.target.value })}
+                          placeholder="9 Cuatrimestres (3 años)"
+                          className="w-full bg-[#1E293B] text-xs text-slate-100 rounded-xl px-3 py-1.5 border border-slate-700 focus:outline-none"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-bold text-slate-300">RVOE / Referencia</label>
+                        <input
+                          type="text"
+                          value={poolForm.rvoe}
+                          onChange={(e) => setPoolForm({ ...poolForm, rvoe: e.target.value })}
+                          placeholder="RVOE SEP Oficial"
+                          className="w-full bg-[#1E293B] text-xs text-slate-100 rounded-xl px-3 py-1.5 border border-slate-700 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-emerald-300">
+                        🤖 Contexto / Resumen para Metal-Uriel (`descripcion_ia`)
+                      </label>
+                      <textarea
+                        rows="2"
+                        required
+                        value={poolForm.descripcion_ia}
+                        onChange={(e) => setPoolForm({ ...poolForm, descripcion_ia: e.target.value })}
+                        placeholder="Escribe qué contiene este plan, horario o instalación. Metal-Uriel leerá esto para responder dudas del aspirante antes de ofrecerle el archivo."
+                        className="w-full bg-[#1E293B] text-xs text-slate-100 rounded-xl p-2.5 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-emerald-400"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-slate-300">
+                        🏷️ Palabras Clave / Sinónimos separados por coma (`tags`)
+                      </label>
+                      <input
+                        type="text"
+                        value={poolForm.tags}
+                        onChange={(e) => setPoolForm({ ...poolForm, tags: e.target.value })}
+                        placeholder="Ej. comunicacion, ciencias de la comunicacion, medios, periodismo, radio, tv"
+                        className="w-full bg-[#1E293B] text-xs text-amber-200 rounded-xl px-3 py-1.5 border border-slate-700 focus:outline-none font-mono"
+                      />
+                    </div>
+
+                    {poolMsg && poolMsg.text && (
+                      <div className={`p-2.5 rounded-xl text-xs font-bold border ${
+                        poolMsg.type === 'success'
+                          ? 'bg-emerald-950/80 border-emerald-500/40 text-emerald-300'
+                          : 'bg-red-950/80 border-red-500/40 text-red-300'
+                      }`}>
+                        {poolMsg.text}
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => setShowPoolModal(false)}
+                        className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={poolSaving}
+                        className="px-5 py-2 rounded-xl bg-gradient-to-r from-[#FFC72C] to-[#F59E0B] text-slate-950 font-black text-xs shadow hover:brightness-110 transition"
+                      >
+                        {poolSaving ? 'Guardando...' : editingPoolId ? 'Guardar Cambios' : 'Publicar en el Pool IA'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+
+            {/* Grid de Recursos del Pool Multimedia */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+              {brochures
+                .filter(b => poolCategoryFilter === 'all' || (b.categoria || 'plan_estudios') === poolCategoryFilter)
+                .filter(b => {
+                  if (!brochureSearch) return true;
+                  const q = brochureSearch.toLowerCase();
+                  return (
+                    (b.titulo || b.carrera || '').toLowerCase().includes(q) ||
+                    (b.descripcion_ia || '').toLowerCase().includes(q) ||
+                    (Array.isArray(b.tags) ? b.tags.join(' ') : String(b.tags || '')).toLowerCase().includes(q)
+                  );
+                })
+                .map((b) => {
+                  const catLabels = {
+                    plan_estudios: { text: '📚 Plan de Estudios', color: 'bg-amber-950/80 text-amber-300 border-amber-500/30' },
+                    oferta_educativa: { text: '🎓 Oferta Educativa', color: 'bg-purple-950/80 text-purple-300 border-purple-500/30' },
+                    horarios: { text: '🕒 Horarios', color: 'bg-emerald-950/80 text-emerald-300 border-emerald-500/30' },
+                    instalaciones: { text: '🏛️ Instalaciones', color: 'bg-sky-950/80 text-sky-300 border-sky-500/30' },
+                    becas_costos: { text: '💰 Becas y Costos', color: 'bg-rose-950/80 text-rose-300 border-rose-500/30' }
+                  };
+                  const badge = catLabels[b.categoria || 'plan_estudios'] || catLabels.plan_estudios;
+                  const resourceUrl = b.url_recurso || b.pdfUrl || `/api/brochures/${b.id}/download`;
+
+                  return (
+                    <div
+                      key={b.db_id || b.id}
+                      className="p-4 rounded-2xl bg-[#0F172A] border border-slate-800 hover:border-amber-400/50 transition shadow-sm space-y-2.5 flex flex-col justify-between"
+                    >
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-1.5 flex-wrap">
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${badge.color}`}>
+                            {badge.text}
+                          </span>
+                          <div className="flex items-center gap-1">
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-900 text-emerald-300 font-mono border border-slate-700">
+                              {b.ciclo_escolar || activeCiclo}
+                            </span>
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono uppercase">
+                              {b.tipo_archivo || 'pdf'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {b.tipo_archivo === 'imagen' && resourceUrl && (
+                          <div className="rounded-xl overflow-hidden border border-slate-800 bg-slate-950 h-36">
+                            <img src={resourceUrl} alt={b.titulo || b.carrera} className="w-full h-full object-cover" />
+                          </div>
+                        )}
+
+                        <h3 className="font-bold text-xs text-white leading-snug">{b.titulo || b.carrera}</h3>
+                        <p className="text-[11px] text-amber-300/90 font-medium">{b.modalidad} • {b.duracion}</p>
+
+                        {b.descripcion_ia && (
+                          <p className="text-[11px] text-slate-400 line-clamp-3 leading-relaxed bg-[#1E293B]/50 p-2 rounded-xl border border-slate-800/80">
+                            {b.descripcion_ia}
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="pt-2 flex flex-wrap items-center gap-1.5 border-t border-slate-800">
+                        <a
+                          href={resourceUrl}
+                          target="_blank"
+                          className="flex-1 py-1.5 px-2 rounded-xl bg-gradient-to-r from-[#FFC72C] to-[#F59E0B] hover:brightness-110 text-slate-950 font-black text-[11px] text-center transition shadow"
+                        >
+                          {b.tipo_archivo === 'imagen' ? '🖼️ Ver Imagen' : '📥 Abrir PDF'}
+                        </a>
+                        <button
+                          onClick={() => handleSendBrochureQuick(b.id)}
+                          className="py-1.5 px-2.5 rounded-xl bg-emerald-950 hover:bg-emerald-800 text-emerald-200 border border-emerald-500/30 font-bold text-[11px] transition"
+                          title="Enviar inmediatamente al aspirante activo en el chat"
+                        >
+                          📤 Enviar
+                        </button>
+                        <button
+                          onClick={() => handleEditPoolItem(b)}
+                          className="py-1.5 px-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-[11px] transition"
+                          title="Editar recurso"
+                        >
+                          ✏️
+                        </button>
+                        <button
+                          onClick={() => handleDeletePoolItem(b)}
+                          className="py-1.5 px-2 rounded-xl bg-red-950/80 hover:bg-red-800 text-red-200 font-bold text-[11px] transition"
+                          title="Eliminar recurso del Pool"
+                        >
+                          🗑️
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
             </div>
           </div>
         )}
@@ -2650,14 +3309,20 @@ function App() {
                 </p>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={handleSeedDemo}
+                  className="px-3 py-1.5 rounded-xl bg-emerald-950 hover:bg-emerald-900 border border-emerald-500/40 text-emerald-300 text-xs font-bold transition flex items-center gap-1.5"
+                  title="Poblar la base de datos con 5 prospectos de prueba para demostración"
+                >
+                  <span>🌱 Poblar DB (Demo 5 Prospectos)</span>
+                </button>
                 <button
                   onClick={handleTruncateDb}
                   className="px-3 py-1.5 rounded-xl bg-red-950 hover:bg-red-900 border border-red-500/40 text-red-300 text-xs font-bold transition flex items-center gap-1.5"
-                  title="Eliminar todos los prospectos para reiniciar testing"
+                  title="Vaciar completamente la base de datos y la caché en memoria para testing desde cero"
                 >
-                  <i data-lucide="trash-2" className="w-3.5 h-3.5"></i>
-                  <span>Vaciar DB (Testing)</span>
+                  <span>🗑️ Vaciar DB + Caché (Testing)</span>
                 </button>
               </div>
             </div>
@@ -3134,6 +3799,79 @@ function App() {
                   </table>
                 </div>
               </div>
+            </div>
+
+            {/* Configuración SMTP en Vivo (Gmail App Password para Luisquintero2001@gmail.com) */}
+            <div className="p-4 rounded-2xl bg-[#0F172A] border border-emerald-500/40 space-y-3 shadow-sm">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
+                <div>
+                  <h3 className="font-extrabold text-xs sm:text-sm text-white flex items-center gap-2">
+                    <span>🔑 Configuración SMTP en Vivo (Gmail App Password)</span>
+                    <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-mono font-bold border ${
+                      smtpInfo.hasPassword
+                        ? 'bg-emerald-950 text-emerald-300 border-emerald-500/40'
+                        : 'bg-amber-950 text-amber-300 border-amber-500/40'
+                    }`}>
+                      {smtpInfo.hasPassword ? `✓ CONECTADO (${smtpInfo.maskedPass})` : '⚠️ FALTA APP PASSWORD DE GMAIL'}
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Para recibir los correos reales en <strong>Luisquintero2001@gmail.com</strong>: ve a tu Cuenta de Google → Seguridad → Verificación en 2 pasos → <strong>Contraseñas de aplicaciones</strong>, genera una clave de 16 letras y pégala aquí.
+                  </p>
+                </div>
+              </div>
+
+              <form onSubmit={handleSaveSmtpSettings} className="grid grid-cols-1 md:grid-cols-4 gap-2.5 items-end">
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-slate-300">Servidor SMTP</label>
+                  <input
+                    type="text"
+                    value={smtpForm.host}
+                    onChange={(e) => setSmtpForm({ ...smtpForm, host: e.target.value })}
+                    className="w-full bg-[#1E293B] text-xs text-slate-200 rounded-xl px-3 py-2 border border-slate-700 font-mono"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-slate-300">Correo Remitente Gmail (`SMTP_USER`)</label>
+                  <input
+                    type="email"
+                    required
+                    value={smtpForm.user}
+                    onChange={(e) => setSmtpForm({ ...smtpForm, user: e.target.value })}
+                    className="w-full bg-[#1E293B] text-xs text-amber-300 font-bold rounded-xl px-3 py-2 border border-slate-700 font-mono"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-emerald-300">Contraseña de Aplicación Google (16 letras)</label>
+                  <input
+                    type="password"
+                    required
+                    value={smtpForm.pass}
+                    onChange={(e) => setSmtpForm({ ...smtpForm, pass: e.target.value })}
+                    placeholder="xxxx xxxx xxxx xxxx"
+                    className="w-full bg-[#1E293B] text-xs text-slate-100 rounded-xl px-3 py-2 border border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-400 font-mono"
+                  />
+                </div>
+                <div>
+                  <button
+                    type="submit"
+                    disabled={smtpSaving}
+                    className="w-full py-2 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:brightness-110 text-slate-950 font-black text-xs transition shadow"
+                  >
+                    {smtpSaving ? 'Guardando...' : '💾 Guardar y Activar SMTP Real'}
+                  </button>
+                </div>
+              </form>
+
+              {smtpMsg && smtpMsg.text && (
+                <div className={`p-2.5 rounded-xl text-xs font-bold border ${
+                  smtpMsg.type === 'success'
+                    ? 'bg-emerald-950/80 border-emerald-500/40 text-emerald-300'
+                    : 'bg-red-950/80 border-red-500/40 text-red-300'
+                }`}>
+                  {smtpMsg.text}
+                </div>
+              )}
             </div>
 
             {/* Panel de Notificaciones por Correo Electrónico (Nodemailer -> Luisquintero2001@gmail.com) */}
