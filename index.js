@@ -57,6 +57,35 @@ function maskSecret(plainText) {
     return plainText.substring(0, 4) + '••••••••' + plainText.substring(plainText.length - 4);
 }
 
+// ==========================================
+// Criptografía de Contraseñas para RBAC (scrypt + salt)
+// ==========================================
+function hashPassword(plainPassword) {
+    if (!plainPassword) return '';
+    const salt = crypto.randomBytes(16).toString('hex');
+    const derivedKey = crypto.scryptSync(String(plainPassword), salt, 64).toString('hex');
+    return `scrypt:${salt}:${derivedKey}`;
+}
+
+function verifyPassword(plainPassword, storedHash) {
+    if (!plainPassword || !storedHash) return false;
+    if (storedHash.startsWith('scrypt:')) {
+        try {
+            const parts = storedHash.split(':');
+            if (parts.length !== 3) return false;
+            const [, salt, keyHex] = parts;
+            const derivedKey = crypto.scryptSync(String(plainPassword), salt, 64);
+            const keyBuffer = Buffer.from(keyHex, 'hex');
+            if (derivedKey.length !== keyBuffer.length) return false;
+            return crypto.timingSafeEqual(derivedKey, keyBuffer);
+        } catch (e) {
+            return false;
+        }
+    }
+    // Soporte legacy texto plano si se insertó manualmente en SQL
+    return String(plainPassword) === String(storedHash);
+}
+
 process.on('uncaughtException', (err) => {
     console.error('🔥 Error no capturado (uncaughtException):', err);
 });
@@ -172,15 +201,87 @@ const dbPool = mysql.createPool({
             console.warn('⚠️ Error poblando sedes iniciales:', seedErr.message);
         }
 
-        // 3. Migraciones de la tabla aspirantes
+        // 3. Crear tabla de usuarios RBAC si no existe y sembrar los 3 niveles base
+        await connection.query(`
+            CREATE TABLE IF NOT EXISTS usuarios (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                correo_institucional VARCHAR(255) NOT NULL UNIQUE,
+                nombre_completo VARCHAR(150) NOT NULL,
+                matricula VARCHAR(50) NULL,
+                password VARCHAR(255) NOT NULL,
+                rol ENUM('desarrollador', 'administrador', 'usuario') NOT NULL DEFAULT 'usuario',
+                sede_id VARCHAR(50) NULL DEFAULT NULL,
+                activo BOOLEAN DEFAULT TRUE,
+                ultimo_acceso TIMESTAMP NULL DEFAULT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_correo (correo_institucional),
+                INDEX idx_rol (rol),
+                INDEX idx_sede_usuario (sede_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `);
+
+        try {
+            const [usersCount] = await connection.query('SELECT COUNT(*) as count FROM usuarios');
+            if (usersCount[0].count === 0) {
+                console.log('🔐 Inicializando cuentas RBAC base (Desarrollador, Administrador, Usuario)...');
+                const initialUsers = [
+                    {
+                        correo: '00774343@red.unid.mx',
+                        nombre: 'Luis Felipe Quintero (Desarrollador / Superadmin)',
+                        matricula: '00774343',
+                        pass: hashPassword('admin'),
+                        rol: 'desarrollador',
+                        sede: null
+                    },
+                    {
+                        correo: 'admin.campeche@red.unid.mx',
+                        nombre: 'Dir. Admisiones Campeche (Administrador Sede)',
+                        matricula: '00881122',
+                        pass: hashPassword('admin2026'),
+                        rol: 'administrador',
+                        sede: 'campeche'
+                    },
+                    {
+                        correo: '67676767@red.unid.mx',
+                        nombre: 'Lic. Asesor de Admisiones (Operativo)',
+                        matricula: '67676767',
+                        pass: hashPassword('user'),
+                        rol: 'usuario',
+                        sede: 'campeche'
+                    }
+                ];
+                for (const u of initialUsers) {
+                    await connection.execute(`
+                        INSERT INTO usuarios (correo_institucional, nombre_completo, matricula, password, rol, sede_id, activo)
+                        VALUES (?, ?, ?, ?, ?, ?, 1)
+                    `, [u.correo, u.nombre, u.matricula, u.pass, u.rol, u.sede]);
+                }
+            }
+        } catch (userSeedErr) {
+            console.warn('⚠️ Error poblando usuarios RBAC iniciales:', userSeedErr.message);
+        }
+
+        // 4. Migraciones de la tabla aspirantes y historial
         const migrations = [
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS curp VARCHAR(18) NULL`,
-            `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS sede_id INT NULL`,
+            `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS sede_id VARCHAR(50) NULL DEFAULT 'campeche'`,
+            `ALTER TABLE aspirantes MODIFY COLUMN sede_id VARCHAR(50) NULL DEFAULT 'campeche'`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS estado_prospecto VARCHAR(50) DEFAULT 'nuevo'`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS nivel_interes VARCHAR(20) DEFAULT 'Alto'`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS resumen_ia TEXT`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS archivado TINYINT(1) DEFAULT 0`,
-            `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS ultimo_mensaje_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`
+            `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS ultimo_mensaje_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`,
+            `CREATE TABLE IF NOT EXISTS historial_conversaciones (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                sede_id VARCHAR(50) NULL DEFAULT 'campeche',
+                telefono_celular VARCHAR(30) NOT NULL,
+                rol ENUM('user', 'assistant', 'system', 'human_advisor') NOT NULL,
+                mensaje TEXT NOT NULL,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_historial_telefono (telefono_celular, timestamp),
+                INDEX idx_historial_sede (sede_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
         ];
 
         for (const sql of migrations) {
@@ -1179,133 +1280,363 @@ INSTRUCCIONES CLAVE DE ATENCIÓN:
 }
 
 // ==========================================
-// 9. Inserción de Aspirante en MariaDB
+// 9. Inserción y Actualización de Aspirante en MariaDB
 // ==========================================
-async function guardarAspiranteEnBD(datos) {
+function resolveSedeId(campusStr) {
+    if (!campusStr) return 'campeche';
+    const c = String(campusStr).toLowerCase();
+    for (const u of UNID_CAMPUSES) {
+        if (c.includes(u.id) || c.includes(u.name.toLowerCase().replace('campus ', ''))) {
+            return u.id;
+        }
+    }
+    if (c.includes('campeche')) return 'campeche';
+    if (c.includes('cancun') || c.includes('cancún')) return 'cancun';
+    if (c.includes('merida') || c.includes('mérida')) return 'merida';
+    if (c.includes('villahermosa')) return 'villahermosa';
+    if (c.includes('online') || c.includes('virtual')) return 'online_nacional';
+    return 'campeche';
+}
+
+async function registrarLeadInicialEnBD(senderPhone, primerMensaje, sedeId = 'campeche') {
+    const cleanPhone = String(senderPhone).replace(/[\s\-\+]/g, '');
+    try {
+        // Verificar si ya existe por teléfono
+        const [existing] = await dbPool.query(
+            'SELECT id, nombre_completo, estado_prospecto FROM aspirantes WHERE REPLACE(REPLACE(REPLACE(telefono_celular, "+", ""), " ", ""), "-", "") LIKE ? LIMIT 1',
+            [`%${cleanPhone.slice(-10)}%`]
+        );
+
+        if (existing.length > 0) {
+            await dbPool.execute('UPDATE aspirantes SET ultimo_mensaje_at = CURRENT_TIMESTAMP WHERE id = ?', [existing[0].id]);
+            return { isNew: false, insertId: existing[0].id, existingLead: existing[0] };
+        }
+
+        const nombreTemp = `Prospecto WhatsApp (${senderPhone})`;
+        const [result] = await dbPool.execute(`
+            INSERT INTO aspirantes (
+                sede_id, nombre_completo, telefono_celular, carrera_interes,
+                campus_interes, modalidad_estudios, estado_prospecto, nivel_interes, resumen_ia
+            ) VALUES (?, ?, ?, ?, ?, ?, 'nuevo', 'Medio', ?)
+        `, [
+            sedeId || 'campeche',
+            nombreTemp,
+            senderPhone,
+            'Por definir (En conversación)',
+            'San Francisco de Campeche',
+            'Presencial',
+            `Primer contacto vía WhatsApp: "${String(primerMensaje || '').substring(0, 120)}"`
+        ]);
+
+        console.log(`🆕 [LEAD INICIAL CREADO] Nuevo contacto ${senderPhone} registrado con ID #${result.insertId}`);
+        return { isNew: true, insertId: result.insertId };
+    } catch (err) {
+        console.warn('⚠️ Error registrando lead inicial en BD:', err.message);
+        return { isNew: true, insertId: null };
+    }
+}
+
+async function guardarAspiranteEnBD(datos, senderPhone = null) {
     if (!datos.curp && datos.nombre_completo && datos.fecha_nacimiento) {
         datos.curp = generarCurp(datos);
     }
 
-    const query = `
-        INSERT INTO aspirantes (
-            curp, nombre_completo, fecha_nacimiento, sexo, estado_nacimiento,
-            telefono_celular, correo_electronico, bachillerato_procedencia,
-            carrera_interes, direccion, codigo_postal, campus_interes,
-            modalidad_estudios, es_foraneo, latitud, longitud, raw_json_data, 
-            estado_prospecto, nivel_interes, resumen_ia
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `;
-
-    const values = [
-        datos.curp || null,
-        datos.nombre_completo || null,
-        datos.fecha_nacimiento || null,
-        datos.sexo || null,
-        datos.estado_nacimiento || null,
-        datos.telefono_celular || null,
-        datos.correo_electronico || null,
-        datos.bachillerato_procedencia || null,
-        datos.carrera_interes || null,
-        datos.direccion || null,
-        datos.codigo_postal || null,
-        datos.campus_interes || null,
-        datos.modalidad_estudios || null,
-        datos.es_foraneo ? 1 : 0,
-        datos.latitud || null,
-        datos.longitud || null,
-        JSON.stringify(datos),
-        datos.estado_prospecto || 'nuevo',
-        datos.nivel_interes || 'Alto',
-        datos.resumen_ia || `Aspirante registrado para ${datos.carrera_interes} en modalidad ${datos.modalidad_estudios}.`
-    ];
+    const phoneToUse = datos.telefono_celular || senderPhone || '';
+    const cleanPhone = String(phoneToUse).replace(/[\s\-\+]/g, '');
+    const sedeId = datos.sede_id || resolveSedeId(datos.campus_interes);
 
     try {
+        // Verificar si existe el lead inicial para actualizarlo en lugar de duplicar
+        if (cleanPhone.length >= 8) {
+            const [existing] = await dbPool.query(
+                'SELECT id FROM aspirantes WHERE REPLACE(REPLACE(REPLACE(telefono_celular, "+", ""), " ", ""), "-", "") LIKE ? ORDER BY id DESC LIMIT 1',
+                [`%${cleanPhone.slice(-10)}%`]
+            );
+
+            if (existing.length > 0) {
+                const targetId = existing[0].id;
+                await dbPool.execute(`
+                    UPDATE aspirantes SET
+                        sede_id = ?, curp = ?, nombre_completo = ?, fecha_nacimiento = ?, sexo = ?,
+                        estado_nacimiento = ?, telefono_celular = ?, correo_electronico = ?,
+                        bachillerato_procedencia = ?, carrera_interes = ?, direccion = ?,
+                        codigo_postal = ?, campus_interes = ?, modalidad_estudios = ?,
+                        es_foraneo = ?, raw_json_data = ?, nivel_interes = ?, resumen_ia = ?,
+                        ultimo_mensaje_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                `, [
+                    sedeId,
+                    datos.curp || null,
+                    datos.nombre_completo || 'Aspirante UNID',
+                    datos.fecha_nacimiento || null,
+                    datos.sexo || null,
+                    datos.estado_nacimiento || null,
+                    phoneToUse,
+                    datos.correo_electronico || null,
+                    datos.bachillerato_procedencia || null,
+                    datos.carrera_interes || 'Por definir',
+                    datos.direccion || null,
+                    datos.codigo_postal || null,
+                    datos.campus_interes || 'San Francisco de Campeche',
+                    datos.modalidad_estudios || 'Presencial',
+                    datos.es_foraneo ? 1 : 0,
+                    JSON.stringify(datos),
+                    datos.nivel_interes || 'Alto',
+                    datos.resumen_ia || `Ficha completada para ${datos.carrera_interes} en modalidad ${datos.modalidad_estudios}.`,
+                    targetId
+                ]);
+                console.log(`🎉 Expediente de aspirante actualizado en MariaDB con ID: #${targetId} (CURP: ${datos.curp || 'N/A'})`);
+                return targetId;
+            }
+        }
+
+        const query = `
+            INSERT INTO aspirantes (
+                sede_id, curp, nombre_completo, fecha_nacimiento, sexo, estado_nacimiento,
+                telefono_celular, correo_electronico, bachillerato_procedencia,
+                carrera_interes, direccion, codigo_postal, campus_interes,
+                modalidad_estudios, es_foraneo, latitud, longitud, raw_json_data, 
+                estado_prospecto, nivel_interes, resumen_ia
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `;
+
+        const values = [
+            sedeId,
+            datos.curp || null,
+            datos.nombre_completo || 'Aspirante UNID',
+            datos.fecha_nacimiento || null,
+            datos.sexo || null,
+            datos.estado_nacimiento || null,
+            phoneToUse || null,
+            datos.correo_electronico || null,
+            datos.bachillerato_procedencia || null,
+            datos.carrera_interes || 'Por definir',
+            datos.direccion || null,
+            datos.codigo_postal || null,
+            datos.campus_interes || 'San Francisco de Campeche',
+            datos.modalidad_estudios || 'Presencial',
+            datos.es_foraneo ? 1 : 0,
+            datos.latitud || null,
+            datos.longitud || null,
+            JSON.stringify(datos),
+            datos.estado_prospecto || 'nuevo',
+            datos.nivel_interes || 'Alto',
+            datos.resumen_ia || `Aspirante registrado para ${datos.carrera_interes} en modalidad ${datos.modalidad_estudios}.`
+        ];
+
         const [result] = await dbPool.execute(query, values);
         console.log(`🎉 Aspirante insertado en MariaDB con ID: ${result.insertId} (CURP: ${datos.curp || 'N/A'})`);
         return result.insertId;
     } catch (dbError) {
-        console.error('❌ Error al insertar aspirante en MariaDB:', dbError);
+        console.error('❌ Error al guardar aspirante en MariaDB:', dbError);
         throw dbError;
     }
 }
 
 // ==========================================
-// 10. Servicio de Notificaciones al Equipo de Admisiones (Email)
+// 10. Sistema de Notificaciones por Correo Electrónico (Nodemailer - 3 Eventos Clave)
 // ==========================================
-async function notificarEquipoAdmisiones(datos, insertId) {
-    const emailDestino = process.env.ADMISSIONS_NOTIFICATION_EMAIL;
+const TESTING_NOTIFICATION_EMAIL = 'Luisquintero2001@gmail.com';
+const emailNotificationHistory = []; // Bitácora en memoria para auditoría en el Centro de Mando
+
+async function getMailTransporter() {
     const smtpHost = process.env.SMTP_HOST;
     const smtpUser = process.env.SMTP_USER;
     const smtpPass = process.env.SMTP_PASS;
 
-    if (!emailDestino || !smtpHost || !smtpUser) {
-        console.log(`📧 [ALERTA DE ADMISIONES] Nuevo aspirante registrado: ID #${insertId} - ${datos.nombre_completo} (${datos.carrera_interes} - ${datos.modalidad_estudios}) [Prioridad: ${datos.nivel_interes || 'Alta'}]`);
-        return;
+    if (smtpHost && smtpUser && smtpPass && !smtpPass.includes('tu_app_password')) {
+        return {
+            transporter: nodemailer.createTransport({
+                host: smtpHost,
+                port: Number(process.env.SMTP_PORT) || 587,
+                secure: Number(process.env.SMTP_PORT) === 465,
+                auth: { user: smtpUser, pass: smtpPass }
+            }),
+            from: `"UNID Admisiones • Metal-Uriel" <${smtpUser}>`,
+            mode: 'smtp_live'
+        };
     }
 
+    // Fallback automático a Ethereal Email de Nodemailer si no hay credenciales SMTP en .env
     try {
-        const transporter = nodemailer.createTransport({
-            host: smtpHost,
-            port: Number(process.env.SMTP_PORT) || 587,
-            secure: Number(process.env.SMTP_PORT) === 465,
-            auth: {
-                user: smtpUser,
-                pass: smtpPass
-            }
-        });
+        const testAccount = await nodemailer.createTestAccount();
+        return {
+            transporter: nodemailer.createTransport({
+                host: 'smtp.ethereal.email',
+                port: 587,
+                secure: false,
+                auth: { user: testAccount.user, pass: testAccount.pass }
+            }),
+            from: `"UNID Admisiones • Metal-Uriel" <${testAccount.user}>`,
+            mode: 'ethereal_test'
+        };
+    } catch (e) {
+        return { transporter: null, from: 'noreply@unid.mx', mode: 'console_only' };
+    }
+}
 
-        const htmlContent = `
+async function dispararNotificacionCorreo(eventoTipo, payload = {}) {
+    // Por requerimiento estricto de testing actual: enviar EXCLUSIVAMENTE a Luisquintero2001@gmail.com
+    const destinatario = TESTING_NOTIFICATION_EMAIL;
+    let subject = '';
+    let htmlContent = '';
+
+    const fechaHora = new Date().toLocaleString('es-MX', { timeZone: 'America/Merida' });
+
+    if (eventoTipo === 'NUEVO_CONTACTO') {
+        // Evento A (Nuevo Contacto)
+        subject = 'Nuevo prospecto en WhatsApp';
+        const phone = payload.telefono_celular || payload.phone || 'Desconocido';
+        const msg = payload.mensaje_inicial || 'Inició conversación';
+        const sede = payload.sede_id || 'campeche';
+
+        htmlContent = `
         <div style="font-family: 'Segoe UI', Arial, sans-serif; background: #0B192C; padding: 24px; color: #f8fafc;">
-            <div style="max-width: 600px; margin: 0 auto; background: #1E293B; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.5); border: 1px solid #334155; border-top: 6px solid #FFC72C;">
-                <div style="padding: 24px; background: #0F172A; border-bottom: 1px solid #334155;">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <h2 style="margin: 0; font-size: 20px; color: #FFC72C;">:UNID • ¡Nueva Ficha Registrada!</h2>
-                    </div>
-                    <p style="margin: 6px 0 0 0; font-size: 13px; color: #94a3b8;">Capturada por Metal-Uriel • Ficha Oficial ID #${insertId}</p>
+            <div style="max-width: 600px; margin: 0 auto; background: #1E293B; border-radius: 16px; overflow: hidden; border: 1px solid #334155; border-top: 6px solid #38bdf8;">
+                <div style="padding: 20px 24px; background: #0F172A; border-bottom: 1px solid #334155;">
+                    <h2 style="margin: 0; font-size: 18px; color: #38bdf8;">💬 Evento A: Nuevo prospecto en WhatsApp</h2>
+                    <p style="margin: 4px 0 0 0; font-size: 12px; color: #94a3b8;">Captado por Webhook Metal-Uriel • ${fechaHora}</p>
                 </div>
-                
                 <div style="padding: 24px;">
-                    <div style="background: #0F172A; border-radius: 12px; padding: 16px; margin-bottom: 20px; border: 1px solid #334155;">
-                        <h3 style="margin: 0 0 8px 0; font-size: 18px; color: #ffffff;">${datos.nombre_completo}</h3>
-                        <p style="margin: 4px 0; font-size: 14px; color: #FFC72C; font-weight: bold;">🎓 ${datos.carrera_interes}</p>
-                        <p style="margin: 4px 0; font-size: 13px; color: #cbd5e1;">📍 Modalidad: <strong>${datos.modalidad_estudios}</strong> (${datos.campus_interes})</p>
-                        <p style="margin: 4px 0; font-size: 12px; color: #38bdf8;">${datos.es_foraneo ? '🌍 Aspirante Foráneo (Plataforma Online)' : '🏢 Aspirante Local (Campus Campeche)'}</p>
-                        <div style="margin-top: 10px; padding: 8px 12px; background: rgba(255,199,44,0.1); border-left: 3px solid #FFC72C; border-radius: 4px; font-size: 12px; color: #fde68a;">
-                            <strong>⚡ Resumen IA:</strong> ${datos.resumen_ia || 'Interés confirmado.'}
-                        </div>
+                    <p style="font-size: 14px; color: #e2e8f0; margin-top: 0;">Se ha detectado un nuevo número iniciando conversación con el asistente de admisiones:</p>
+                    <div style="background: #0F172A; border-radius: 12px; padding: 16px; border: 1px solid #334155; margin: 16px 0;">
+                        <p style="margin: 6px 0; font-size: 14px; color: #f8fafc;">📱 <strong>Teléfono WhatsApp:</strong> <span style="color: #38bdf8;">${phone}</span></p>
+                        <p style="margin: 6px 0; font-size: 14px; color: #f8fafc;">🏛️ <strong>Sede Asignada:</strong> <span style="color: #FFC72C; text-transform: uppercase;">${sede}</span></p>
+                        <p style="margin: 6px 0; font-size: 14px; color: #f8fafc;">🆔 <strong>ID Lead Inicial en BD:</strong> #${payload.insertId || 'En proceso'}</p>
+                        <p style="margin: 10px 0 0 0; padding-top: 10px; border-top: 1px solid #1E293B; font-size: 13px; color: #cbd5e1;">💬 <strong>Primer Mensaje:</strong> <em>"${msg}"</em></p>
                     </div>
-
-                    <table style="width: 100%; border-collapse: collapse; font-size: 13px; color: #cbd5e1;">
-                        <tr style="border-bottom: 1px solid #334155;"><td style="padding: 8px 0; color: #94a3b8;">📱 Teléfono Celular:</td><td style="padding: 8px 0; font-weight: bold; text-align: right;"><a href="tel:${datos.telefono_celular}" style="color: #38bdf8; text-decoration: none;">${datos.telefono_celular}</a> (<a href="https://wa.me/${datos.telefono_celular?.replace(/\D/g, '')}" target="_blank" style="color: #4ade80; text-decoration: none; font-weight: bold;">WhatsApp</a>)</td></tr>
-                        <tr style="border-bottom: 1px solid #334155;"><td style="padding: 8px 0; color: #94a3b8;">✉️ Correo Electrónico:</td><td style="padding: 8px 0; text-align: right;"><a href="mailto:${datos.correo_electronico}" style="color: #38bdf8; text-decoration: none;">${datos.correo_electronico}</a></td></tr>
-                        <tr style="border-bottom: 1px solid #334155;"><td style="padding: 8px 0; color: #94a3b8;">🏫 Bachillerato:</td><td style="padding: 8px 0; text-align: right;">${datos.bachillerato_procedencia || 'No especificado'}</td></tr>
-                        <tr style="border-bottom: 1px solid #334155;"><td style="padding: 8px 0; color: #94a3b8;">🏠 Dirección y CP:</td><td style="padding: 8px 0; text-align: right;">${datos.direccion} (CP: ${datos.codigo_postal})</td></tr>
-                        <tr><td style="padding: 8px 0; color: #94a3b8;">🎂 Fecha de Nacimiento:</td><td style="padding: 8px 0; text-align: right;">${datos.fecha_nacimiento} (${datos.sexo})</td></tr>
-                    </table>
-
-                    <div style="margin-top: 24px; padding: 14px; background: #064E3B; border-radius: 10px; border: 1px solid #059669; text-align: center;">
-                        <span style="color: #A7F3D0; font-size: 12px; font-weight: bold;">⚡ Acción Recomendada: Contactar al prospecto dentro de los primeros 15 minutos para asegurar su proceso de inscripción.</span>
-                    </div>
-                </div>
-
-                <div style="padding: 16px 24px; background: #0B192C; text-align: center; font-size: 11px; color: #64748B; border-top: 1px solid #334155;">
-                    Metal-Uriel • Sistema de Admisiones UNID Campus San Francisco de Campeche
+                    <p style="font-size: 12px; color: #94a3b8;">Metal-Uriel ya se encuentra atendiendo al prospecto en tiempo real para recopilar sus 11 datos oficiales.</p>
                 </div>
             </div>
-        </div>
-        `;
+        </div>`;
+    } else if (eventoTipo === 'DATOS_COMPLETOS') {
+        // Evento B (Datos Completos)
+        const d = payload.datos || payload;
+        const nombre = d.nombre_completo || 'Aspirante UNID';
+        subject = `Ficha de aspirante completada - ${nombre}`;
+        const jsonPretty = JSON.stringify(d, null, 2);
 
-        await transporter.sendMail({
-            from: `"UNID Admisiones • Metal-Uriel" <${smtpUser}>`,
-            to: emailDestino,
-            subject: `🐺 Nuevo Prospecto UNID (${datos.nivel_interes || 'Alta Prioridad'}): ${datos.nombre_completo} - ${datos.carrera_interes}`,
+        htmlContent = `
+        <div style="font-family: 'Segoe UI', Arial, sans-serif; background: #0B192C; padding: 24px; color: #f8fafc;">
+            <div style="max-width: 640px; margin: 0 auto; background: #1E293B; border-radius: 16px; overflow: hidden; border: 1px solid #334155; border-top: 6px solid #FFC72C;">
+                <div style="padding: 20px 24px; background: #0F172A; border-bottom: 1px solid #334155;">
+                    <h2 style="margin: 0; font-size: 19px; color: #FFC72C;">📋 Evento B: Ficha de aspirante completada - ${nombre}</h2>
+                    <p style="margin: 4px 0 0 0; font-size: 12px; color: #94a3b8;">11 Datos Oficiales Recopilados por IA • Ficha ID #${payload.insertId || 'N/A'}</p>
+                </div>
+                <div style="padding: 24px;">
+                    <div style="background: #0F172A; border-radius: 12px; padding: 16px; margin-bottom: 18px; border: 1px solid #334155;">
+                        <h3 style="margin: 0 0 8px 0; font-size: 17px; color: #ffffff;">${nombre}</h3>
+                        <p style="margin: 4px 0; font-size: 14px; color: #FFC72C; font-weight: bold;">🎓 ${d.carrera_interes || 'Sin especificar'}</p>
+                        <p style="margin: 4px 0; font-size: 13px; color: #38bdf8; font-family: monospace;">🆔 CURP Calculada (RENAPO): <strong>${d.curp || 'Calculada en sistema'}</strong></p>
+                        <p style="margin: 4px 0; font-size: 13px; color: #cbd5e1;">📍 Campus: <strong>${d.campus_interes || 'Campeche'}</strong> • Modalidad: <strong>${d.modalidad_estudios || 'Presencial'}</strong></p>
+                    </div>
+
+                    <table style="width: 100%; border-collapse: collapse; font-size: 13px; color: #cbd5e1; margin-bottom: 20px;">
+                        <tr style="border-bottom: 1px solid #334155;"><td style="padding: 7px 0; color: #94a3b8;">1. Nombre Completo:</td><td style="padding: 7px 0; font-weight: bold; text-align: right;">${d.nombre_completo || '-'}</td></tr>
+                        <tr style="border-bottom: 1px solid #334155;"><td style="padding: 7px 0; color: #94a3b8;">2. Fecha de Nacimiento:</td><td style="padding: 7px 0; text-align: right;">${d.fecha_nacimiento || '-'}</td></tr>
+                        <tr style="border-bottom: 1px solid #334155;"><td style="padding: 7px 0; color: #94a3b8;">3. Sexo:</td><td style="padding: 7px 0; text-align: right;">${d.sexo || '-'}</td></tr>
+                        <tr style="border-bottom: 1px solid #334155;"><td style="padding: 7px 0; color: #94a3b8;">4. Estado de Nacimiento:</td><td style="padding: 7px 0; text-align: right;">${d.estado_nacimiento || '-'}</td></tr>
+                        <tr style="border-bottom: 1px solid #334155;"><td style="padding: 7px 0; color: #94a3b8;">5. Teléfono Celular:</td><td style="padding: 7px 0; font-weight: bold; text-align: right; color: #4ade80;">${d.telefono_celular || '-'}</td></tr>
+                        <tr style="border-bottom: 1px solid #334155;"><td style="padding: 7px 0; color: #94a3b8;">6. Correo Electrónico:</td><td style="padding: 7px 0; text-align: right; color: #38bdf8;">${d.correo_electronico || '-'}</td></tr>
+                        <tr style="border-bottom: 1px solid #334155;"><td style="padding: 7px 0; color: #94a3b8;">7. Bachillerato:</td><td style="padding: 7px 0; text-align: right;">${d.bachillerato_procedencia || '-'}</td></tr>
+                        <tr style="border-bottom: 1px solid #334155;"><td style="padding: 7px 0; color: #94a3b8;">8. Carrera de Interés:</td><td style="padding: 7px 0; text-align: right; color: #FFC72C; font-weight: bold;">${d.carrera_interes || '-'}</td></tr>
+                        <tr style="border-bottom: 1px solid #334155;"><td style="padding: 7px 0; color: #94a3b8;">9. Dirección y CP:</td><td style="padding: 7px 0; text-align: right;">${d.direccion || '-'} (CP: ${d.codigo_postal || '-'})</td></tr>
+                        <tr style="border-bottom: 1px solid #334155;"><td style="padding: 7px 0; color: #94a3b8;">10. Campus de Interés:</td><td style="padding: 7px 0; text-align: right;">${d.campus_interes || '-'}</td></tr>
+                        <tr><td style="padding: 7px 0; color: #94a3b8;">11. Modalidad de Estudios:</td><td style="padding: 7px 0; text-align: right;">${d.modalidad_estudios || '-'}</td></tr>
+                    </table>
+
+                    <div style="margin-top: 16px;">
+                        <p style="font-size: 12px; font-weight: bold; color: #FFC72C; margin-bottom: 6px;">📦 Bloque JSON Estructurado Emitido por IA:</p>
+                        <pre style="background: #090D16; color: #38bdf8; padding: 14px; border-radius: 10px; border: 1px solid #334155; font-size: 11px; overflow-x: auto; font-family: Consolas, monospace;">${jsonPretty}</pre>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+    } else if (eventoTipo === 'CIERRE_INSCRITO') {
+        // Evento C (Cierre/Inscrito)
+        const lead = payload.lead || payload;
+        const nombre = lead.nombre_completo || 'Alumno UNID';
+        subject = `¡Nuevo Alumno Inscrito! - ${nombre}`;
+
+        htmlContent = `
+        <div style="font-family: 'Segoe UI', Arial, sans-serif; background: #0B192C; padding: 24px; color: #f8fafc;">
+            <div style="max-width: 600px; margin: 0 auto; background: #1E293B; border-radius: 16px; overflow: hidden; border: 1px solid #059669; border-top: 6px solid #10B981;">
+                <div style="padding: 20px 24px; background: #064E3B; border-bottom: 1px solid #059669;">
+                    <h2 style="margin: 0; font-size: 20px; color: #A7F3D0;">🎉 Evento C: ¡Nuevo Alumno Inscrito! - ${nombre}</h2>
+                    <p style="margin: 4px 0 0 0; font-size: 12px; color: #6EE7B7;">Cierre confirmado en Tablero Kanban • ${fechaHora}</p>
+                </div>
+                <div style="padding: 24px;">
+                    <p style="font-size: 14px; color: #e2e8f0; margin-top: 0;">Un asesor ha movido exitosamente la tarjeta del prospecto a la columna <strong>Inscritos 🎉</strong> en el Centro de Mando:</p>
+                    <div style="background: #0F172A; border-radius: 12px; padding: 16px; border: 1px solid #334155; margin: 16px 0;">
+                        <h3 style="margin: 0 0 8px 0; font-size: 18px; color: #ffffff;">${nombre}</h3>
+                        <p style="margin: 5px 0; font-size: 14px; color: #10B981; font-weight: bold;">🎓 Carrera: ${lead.carrera_interes || 'Confirmada'}</p>
+                        <p style="margin: 5px 0; font-size: 13px; color: #38bdf8; font-family: monospace;">🆔 CURP: ${lead.curp || 'N/A'}</p>
+                        <p style="margin: 5px 0; font-size: 13px; color: #cbd5e1;">📱 Teléfono: ${lead.telefono_celular || 'N/A'} • ✉️ Correo: ${lead.correo_electronico || 'N/A'}</p>
+                        <p style="margin: 5px 0; font-size: 13px; color: #cbd5e1;">🏛️ Campus: ${lead.campus_interes || 'Campeche'} (${lead.modalidad_estudios || 'Presencial'})</p>
+                        <p style="margin: 8px 0 0 0; font-size: 12px; color: #94a3b8;">👤 Procesado por: ${payload.asesor || 'Asesor de Admisiones'}</p>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+    }
+
+    const nowIso = new Date().toISOString();
+    const logItem = {
+        id: Date.now() + Math.floor(Math.random() * 1000),
+        evento: eventoTipo,
+        eventoTipo: eventoTipo,
+        destinatario,
+        to: destinatario,
+        asunto: subject,
+        subject: subject,
+        fecha: nowIso,
+        timestamp: nowIso,
+        estado: 'enviando',
+        status: 'ENVIANDO',
+        transport: 'SMTP/Ethereal',
+        previewUrl: null
+    };
+    emailNotificationHistory.unshift(logItem);
+    if (emailNotificationHistory.length > 50) emailNotificationHistory.pop();
+
+    try {
+        const { transporter, from, mode } = await getMailTransporter();
+        if (!transporter) {
+            logItem.estado = 'simulado_consola';
+            logItem.status = 'ENVIADO';
+            logItem.transport = 'Consola';
+            console.log(`📧 [EMAIL TRIGGER - ${eventoTipo}] Para: ${destinatario} | Asunto: "${subject}" (Modo consola)`);
+            return logItem;
+        }
+
+        const info = await transporter.sendMail({
+            from,
+            to: destinatario,
+            subject,
             html: htmlContent
         });
 
-        console.log(`📧 Notificación de admisión enviada con éxito a ${emailDestino} para el aspirante #${insertId}`);
+        const previewUrl = mode === 'ethereal_test' ? nodemailer.getTestMessageUrl(info) : null;
+        logItem.estado = mode === 'smtp_live' ? 'enviado_smtp' : 'enviado_ethereal';
+        logItem.status = 'ENVIADO';
+        logItem.transport = mode === 'smtp_live' ? 'SMTP Live' : 'Ethereal Test';
+        logItem.previewUrl = previewUrl || null;
+
+        console.log(`📧 [EMAIL ENVIADO - ${eventoTipo}] Destinatario: ${destinatario} | Asunto: "${subject}"`);
+        if (previewUrl) {
+            console.log(`🔗 [VISTA PREVIA DEL CORREO]: ${previewUrl}`);
+        }
+        return logItem;
     } catch (err) {
-        console.error('⚠️ No se pudo enviar el correo de notificación a admisiones:', err.message);
+        logItem.estado = 'error: ' + err.message;
+        logItem.status = 'ERROR';
+        console.error(`⚠️ Error enviando correo (${eventoTipo}) a ${destinatario}:`, err.message);
+        return logItem;
     }
+}
+
+async function notificarEquipoAdmisiones(datos, insertId) {
+    return dispararNotificacionCorreo('DATOS_COMPLETOS', { datos, insertId });
 }
 
 // ==========================================
@@ -1481,7 +1812,34 @@ function extractJsonFromLlmReply(rawText) {
 // ==========================================
 // 11. Procesamiento Central de Mensajes (Webhook + Web Simulator)
 // ==========================================
-async function processChatMessage(senderPhone, messageText, requestedModelId = null) {
+async function guardarMensajeHistorialBD(senderPhone, rol, mensaje, sedeId = 'campeche') {
+    try {
+        await dbPool.execute(
+            'INSERT INTO historial_conversaciones (sede_id, telefono_celular, rol, mensaje) VALUES (?, ?, ?, ?)',
+            [sedeId || 'campeche', senderPhone, rol, String(mensaje || '')]
+        );
+    } catch (_) {}
+}
+
+async function processChatMessage(senderPhone, messageText, requestedModelId = null, sedeId = 'campeche') {
+    const cleanPhone = String(senderPhone).replace(/[\s\-\+]/g, '');
+    const isFirstContactInMemory = !conversationMemory.has(senderPhone) && !conversationMemory.has(cleanPhone);
+
+    // Trigger Evento A: Si es un contacto nuevo, insertar lead inicial en MariaDB y disparar correo "Nuevo prospecto en WhatsApp"
+    if (isFirstContactInMemory) {
+        const regResult = await registrarLeadInicialEnBD(senderPhone, messageText, sedeId);
+        if (regResult.isNew) {
+            dispararNotificacionCorreo('NUEVO_CONTACTO', {
+                telefono_celular: senderPhone,
+                mensaje_inicial: messageText,
+                sede_id: sedeId,
+                insertId: regResult.insertId
+            }).catch(console.error);
+        }
+    }
+
+    await guardarMensajeHistorialBD(senderPhone, 'user', messageText, sedeId);
+
     const { reply: llmReply, modelUsed } = await callMetalUrielLLM(senderPhone, messageText, requestedModelId);
     
     // Separar y limpiar cualquier JSON y tags técnicos
@@ -1491,13 +1849,18 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
     const currentHistory = conversationMemory.get(senderPhone) || [];
     const partialFields = extractPartialFieldsFromHistory(currentHistory);
 
-    // Si el LLM generó el JSON de registro completo o completó la ficha
+    // Si el LLM generó el JSON de registro completo o completó la ficha (Evento B)
     if (jsonData && (jsonData.completado || (jsonData.nombre_completo && jsonData.carrera_interes))) {
         let insertId = null;
         try {
             jsonData.completado = true;
-            insertId = await guardarAspiranteEnBD(jsonData);
+            if (!jsonData.telefono_celular) jsonData.telefono_celular = senderPhone;
+            if (!jsonData.curp && jsonData.nombre_completo && jsonData.fecha_nacimiento) {
+                jsonData.curp = generarCurp(jsonData);
+            }
+            insertId = await guardarAspiranteEnBD(jsonData, senderPhone);
             console.log(`🎉 [REGISTRO EXITOSO] Aspirante ${jsonData.nombre_completo} guardado en MariaDB con ID #${insertId}`);
+            // Trigger Evento B: "Ficha de aspirante completada - [Nombre del Aspirante]"
             notificarEquipoAdmisiones(jsonData, insertId).catch(console.error);
         } catch (dbErr) {
             console.error('⚠️ Error guardando en MariaDB:', dbErr.message);
@@ -1517,6 +1880,8 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
             `Tu expediente ha sido enviado a la Coordinación de Admisiones para validar tu beca del 50% y el 90% de descuento en tu inscripción. Un asesor se comunicará contigo al ${jsonData.telefono_celular || senderPhone} para concluir tu pre-registro.\n\n` +
             `¡Bienvenido a la familia UNID! 🔴🐾`
         );
+
+        await guardarMensajeHistorialBD(senderPhone, 'assistant', finalReply, sedeId);
 
         return {
             reply: finalReply,
@@ -1539,8 +1904,11 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
         };
     }
 
+    const replyToSend = cleanReply || llmReply;
+    await guardarMensajeHistorialBD(senderPhone, 'assistant', replyToSend, sedeId);
+
     return {
-        reply: cleanReply || llmReply,
+        reply: replyToSend,
         completed: false,
         leadCompleted: false,
         leadData: null,
@@ -1630,8 +1998,21 @@ async function sendWhatsAppMessage(to, messageText, documentAttachment = null) {
 }
 
 // ==========================================
-// 13. Middleware de Autenticación JWT
+// 13. Middleware de Autenticación y Autorización RBAC (JWT)
 // ==========================================
+function normalizeRole(rawRole) {
+    const r = String(rawRole || '').toLowerCase();
+    if (r === 'desarrollador' || r === 'superadmin' || r === 'dev') return 'desarrollador';
+    if (r === 'administrador' || r === 'admin') return 'administrador';
+    return 'usuario';
+}
+
+function getRoleTitle(rol) {
+    if (rol === 'desarrollador') return 'Desarrollador (Superadmin Global)';
+    if (rol === 'administrador') return 'Administrador de Sede';
+    return 'Usuario (Asesor de Admisiones)';
+}
+
 function authMiddleware(req, res, next) {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -1640,11 +2021,39 @@ function authMiddleware(req, res, next) {
     const token = authHeader.split(' ')[1];
     try {
         const decoded = jwt.verify(token, JWT_SECRET);
+        decoded.rol = normalizeRole(decoded.rol || decoded.role);
         req.user = decoded;
         next();
     } catch (err) {
         return res.status(403).json({ error: 'Token inválido o expirado.' });
     }
+}
+
+function optionalAuthMiddleware(req, res, next) {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+        try {
+            const decoded = jwt.verify(authHeader.split(' ')[1], JWT_SECRET);
+            decoded.rol = normalizeRole(decoded.rol || decoded.role);
+            req.user = decoded;
+        } catch (_) {}
+    }
+    next();
+}
+
+function authorizeRoles(...allowedRoles) {
+    return (req, res, next) => {
+        if (!req.user) {
+            return res.status(401).json({ error: 'No autenticado.' });
+        }
+        const userRol = normalizeRole(req.user.rol || req.user.role);
+        if (!allowedRoles.includes(userRol)) {
+            return res.status(403).json({
+                error: `Permiso denegado. Tu rol actual (${userRol}) no tiene autorización para esta acción.`
+            });
+        }
+        next();
+    };
 }
 
 // ==========================================
@@ -1833,72 +2242,137 @@ app.post('/api/aspirantes/seed', async (req, res) => {
 // 14. Autenticación Jerárquica (RBAC) & Manejo de Sesiones
 // ==========================================
 
-function handleUserAuth(identifier, password, customName = null) {
+async function handleUserAuth(identifier, password, customName = null) {
     const cleanId = (identifier || '').trim().toLowerCase();
     const cleanPass = (password || '').trim();
 
-    // 1. Cuenta de Administrador (Sistemas & TI): 00774343@red.unid.mx / admin
-    const isAdminId = cleanId === '00774343@red.unid.mx' || cleanId === '00774343' || cleanId === 'admin' || cleanId === ADMIN_USERNAME.toLowerCase();
-    const isAdminPass = cleanPass === 'admin' || cleanPass === 'unid2026' || cleanPass === ADMIN_PASSWORD;
+    if (!cleanId) {
+        return { success: false, error: 'Por favor ingresa tu correo institucional o matrícula.' };
+    }
 
-    if (isAdminId && (cleanPass === '' || isAdminPass)) {
+    // 1. Consultar primero en la tabla `usuarios` de MariaDB
+    try {
+        const [rows] = await dbPool.query(
+            'SELECT * FROM usuarios WHERE LOWER(correo_institucional) = ? OR LOWER(matricula) = ? LIMIT 1',
+            [cleanId, cleanId]
+        );
+
+        if (rows.length > 0) {
+            const dbUser = rows[0];
+            if (!dbUser.activo) {
+                return { success: false, error: 'Esta cuenta de usuario se encuentra desactivada por el Superadmin.' };
+            }
+
+            const isValid = verifyPassword(cleanPass, dbUser.password);
+            if (!isValid) {
+                return { success: false, error: 'Contraseña incorrecta para la cuenta institucional.' };
+            }
+
+            await dbPool.execute('UPDATE usuarios SET ultimo_acceso = CURRENT_TIMESTAMP WHERE id = ?', [dbUser.id]);
+
+            const rolNorm = normalizeRole(dbUser.rol);
+            const sedeSlug = rolNorm === 'desarrollador' ? null : (dbUser.sede_id || 'campeche');
+            const campusMeta = UNID_CAMPUSES.find(c => c.id === sedeSlug);
+
+            const userObj = {
+                id: dbUser.id,
+                correo_institucional: dbUser.correo_institucional,
+                username: dbUser.correo_institucional,
+                displayName: customName || dbUser.nombre_completo,
+                matricula: dbUser.matricula || dbUser.correo_institucional.split('@')[0],
+                rol: rolNorm,
+                role: rolNorm, // retrocompatibilidad frontend
+                roleTitle: getRoleTitle(rolNorm),
+                sede_id: sedeSlug,
+                tenant: sedeSlug ? (campusMeta ? campusMeta.name : `Sede ${sedeSlug}`) : 'Global (Todas las Sedes UNID)',
+                isInstitutional: true
+            };
+
+            const token = jwt.sign(userObj, JWT_SECRET, { expiresIn: '7d' });
+            console.log(`🔐 [AUTH RBAC] Acceso concedido a ${userObj.correo_institucional} | Rol: ${userObj.rol} | Sede: ${userObj.sede_id || 'GLOBAL'}`);
+            return { success: true, token, user: userObj };
+        }
+    } catch (dbErr) {
+        console.warn('⚠️ MariaDB no disponible durante login, aplicando fallback RBAC en memoria:', dbErr.message);
+    }
+
+    // 2. Fallback en memoria para las 3 cuentas de los niveles RBAC
+    // Rol 1: Desarrollador (Superadmin)
+    const isDevId = cleanId === '00774343@red.unid.mx' || cleanId === '00774343' || cleanId === 'dev' || cleanId === 'superadmin' || cleanId === ADMIN_USERNAME.toLowerCase();
+    const isDevPass = cleanPass === 'admin' || cleanPass === 'unid2026' || cleanPass === ADMIN_PASSWORD;
+
+    if (isDevId && isDevPass) {
         const userObj = {
+            id: 1,
+            correo_institucional: '00774343@red.unid.mx',
             username: '00774343@red.unid.mx',
-            displayName: customName || 'Luis Felipe Quintero (Admin Sistemas & TI)',
+            displayName: customName || 'Luis Felipe Quintero (Desarrollador / Superadmin)',
             matricula: '00774343',
-            role: 'admin',
-            roleTitle: 'Administrador de Sistemas & TI',
-            isInstitutional: true,
-            tenant: 'UNID Campus Campeche'
+            rol: 'desarrollador',
+            role: 'desarrollador',
+            roleTitle: getRoleTitle('desarrollador'),
+            sede_id: null,
+            tenant: 'Global (Todas las Sedes UNID)',
+            isInstitutional: true
         };
         const token = jwt.sign(userObj, JWT_SECRET, { expiresIn: '7d' });
-        console.log(`👑 [AUTH ADMIN] Acceso concedido como Administrador a ${userObj.username}`);
         return { success: true, token, user: userObj };
     }
 
-    // 2. Cuenta de Usuario Operativo (Equipo de Admisiones): 67676767@red.unid.mx / user
-    const isAdmissionsId = cleanId === '67676767@red.unid.mx' || cleanId === '67676767' || cleanId === 'user' || cleanId.includes('admision');
-    const isAdmissionsPass = cleanPass === 'user' || cleanPass === 'unid2026';
+    // Rol 2: Administrador de Sede
+    const isAdminSedeId = cleanId === 'admin.campeche@red.unid.mx' || cleanId === '00881122' || cleanId === 'administrador';
+    const isAdminSedePass = cleanPass === 'admin2026' || cleanPass === 'admin' || cleanPass === 'unid2026';
 
-    if (isAdmissionsId && (cleanPass === '' || isAdmissionsPass)) {
+    if (isAdminSedeId && isAdminSedePass) {
         const userObj = {
-            username: cleanId.includes('@') ? cleanId : '67676767@red.unid.mx',
-            displayName: customName || 'Equipo de Admisiones UNID',
+            id: 2,
+            correo_institucional: 'admin.campeche@red.unid.mx',
+            username: 'admin.campeche@red.unid.mx',
+            displayName: customName || 'Dir. Admisiones Campeche (Administrador)',
+            matricula: '00881122',
+            rol: 'administrador',
+            role: 'administrador',
+            roleTitle: getRoleTitle('administrador'),
+            sede_id: 'campeche',
+            tenant: 'Campus San Francisco de Campeche',
+            isInstitutional: true
+        };
+        const token = jwt.sign(userObj, JWT_SECRET, { expiresIn: '7d' });
+        return { success: true, token, user: userObj };
+    }
+
+    // Rol 3: Usuario (Asesor de Admisiones)
+    const isUserId = cleanId === '67676767@red.unid.mx' || cleanId === '67676767' || cleanId === 'user' || cleanId.includes('asesor');
+    const isUserPass = cleanPass === 'user' || cleanPass === 'unid2026';
+
+    if (isUserId && isUserPass) {
+        const userObj = {
+            id: 3,
+            correo_institucional: '67676767@red.unid.mx',
+            username: '67676767@red.unid.mx',
+            displayName: customName || 'Lic. Asesor de Admisiones (Usuario)',
             matricula: '67676767',
-            role: 'admisiones',
-            roleTitle: 'Coordinación de Admisiones',
-            isInstitutional: true,
-            tenant: 'UNID Campus Campeche'
-        };
-        const token = jwt.sign(userObj, JWT_SECRET, { expiresIn: '7d' });
-        console.log(`📋 [AUTH ADMISIONES] Acceso concedido como Admisiones a ${userObj.username}`);
-        return { success: true, token, user: userObj };
-    }
-
-    // 3. Cualquier otra cuenta institucional @red.unid.mx / @unid.mx
-    const isUnidDomain = cleanId.endsWith('@red.unid.mx') || cleanId.endsWith('@unid.mx') || cleanId.endsWith('@talisis.com');
-    if (isUnidDomain) {
-        const matricula = cleanId.split('@')[0];
-        const userObj = {
-            username: cleanId,
-            displayName: customName || `Personal UNID (${matricula})`,
-            matricula: matricula,
-            role: 'admisiones',
-            roleTitle: 'Personal de Admisiones UNID',
-            isInstitutional: true,
-            tenant: 'UNID Talisis Educación Superior'
+            rol: 'usuario',
+            role: 'usuario',
+            roleTitle: getRoleTitle('usuario'),
+            sede_id: 'campeche',
+            tenant: 'Campus San Francisco de Campeche',
+            isInstitutional: true
         };
         const token = jwt.sign(userObj, JWT_SECRET, { expiresIn: '7d' });
         return { success: true, token, user: userObj };
     }
 
-    return { success: false, error: 'Usuario o contraseña incorrectos. Para testing usa 00774343@red.unid.mx (admin) o 67676767@red.unid.mx (user).' };
+    return {
+        success: false,
+        error: 'Credenciales inválidas. Cuentas de prueba: Desarrollador (00774343@red.unid.mx / admin), Administrador (admin.campeche@red.unid.mx / admin2026), Usuario (67676767@red.unid.mx / user).'
+    };
 }
 
 // Login Local
-app.post('/api/auth/login', (req, res) => {
-    const { username, password } = req.body;
-    const authResult = handleUserAuth(username, password);
+app.post('/api/auth/login', async (req, res) => {
+    const { username, email, correo_institucional, password } = req.body;
+    const authResult = await handleUserAuth(correo_institucional || username || email, password);
     if (authResult.success) {
         return res.json(authResult);
     }
@@ -1906,9 +2380,9 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 // Login con Office 365
-app.post('/api/auth/o365', (req, res) => {
-    const { email, password, name } = req.body;
-    const authResult = handleUserAuth(email, password, name);
+app.post('/api/auth/o365', async (req, res) => {
+    const { email, correo_institucional, password, name } = req.body;
+    const authResult = await handleUserAuth(correo_institucional || email, password, name);
     if (authResult.success) {
         return res.json(authResult);
     }
@@ -1916,13 +2390,170 @@ app.post('/api/auth/o365', (req, res) => {
 });
 
 // Login con Microsoft Entra ID
-app.post('/api/auth/microsoft', (req, res) => {
+app.post('/api/auth/microsoft', async (req, res) => {
     const { email, password, displayName } = req.body;
-    const authResult = handleUserAuth(email, password, displayName);
+    const authResult = await handleUserAuth(email, password, displayName);
     if (authResult.success) {
         return res.json(authResult);
     }
     return res.status(401).json(authResult);
+});
+
+// ==========================================
+// 14.5. Endpoints CRUD de Usuarios y Roles (Exclusivo Desarrollador / Superadmin)
+// ==========================================
+app.get('/api/users', authMiddleware, authorizeRoles('desarrollador'), async (req, res) => {
+    try {
+        const [rows] = await dbPool.query(
+            'SELECT id, correo_institucional, nombre_completo, matricula, rol, sede_id, activo, ultimo_acceso, created_at FROM usuarios ORDER BY id ASC'
+        );
+        res.json({ success: true, users: rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: 'Error al consultar usuarios: ' + err.message });
+    }
+});
+
+app.post('/api/users', authMiddleware, authorizeRoles('desarrollador'), async (req, res) => {
+    try {
+        const { correo_institucional, nombre_completo, matricula, password, rol, sede_id, activo } = req.body;
+        if (!correo_institucional || !password || !nombre_completo) {
+            return res.status(400).json({ success: false, error: 'Correo institucional, nombre completo y contraseña son obligatorios.' });
+        }
+
+        const cleanCorreo = String(correo_institucional).trim().toLowerCase();
+        const rolNorm = normalizeRole(rol);
+        const finalSede = rolNorm === 'desarrollador' ? null : (sede_id || 'campeche');
+        const hashedPass = hashPassword(password);
+        const mat = matricula ? String(matricula).trim() : cleanCorreo.split('@')[0];
+
+        const [result] = await dbPool.execute(`
+            INSERT INTO usuarios (correo_institucional, nombre_completo, matricula, password, rol, sede_id, activo)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        `, [cleanCorreo, nombre_completo.trim(), mat, hashedPass, rolNorm, finalSede, activo !== undefined ? (activo ? 1 : 0) : 1]);
+
+        console.log(`👤 [CRUD USUARIOS] Cuenta creada por Superadmin: ${cleanCorreo} (${rolNorm} - Sede: ${finalSede || 'GLOBAL'})`);
+        res.status(201).json({
+            success: true,
+            message: 'Usuario creado exitosamente.',
+            userId: result.insertId
+        });
+    } catch (err) {
+        if (err.code === 'ER_DUP_ENTRY') {
+            return res.status(400).json({ success: false, error: 'Ese correo institucional ya está registrado.' });
+        }
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.put('/api/users/:id', authMiddleware, authorizeRoles('desarrollador'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { correo_institucional, nombre_completo, matricula, password, rol, sede_id, activo } = req.body;
+
+        const [existing] = await dbPool.query('SELECT * FROM usuarios WHERE id = ?', [id]);
+        if (existing.length === 0) {
+            return res.status(404).json({ success: false, error: 'Usuario no encontrado.' });
+        }
+
+        const current = existing[0];
+        const cleanCorreo = correo_institucional ? String(correo_institucional).trim().toLowerCase() : current.correo_institucional;
+        const rolNorm = rol ? normalizeRole(rol) : current.rol;
+        const finalSede = rolNorm === 'desarrollador' ? null : (sede_id !== undefined ? (sede_id || 'campeche') : current.sede_id);
+        const finalPass = (password && String(password).trim().length > 0) ? hashPassword(password) : current.password;
+        const finalNombre = nombre_completo ? nombre_completo.trim() : current.nombre_completo;
+        const finalMat = matricula !== undefined ? String(matricula).trim() : current.matricula;
+        const finalActivo = activo !== undefined ? (activo ? 1 : 0) : current.activo;
+
+        await dbPool.execute(`
+            UPDATE usuarios SET
+                correo_institucional = ?, nombre_completo = ?, matricula = ?,
+                password = ?, rol = ?, sede_id = ?, activo = ?
+            WHERE id = ?
+        `, [cleanCorreo, finalNombre, finalMat, finalPass, rolNorm, finalSede, finalActivo, id]);
+
+        console.log(`✏️ [CRUD USUARIOS] Usuario #${id} (${cleanCorreo}) actualizado a Rol: ${rolNorm} | Sede: ${finalSede || 'GLOBAL'}`);
+        res.json({ success: true, message: 'Usuario actualizado correctamente.' });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.delete('/api/users/:id', authMiddleware, authorizeRoles('desarrollador'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (req.user && Number(req.user.id) === Number(id)) {
+            return res.status(400).json({ success: false, error: 'No puedes eliminar tu propia cuenta activa de Desarrollador.' });
+        }
+        await dbPool.execute('DELETE FROM usuarios WHERE id = ?', [id]);
+        console.log(`🗑️ [CRUD USUARIOS] Usuario #${id} eliminado por Superadmin.`);
+        res.json({ success: true, message: 'Usuario eliminado correctamente.' });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ==========================================
+// 14.6. Endpoints de Auditoría y Prueba de Notificaciones por Correo
+// ==========================================
+app.get('/api/notifications/history', optionalAuthMiddleware, (req, res) => {
+    res.json({
+        success: true,
+        targetEmail: TESTING_NOTIFICATION_EMAIL,
+        history: emailNotificationHistory
+    });
+});
+
+app.post('/api/notifications/test', optionalAuthMiddleware, async (req, res) => {
+    try {
+        const evento = req.body.evento || req.body.eventoTipo;
+        let resultLog = null;
+        if (evento === 'NUEVO_CONTACTO') {
+            resultLog = await dispararNotificacionCorreo('NUEVO_CONTACTO', {
+                telefono_celular: '+529811589900',
+                mensaje_inicial: 'Hola, buenas tardes. Me gustaría pedir informes sobre las licenciaturas en UNID Campeche.',
+                sede_id: 'campeche',
+                insertId: 901
+            });
+        } else if (evento === 'DATOS_COMPLETOS') {
+            const sampleJson = {
+                completado: true,
+                nombre_completo: 'Luis Fernando Quintero Morales',
+                fecha_nacimiento: '2001-09-15',
+                sexo: 'Masculino',
+                estado_nacimiento: 'Campeche',
+                telefono_celular: '9811589900',
+                correo_electronico: 'Luisquintero2001@gmail.com',
+                bachillerato_procedencia: 'COBACAM Plantel 01',
+                carrera_interes: 'Ingeniería en Software y Sistemas Computacionales',
+                direccion: 'Av. Central #104, Col. San Román',
+                codigo_postal: '24040',
+                campus_interes: 'San Francisco de Campeche',
+                modalidad_estudios: 'Presencial',
+                es_foraneo: false,
+                nivel_interes: 'Alto',
+                resumen_ia: 'Aspirante con perfil tecnológico completo; listo para inscripción.'
+            };
+            sampleJson.curp = generarCurp(sampleJson);
+            resultLog = await dispararNotificacionCorreo('DATOS_COMPLETOS', { datos: sampleJson, insertId: 902 });
+        } else {
+            resultLog = await dispararNotificacionCorreo('CIERRE_INSCRITO', {
+                lead: {
+                    id: 903,
+                    nombre_completo: 'Carlos Alpuche Canul',
+                    curp: 'AUCC040515HCCLRN08',
+                    carrera_interes: 'Licenciatura en Derecho',
+                    telefono_celular: '9811234567',
+                    correo_electronico: 'carlos.alpuche@gmail.com',
+                    campus_interes: 'San Francisco de Campeche',
+                    modalidad_estudios: 'Presencial'
+                },
+                asesor: req.user?.displayName || 'Asesor de Admisiones UNID'
+            });
+        }
+        res.json({ success: true, log: resultLog, result: resultLog, targetEmail: TESTING_NOTIFICATION_EMAIL });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
 });
 
 // Vaciar completamente la base de datos de aspirantes (Para testing)
@@ -2330,16 +2961,21 @@ app.post('/api/tenants/:slug/test-whatsapp', async (req, res) => {
     }
 });
 
-// Obtener lista de aspirantes con estados y filtros
-app.get('/api/aspirantes', async (req, res) => {
+// Obtener lista de aspirantes con estados y filtros (con aislamiento de sede para roles no-superadmin)
+app.get('/api/aspirantes', optionalAuthMiddleware, async (req, res) => {
     try {
-        const { campus } = req.query;
+        let { campus } = req.query;
+        // Si el usuario es administrador o usuario (asesor), forzar su sede_id asignada
+        if (req.user && req.user.rol !== 'desarrollador' && req.user.sede_id) {
+            campus = req.user.sede_id;
+        }
+
         let query = 'SELECT * FROM aspirantes';
         const params = [];
 
         if (campus && campus !== 'all' && campus !== 'todas') {
-            query += ' WHERE campus_interes LIKE ?';
-            params.push(`%${campus}%`);
+            query += ' WHERE (sede_id = ? OR campus_interes LIKE ?)';
+            params.push(campus, `%${campus.replace(/_/g, ' ')}%`);
         }
 
         query += ' ORDER BY COALESCE(ultimo_mensaje_at, updated_at, created_at) DESC LIMIT 200';
@@ -2350,8 +2986,8 @@ app.get('/api/aspirantes', async (req, res) => {
     }
 });
 
-// Actualizar estado del prospecto para el Kanban
-app.patch('/api/aspirantes/:id/status', async (req, res) => {
+// Actualizar estado del prospecto para el Kanban + Trigger Evento C (Cierre/Inscrito)
+app.patch('/api/aspirantes/:id/status', optionalAuthMiddleware, async (req, res) => {
     try {
         const { id } = req.params;
         const { estado } = req.body;
@@ -2359,9 +2995,26 @@ app.patch('/api/aspirantes/:id/status', async (req, res) => {
         if (!validStates.includes(estado)) {
             return res.status(400).json({ error: 'Estado de prospecto no válido.' });
         }
+
+        // Consultar estado previo para disparar Evento C únicamente al pasar a "inscrito"
+        const [prevRows] = await dbPool.query('SELECT * FROM aspirantes WHERE id = ?', [id]);
+        const prevLead = prevRows[0] || null;
+
         await dbPool.execute('UPDATE aspirantes SET estado_prospecto = ? WHERE id = ?', [estado, id]);
         console.log(`📌 Prospecto #${id} actualizado al estado: ${estado}`);
-        res.json({ success: true, id: Number(id), estado });
+
+        // Trigger Evento C (Cierre/Inscrito)
+        let emailTriggered = false;
+        if (estado === 'inscrito' && (!prevLead || prevLead.estado_prospecto !== 'inscrito')) {
+            emailTriggered = true;
+            const leadObj = prevLead || { id, nombre_completo: `Prospecto #${id}` };
+            dispararNotificacionCorreo('CIERRE_INSCRITO', {
+                lead: leadObj,
+                asesor: req.user?.displayName || 'Asesor de Admisiones UNID'
+            }).catch(console.error);
+        }
+
+        res.json({ success: true, id: Number(id), estado, emailTriggered });
     } catch (err) {
         res.status(500).json({ error: 'Error actualizando estado: ' + err.message });
     }
@@ -2788,15 +3441,45 @@ app.post('/webhook', async (req, res) => {
 // 15.5. Endpoints de Bandeja de Entrada en Vivo (Live Inbox & Human Handover)
 // ==========================================
 
-// Obtener lista completa de conversaciones activas e históricas
-app.get('/api/conversations', async (req, res) => {
+// Obtener lista completa de conversaciones activas e históricas (con auditoría y filtro por sede_id)
+app.get('/api/conversations', optionalAuthMiddleware, async (req, res) => {
     try {
+        let targetSede = req.query.campus || null;
+        if (req.user && req.user.rol !== 'desarrollador' && req.user.sede_id) {
+            targetSede = req.user.sede_id;
+        }
+
         let dbAspirantes = [];
+        let dbHistoryRows = [];
         try {
-            const [rows] = await dbPool.query('SELECT * FROM aspirantes ORDER BY created_at DESC');
+            let aspQuery = 'SELECT * FROM aspirantes';
+            const aspParams = [];
+            if (targetSede && targetSede !== 'all' && targetSede !== 'todas') {
+                aspQuery += ' WHERE (sede_id = ? OR campus_interes LIKE ?)';
+                aspParams.push(targetSede, `%${targetSede.replace(/_/g, ' ')}%`);
+            }
+            aspQuery += ' ORDER BY created_at DESC';
+            const [rows] = await dbPool.query(aspQuery, aspParams);
             dbAspirantes = rows;
+
+            // Cargar historial persistido en MariaDB para auditoría de chats de la sede
+            const [hRows] = await dbPool.query('SELECT * FROM historial_conversaciones ORDER BY timestamp ASC LIMIT 1000');
+            dbHistoryRows = hRows;
         } catch (e) {
             console.warn('Advertencia consultando aspirantes para conversaciones:', e.message);
+        }
+
+        // Agrupar historial de BD por teléfono limpio
+        const dbHistoryByPhone = new Map();
+        for (const h of dbHistoryRows) {
+            const cPhone = String(h.telefono_celular || '').replace(/[\s\-\+]/g, '');
+            if (!cPhone) continue;
+            if (!dbHistoryByPhone.has(cPhone)) dbHistoryByPhone.set(cPhone, []);
+            dbHistoryByPhone.get(cPhone).push({
+                role: h.rol,
+                content: h.mensaje,
+                timestamp: h.timestamp
+            });
         }
 
         const convMap = new Map();
@@ -2805,11 +3488,12 @@ app.get('/api/conversations', async (req, res) => {
         for (const asp of dbAspirantes) {
             const phone = asp.telefono_celular || `asp_${asp.id}`;
             const cleanPhone = String(phone).replace(/[\s\-\+]/g, '');
-            const history = conversationMemory.get(phone) || conversationMemory.get(cleanPhone) || [];
+            const memHistory = conversationMemory.get(phone) || conversationMemory.get(cleanPhone) || [];
+            const history = memHistory.length > 0 ? memHistory : (dbHistoryByPhone.get(cleanPhone) || []);
             const session = userSessionState.get(phone) || userSessionState.get(cleanPhone) || {};
 
-            let lastMsg = 'Ficha registrada en MariaDB';
-            let lastTime = asp.created_at || new Date();
+            let lastMsg = asp.resumen_ia || 'Ficha registrada en MariaDB';
+            let lastTime = asp.ultimo_mensaje_at || asp.created_at || new Date();
             if (history.length > 0) {
                 const lastEntry = history[history.length - 1];
                 lastMsg = lastEntry.content;
@@ -2819,6 +3503,7 @@ app.get('/api/conversations', async (req, res) => {
             convMap.set(cleanPhone, {
                 phone: asp.telefono_celular || phone,
                 cleanPhone: cleanPhone,
+                sede_id: asp.sede_id || resolveSedeId(asp.campus_interes),
                 name: asp.nombre_completo || 'Aspirante Registrado',
                 carrera: asp.carrera_interes || 'Sin carrera especificada',
                 campus: asp.campus_interes || 'Campus Campeche',
@@ -2847,6 +3532,11 @@ app.get('/api/conversations', async (req, res) => {
             const cleanKey = String(phoneKey).replace(/[\s\-\+]/g, '');
             const session = userSessionState.get(phoneKey) || {};
             const partial = extractPartialFieldsFromHistory(history);
+            const convSede = resolveSedeId(session.leadData?.campus_interes || partial.campus_interes);
+
+            if (targetSede && targetSede !== 'all' && targetSede !== 'todas' && convSede !== targetSede) {
+                continue;
+            }
 
             if (!convMap.has(cleanKey)) {
                 let lastMsg = 'Iniciando conversación...';
@@ -2860,6 +3550,7 @@ app.get('/api/conversations', async (req, res) => {
                 convMap.set(cleanKey, {
                     phone: phoneKey,
                     cleanPhone: cleanKey,
+                    sede_id: convSede,
                     name: session.leadData?.nombre_completo || partial.nombre_completo || `Aspirante (${phoneKey})`,
                     carrera: session.leadData?.carrera_interes || partial.carrera_interes || 'Por definir',
                     campus: session.leadData?.campus_interes || partial.campus_interes || 'Campus Campeche',
@@ -2915,6 +3606,7 @@ app.post('/api/conversations/send-message', async (req, res) => {
             timestamp: new Date()
         };
         history.push(msgObj);
+        await guardarMensajeHistorialBD(phone, 'human_advisor', message.trim(), 'campeche');
 
         if (!userSessionState.has(phone)) {
             userSessionState.set(phone, { isRegistered: false, isPaused: false });

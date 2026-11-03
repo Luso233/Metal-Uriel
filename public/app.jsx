@@ -326,6 +326,31 @@ function App() {
   const [faqOpenIndex, setFaqOpenIndex] = useState(null);
   const [copiedWebhook, setCopiedWebhook] = useState(false);
 
+  // Estados para el CRUD de Usuarios RBAC (Exclusivo Desarrollador / Superadmin)
+  const [usersList, setUsersList] = useState([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [editingUserId, setEditingUserId] = useState(null);
+  const [userForm, setUserForm] = useState({
+    correo_institucional: '',
+    nombre_completo: '',
+    matricula: '',
+    password: '',
+    rol: 'usuario',
+    sede_id: 'campeche',
+    activo: true
+  });
+  const [userFormMsg, setUserFormMsg] = useState({ text: '', type: '' });
+  const [emailLogs, setEmailLogs] = useState([]);
+  const [emailTesting, setEmailTesting] = useState(false);
+
+  // Helper de cabeceras autenticadas con JWT
+  const getAuthHeaders = (extra = {}) => {
+    const token = authToken || localStorage.getItem('metal_uriel_jwt');
+    const headers = { ...extra };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return headers;
+  };
+
   const chatEndRef = useRef(null);
   const inputRef = useRef(null);
   const careerChartRef = useRef(null);
@@ -345,6 +370,8 @@ function App() {
     loadBrochures();
     loadTenants();
     loadTenantDetails('campeche');
+    loadUsers();
+    loadEmailHistory();
 
     // Polling en vivo para sincronización de WhatsApp en tiempo real (cada 3.5 segundos)
     const liveInterval = setInterval(() => {
@@ -469,7 +496,10 @@ function App() {
   // ================= MÉTODOS DE BANDEJA Y API =================
   const loadConversations = async (silent = false) => {
     try {
-      const res = await fetch('/api/conversations');
+      const campusQuery = selectedCampus ? `?campus=${encodeURIComponent(selectedCampus)}` : '';
+      const res = await fetch(`/api/conversations${campusQuery}`, {
+        headers: getAuthHeaders()
+      });
       const data = await res.json();
       if (data.success && Array.isArray(data.conversations)) {
         setConversations(data.conversations);
@@ -620,7 +650,10 @@ function App() {
 
   const loadAspirantes = async (silent = false) => {
     try {
-      const res = await fetch('/api/aspirantes');
+      const campusQuery = selectedCampus ? `?campus=${encodeURIComponent(selectedCampus)}` : '';
+      const res = await fetch(`/api/aspirantes${campusQuery}`, {
+        headers: getAuthHeaders()
+      });
       const data = await res.json();
       if (data.success) {
         setAspirantes(data.data || []);
@@ -697,7 +730,7 @@ function App() {
     try {
       const res = await fetch(`/api/aspirantes/${aspiranteId}/status`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ estado: nuevoEstado })
       });
       const data = await res.json();
@@ -705,9 +738,124 @@ function App() {
         loadAspirantes();
         loadConversations();
         loadAnalytics();
+        loadEmailHistory();
       }
     } catch (e) {
       console.error('Error actualizando estado:', e);
+    }
+  };
+
+  // ================= MÉTODOS CRUD DE USUARIOS RBAC Y NOTIFICACIONES =================
+  const loadUsers = async () => {
+    setUsersLoading(true);
+    try {
+      const res = await fetch('/api/users', { headers: getAuthHeaders() });
+      const data = await res.json();
+      if (data.success) {
+        setUsersList(data.users || []);
+      }
+    } catch (e) {
+      console.error('Error cargando usuarios RBAC:', e);
+    } finally {
+      setUsersLoading(false);
+    }
+  };
+
+  const loadEmailHistory = async () => {
+    try {
+      const res = await fetch('/api/notifications/history', { headers: getAuthHeaders() });
+      const data = await res.json();
+      if (data.success) {
+        setEmailLogs(data.history || []);
+      }
+    } catch (e) {
+      console.error('Error cargando bitácora de correos:', e);
+    }
+  };
+
+  const handleTestEmailTrigger = async (evento) => {
+    setEmailTesting(true);
+    try {
+      const res = await fetch('/api/notifications/test', {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ evento })
+      });
+      const data = await res.json();
+      if (data.success) {
+        loadEmailHistory();
+      } else {
+        alert('Error en prueba de correo: ' + (data.error || 'Error'));
+      }
+    } catch (e) {
+      alert('Error disparando correo: ' + e.message);
+    } finally {
+      setEmailTesting(false);
+    }
+  };
+
+  const handleSaveUser = async (e) => {
+    if (e) e.preventDefault();
+    setUserFormMsg({ text: '', type: '' });
+    try {
+      const url = editingUserId ? `/api/users/${editingUserId}` : '/api/users';
+      const method = editingUserId ? 'PUT' : 'POST';
+      const res = await fetch(url, {
+        method,
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(userForm)
+      });
+      const data = await res.json();
+      if (data.success) {
+        setUserFormMsg({ text: editingUserId ? '✅ Usuario actualizado con éxito.' : '✅ Nuevo usuario creado exitosamente.', type: 'success' });
+        setEditingUserId(null);
+        setUserForm({
+          correo_institucional: '',
+          nombre_completo: '',
+          matricula: '',
+          password: '',
+          rol: 'usuario',
+          sede_id: 'campeche',
+          activo: true
+        });
+        loadUsers();
+      } else {
+        setUserFormMsg({ text: '❌ ' + (data.error || 'Error guardando usuario'), type: 'error' });
+      }
+    } catch (err) {
+      setUserFormMsg({ text: '❌ Error de red: ' + err.message, type: 'error' });
+    }
+  };
+
+  const handleEditUserClick = (u) => {
+    setEditingUserId(u.id);
+    setUserForm({
+      correo_institucional: u.correo_institucional || '',
+      nombre_completo: u.nombre_completo || '',
+      matricula: u.matricula || '',
+      password: '',
+      rol: u.rol || 'usuario',
+      sede_id: u.sede_id || 'campeche',
+      activo: Boolean(u.activo)
+    });
+    setUserFormMsg({ text: '', type: '' });
+  };
+
+  const handleDeleteUserClick = async (id) => {
+    if (!confirm('¿Estás seguro de eliminar permanentemente esta cuenta de usuario?')) return;
+    try {
+      const res = await fetch(`/api/users/${id}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
+      const data = await res.json();
+      if (data.success) {
+        loadUsers();
+      } else {
+        alert(data.error || 'No se pudo eliminar');
+      }
+    } catch (err) {
+      alert('Error eliminando usuario: ' + err.message);
     }
   };
 
@@ -1019,7 +1167,22 @@ function App() {
         localStorage.setItem('metal_uriel_jwt', data.token);
         localStorage.setItem('metal_uriel_user', JSON.stringify(data.user));
         setShowLoginModal(false);
-        setIsPlayingBgm(true);
+
+        const userRol = (data.user.rol || data.user.role || 'usuario').toLowerCase();
+        // Si tiene sede asignada y no es desarrollador, fijar su campus
+        if (userRol !== 'desarrollador' && data.user.sede_id) {
+          setSelectedCampus(data.user.sede_id);
+          localStorage.setItem('metal_uriel_campus', data.user.sede_id);
+        }
+        // BGM exclusivo para Desarrollador
+        if (userRol === 'desarrollador') {
+          setIsPlayingBgm(true);
+          loadUsers();
+          loadEmailHistory();
+        } else {
+          setIsPlayingBgm(false);
+        }
+        setActiveTab('inbox');
       } else {
         setLoginForm(prev => ({ ...prev, error: data.error || 'Credenciales inválidas.' }));
       }
@@ -1055,7 +1218,18 @@ function App() {
   const activeLeadsCount = activeLeads.length;
   const archivedLeadsCount = archivedLeads.length;
 
-  const isAdmin = authUser?.role === 'admin';
+  // Jerarquía de Roles RBAC (Rol 1: Desarrollador, Rol 2: Administrador, Rol 3: Usuario)
+  const currentUserRole = useMemo(() => {
+    const r = String(authUser?.rol || authUser?.role || 'usuario').toLowerCase();
+    if (r === 'desarrollador' || r === 'superadmin') return 'desarrollador';
+    if (r === 'administrador' || r === 'admin') return 'administrador';
+    return 'usuario';
+  }, [authUser]);
+
+  const isDesarrollador = currentUserRole === 'desarrollador';
+  const isAdministrador = currentUserRole === 'administrador';
+  const isUsuario = currentUserRole === 'usuario';
+  const isAdmin = isDesarrollador || isAdministrador;
 
   // Filtrado de la lista de conversaciones en WhatsApp Web
   const filteredConversations = useMemo(() => {
@@ -1130,7 +1304,9 @@ function App() {
             }`}
             title="Bandeja de Entrada WhatsApp (Live Chats)"
           >
-            <i data-lucide="message-square" className="w-5 h-5"></i>
+            <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            </svg>
             {conversations.length > 0 && (
               <span className="absolute -top-1 -right-1 px-1.5 py-0.2 rounded-full bg-[#00A884] text-slate-950 font-black text-[9px]">
                 {conversations.length}
@@ -1141,7 +1317,7 @@ function App() {
             </span>
           </button>
 
-          {/* Tablero Kanban */}
+          {/* Tablero Kanban (Todos los roles) */}
           <button
             onClick={() => setActiveTab('kanban')}
             className={`w-11 h-11 rounded-xl flex items-center justify-center transition relative group ${
@@ -1151,13 +1327,17 @@ function App() {
             }`}
             title="Tablero Kanban de Admisiones"
           >
-            <i data-lucide="trello" className="w-5 h-5"></i>
+            <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect width="18" height="18" x="3" y="3" rx="2" />
+              <path d="M9 3v18" />
+              <path d="M15 3v18" />
+            </svg>
             <span className="absolute left-16 bg-[#111B21] text-xs px-2.5 py-1 rounded-md border border-[#222E35] text-white opacity-0 group-hover:opacity-100 transition whitespace-nowrap shadow-xl pointer-events-none z-50">
               📋 Tablero Kanban ({activeLeadsCount})
             </span>
           </button>
 
-          {/* Métricas & Analytics */}
+          {/* Métricas & Analytics (Todos los roles) */}
           <button
             onClick={() => setActiveTab('analytics')}
             className={`w-11 h-11 rounded-xl flex items-center justify-center transition relative group ${
@@ -1167,49 +1347,91 @@ function App() {
             }`}
             title="Métricas y Analytics Ejecutivos"
           >
-            <i data-lucide="bar-chart-3" className="w-5 h-5"></i>
+            <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 3v18h18" />
+              <path d="M18 17V9" />
+              <path d="M13 17V5" />
+              <path d="M8 17v-3" />
+            </svg>
             <span className="absolute left-16 bg-[#111B21] text-xs px-2.5 py-1 rounded-md border border-[#222E35] text-white opacity-0 group-hover:opacity-100 transition whitespace-nowrap shadow-xl pointer-events-none z-50">
               📊 Métricas & Analytics
             </span>
           </button>
 
-          {/* Planes de Estudio */}
-          <button
-            onClick={() => setActiveTab('brochures')}
-            className={`w-11 h-11 rounded-xl flex items-center justify-center transition relative group ${
-              activeTab === 'brochures'
-                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow-sm'
-                : 'text-slate-400 hover:text-slate-100 hover:bg-[#202C33]'
-            }`}
-            title="Catálogo de Planes de Estudio (PDF)"
-          >
-            <i data-lucide="graduation-cap" className="w-5 h-5"></i>
-            <span className="absolute left-16 bg-[#111B21] text-xs px-2.5 py-1 rounded-md border border-[#222E35] text-white opacity-0 group-hover:opacity-100 transition whitespace-nowrap shadow-xl pointer-events-none z-50">
-              📚 Planes de Estudio ({brochures.length})
-            </span>
-          </button>
+          {/* Planes de Estudio (Exclusivo Desarrollador) */}
+          {isDesarrollador && (
+            <button
+              onClick={() => setActiveTab('brochures')}
+              className={`w-11 h-11 rounded-xl flex items-center justify-center transition relative group ${
+                activeTab === 'brochures'
+                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow-sm'
+                  : 'text-slate-400 hover:text-slate-100 hover:bg-[#202C33]'
+              }`}
+              title="Catálogo de Planes de Estudio (PDF)"
+            >
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 10v6M2 10l10-5 10 5-10 5z" />
+                <path d="M6 12v5c3 3 9 3 12 0v-5" />
+              </svg>
+              <span className="absolute left-16 bg-[#111B21] text-xs px-2.5 py-1 rounded-md border border-[#222E35] text-white opacity-0 group-hover:opacity-100 transition whitespace-nowrap shadow-xl pointer-events-none z-50">
+                📚 Planes de Estudio ({brochures.length})
+              </span>
+            </button>
+          )}
 
-          {/* 11 Datos IA (Inspector) */}
-          <button
-            onClick={() => setActiveTab('inspector')}
-            className={`w-11 h-11 rounded-xl flex items-center justify-center transition relative group ${
-              activeTab === 'inspector'
-                ? 'bg-purple-500/20 text-purple-400 border border-purple-500/40 shadow-sm'
-                : 'text-slate-400 hover:text-slate-100 hover:bg-[#202C33]'
-            }`}
-            title="Inspector de 11 Datos IA"
-          >
-            <i data-lucide="list-checks" className="w-5 h-5"></i>
-            <span className="absolute left-16 bg-[#111B21] text-xs px-2.5 py-1 rounded-md border border-[#222E35] text-white opacity-0 group-hover:opacity-100 transition whitespace-nowrap shadow-xl pointer-events-none z-50">
-              🎯 11 Datos IA
-            </span>
-          </button>
+          {/* 11 Datos IA (Exclusivo Desarrollador) */}
+          {isDesarrollador && (
+            <button
+              onClick={() => setActiveTab('inspector')}
+              className={`w-11 h-11 rounded-xl flex items-center justify-center transition relative group ${
+                activeTab === 'inspector'
+                  ? 'bg-purple-500/20 text-purple-400 border border-purple-500/40 shadow-sm'
+                  : 'text-slate-400 hover:text-slate-100 hover:bg-[#202C33]'
+              }`}
+              title="Inspector de 11 Datos IA"
+            >
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m3 17 2 2 4-4" />
+                <path d="m3 7 2 2 4-4" />
+                <path d="M13 6h8" />
+                <path d="M13 12h8" />
+                <path d="M13 18h8" />
+              </svg>
+              <span className="absolute left-16 bg-[#111B21] text-xs px-2.5 py-1 rounded-md border border-[#222E35] text-white opacity-0 group-hover:opacity-100 transition whitespace-nowrap shadow-xl pointer-events-none z-50">
+                🎯 11 Datos IA
+              </span>
+            </button>
+          )}
 
-          {/* Herramientas de Administrador */}
-          {isAdmin && (
+          {/* Personalidad Bot (Desarrollador y Administrador) */}
+          {(isDesarrollador || isAdministrador) && (
             <>
               <div className="w-8 h-[1px] bg-[#222E35]"></div>
+              <button
+                onClick={() => setActiveTab('prompt')}
+                className={`w-11 h-11 rounded-xl flex items-center justify-center transition relative group ${
+                  activeTab === 'prompt'
+                    ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-100 hover:bg-[#202C33]'
+                }`}
+                title="Personalidad & System Prompt"
+              >
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M20 7h-9" />
+                  <path d="M14 17H5" />
+                  <circle cx="17" cy="17" r="3" />
+                  <circle cx="7" cy="7" r="3" />
+                </svg>
+                <span className="absolute left-16 bg-[#111B21] text-xs px-2.5 py-1 rounded-md border border-[#222E35] text-white opacity-0 group-hover:opacity-100 transition whitespace-nowrap shadow-xl pointer-events-none z-50">
+                  🤖 Personalidad Bot
+                </span>
+              </button>
+            </>
+          )}
 
+          {/* Herramientas Exclusivas de Desarrollador (Superadmin) */}
+          {isDesarrollador && (
+            <>
               {/* MariaDB */}
               <button
                 onClick={() => setActiveTab('database')}
@@ -1218,27 +1440,15 @@ function App() {
                     ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 shadow-sm'
                     : 'text-slate-400 hover:text-slate-100 hover:bg-[#202C33]'
                 }`}
-                title="Gestor MariaDB (Admin)"
+                title="Gestor MariaDB (Superadmin)"
               >
-                <i data-lucide="database" className="w-5 h-5"></i>
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <ellipse cx="12" cy="5" rx="9" ry="3" />
+                  <path d="M3 5V19A9 3 0 0 0 21 19V5" />
+                  <path d="M3 12A9 3 0 0 0 21 12" />
+                </svg>
                 <span className="absolute left-16 bg-[#111B21] text-xs px-2.5 py-1 rounded-md border border-[#222E35] text-white opacity-0 group-hover:opacity-100 transition whitespace-nowrap shadow-xl pointer-events-none z-50">
                   🗄️ MariaDB
-                </span>
-              </button>
-
-              {/* Personalidad Bot */}
-              <button
-                onClick={() => setActiveTab('prompt')}
-                className={`w-11 h-11 rounded-xl flex items-center justify-center transition relative group ${
-                  activeTab === 'prompt'
-                    ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 shadow-sm'
-                    : 'text-slate-400 hover:text-slate-100 hover:bg-[#202C33]'
-                }`}
-                title="Personalidad & System Prompt (Admin)"
-              >
-                <i data-lucide="settings-2" className="w-5 h-5"></i>
-                <span className="absolute left-16 bg-[#111B21] text-xs px-2.5 py-1 rounded-md border border-[#222E35] text-white opacity-0 group-hover:opacity-100 transition whitespace-nowrap shadow-xl pointer-events-none z-50">
-                  🤖 Personalidad Bot
                 </span>
               </button>
 
@@ -1250,17 +1460,50 @@ function App() {
                     ? 'bg-pink-500/20 text-pink-400 border border-pink-500/40 shadow-sm'
                     : 'text-slate-400 hover:text-slate-100 hover:bg-[#202C33]'
                 }`}
-                title="SaaS Sedes & WhatsApp Cloud API (Admin)"
+                title="SaaS Sedes & WhatsApp Cloud API (Superadmin)"
               >
-                <i data-lucide="building-2" className="w-5 h-5"></i>
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z" />
+                  <path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2" />
+                  <path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2" />
+                  <path d="M10 6h4" />
+                  <path d="M10 10h4" />
+                  <path d="M10 14h4" />
+                  <path d="M10 18h4" />
+                </svg>
                 <span className="absolute left-16 bg-[#111B21] text-xs px-2.5 py-1 rounded-md border border-[#222E35] text-white opacity-0 group-hover:opacity-100 transition whitespace-nowrap shadow-xl pointer-events-none z-50">
                   ⚙️ Configuración Sedes ({tenantsList.length || 23})
+                </span>
+              </button>
+
+              {/* CRUD de Usuarios RBAC & Alertas Email */}
+              <button
+                onClick={() => {
+                  setActiveTab('users_crud');
+                  loadUsers();
+                  loadEmailHistory();
+                }}
+                className={`w-11 h-11 rounded-xl flex items-center justify-center transition relative group ${
+                  activeTab === 'users_crud'
+                    ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/40 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-100 hover:bg-[#202C33]'
+                }`}
+                title="Gestión de Usuarios RBAC & Notificaciones Email (Superadmin)"
+              >
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+                  <circle cx="9" cy="7" r="4" />
+                  <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+                  <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                </svg>
+                <span className="absolute left-16 bg-[#111B21] text-xs px-2.5 py-1 rounded-md border border-[#222E35] text-white opacity-0 group-hover:opacity-100 transition whitespace-nowrap shadow-xl pointer-events-none z-50">
+                  👥 Usuarios RBAC & Correos
                 </span>
               </button>
             </>
           )}
 
-          {/* Soporte & Onboarding */}
+          {/* Soporte & Onboarding (Todos los roles) */}
           <button
             onClick={() => setActiveTab('onboarding')}
             className={`w-11 h-11 rounded-xl flex items-center justify-center transition relative group ${
@@ -1270,7 +1513,11 @@ function App() {
             }`}
             title="Guía de Onboarding & Soporte"
           >
-            <i data-lucide="help-circle" className="w-5 h-5"></i>
+            <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+              <path d="M12 17h.01" />
+            </svg>
             <span className="absolute left-16 bg-[#111B21] text-xs px-2.5 py-1 rounded-md border border-[#222E35] text-white opacity-0 group-hover:opacity-100 transition whitespace-nowrap shadow-xl pointer-events-none z-50">
               🆘 Soporte & Ayuda
             </span>
@@ -1280,25 +1527,40 @@ function App() {
         {/* Bottom: Herramientas del Sistema, BGM, Salud & Perfil */}
         <div className="flex flex-col items-center gap-3 w-full">
           
-          {/* Toggle BGM Metal Sonic */}
-          <button
-            onClick={() => {
-              if (!isPlayingBgm) {
-                setIsPlayingBgm(true);
-                setIsMutedBgm(false);
-              } else {
-                setIsMutedBgm(!isMutedBgm);
-              }
-            }}
-            className={`w-10 h-10 rounded-xl flex items-center justify-center transition ${
-              isPlayingBgm && !isMutedBgm
-                ? 'text-amber-400 bg-amber-950/60 border border-amber-500/40 animate-pulse'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-[#202C33]'
-            }`}
-            title={isPlayingBgm && !isMutedBgm ? 'BGM Cyber Metal Sonic activo (Silenciar)' : 'Reproducir BGM Metal Sonic'}
-          >
-            <i data-lucide={isPlayingBgm && !isMutedBgm ? 'volume-2' : 'volume-x'} className="w-4 h-4"></i>
-          </button>
+          {/* Toggle BGM Metal Sonic (Exclusivo Desarrollador) */}
+          {isDesarrollador && (
+            <button
+              onClick={() => {
+                if (!isPlayingBgm) {
+                  setIsPlayingBgm(true);
+                  setIsMutedBgm(false);
+                } else {
+                  setIsMutedBgm(!isMutedBgm);
+                }
+              }}
+              className={`w-10 h-10 rounded-xl flex items-center justify-center transition ${
+                isPlayingBgm && !isMutedBgm
+                  ? 'text-amber-400 bg-amber-950/60 border border-amber-500/40 animate-pulse'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-[#202C33]'
+              }`}
+              title={isPlayingBgm && !isMutedBgm ? 'BGM Cyber Metal Sonic activo (Silenciar)' : 'Reproducir BGM Metal Sonic'}
+            >
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                {isPlayingBgm && !isMutedBgm ? (
+                  <>
+                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                  </>
+                ) : (
+                  <>
+                    <line x1="23" y1="9" x2="17" y2="15" />
+                    <line x1="17" y1="9" x2="23" y2="15" />
+                  </>
+                )}
+              </svg>
+            </button>
+          )}
 
           {/* Semáforo de Salud */}
           <button
@@ -1337,37 +1599,56 @@ function App() {
               <span className="text-slate-200">Centro de Mando</span>
             </span>
 
-            {/* Selector de Campus */}
+            {/* Badge de Rol Activo */}
+            <span className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider border ${
+              isDesarrollador
+                ? 'bg-purple-950/80 text-purple-300 border-purple-500/40'
+                : isAdministrador
+                ? 'bg-sky-950/80 text-sky-300 border-sky-500/40'
+                : 'bg-emerald-950/80 text-emerald-300 border-emerald-500/40'
+            }`}>
+              {isDesarrollador ? '👑 Desarrollador' : isAdministrador ? '🛡️ Administrador' : '🎧 Asesor'}
+            </span>
+
+            {/* Selector de Campus (Global para Desarrollador, Fijo en su sede_id para Admin/Usuario) */}
             <div className="flex items-center gap-1 bg-[#202C33] px-2.5 py-1 rounded-lg border border-slate-700/60">
               <i data-lucide="map-pin" className="w-3.5 h-3.5 text-amber-400"></i>
-              <select
-                value={selectedCampus}
-                onChange={(e) => handleChangeCampus(e.target.value)}
-                className="bg-transparent text-xs text-slate-200 font-semibold focus:outline-none cursor-pointer"
-              >
-                {campusesList.map(c => (
-                  <option key={c.id} value={c.id} className="bg-[#111B21] text-slate-200">
-                    {c.name}
-                  </option>
-                ))}
-              </select>
+              {isDesarrollador ? (
+                <select
+                  value={selectedCampus}
+                  onChange={(e) => handleChangeCampus(e.target.value)}
+                  className="bg-transparent text-xs text-slate-200 font-semibold focus:outline-none cursor-pointer"
+                >
+                  {campusesList.map(c => (
+                    <option key={c.id} value={c.id} className="bg-[#111B21] text-slate-200">
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <span className="text-xs text-slate-200 font-semibold" title="Sede asignada a tu cuenta">
+                  {campusesList.find(c => c.id === (authUser?.sede_id || selectedCampus))?.name || `Sede: ${authUser?.sede_id || 'Campeche'}`}
+                </span>
+              )}
             </div>
 
-            {/* Selector de Modelo IA */}
-            <div className="hidden md:flex items-center gap-1 bg-[#202C33] px-2.5 py-1 rounded-lg border border-slate-700/60">
-              <i data-lucide="cpu" className="w-3.5 h-3.5 text-sky-400"></i>
-              <select
-                value={selectedModel}
-                onChange={(e) => handleChangeModel(e.target.value)}
-                className="bg-transparent text-xs text-slate-200 font-semibold focus:outline-none cursor-pointer"
-              >
-                {modelsList.map(m => (
-                  <option key={m.id} value={m.id} className="bg-[#111B21] text-slate-200">
-                    {m.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {/* Selector de Modelo IA (Exclusivo Desarrollador) */}
+            {isDesarrollador && (
+              <div className="hidden md:flex items-center gap-1 bg-[#202C33] px-2.5 py-1 rounded-lg border border-slate-700/60">
+                <i data-lucide="cpu" className="w-3.5 h-3.5 text-sky-400"></i>
+                <select
+                  value={selectedModel}
+                  onChange={(e) => handleChangeModel(e.target.value)}
+                  className="bg-transparent text-xs text-slate-200 font-semibold focus:outline-none cursor-pointer"
+                >
+                  {modelsList.map(m => (
+                    <option key={m.id} value={m.id} className="bg-[#111B21] text-slate-200">
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
 
           {/* Acciones de la TopBar */}
@@ -1384,29 +1665,33 @@ function App() {
               </button>
             )}
 
-            {/* Botón Laboratorio de Pruebas */}
-            <button
-              onClick={() => setShowTestSuiteModal(true)}
-              className="px-2.5 py-1 rounded-lg bg-purple-950/70 hover:bg-purple-900 border border-purple-500/40 text-purple-300 text-xs font-bold flex items-center gap-1.5 transition shadow"
-              title="Abrir Laboratorio de Casos de Prueba"
-            >
-              <i data-lucide="flask-conical" className="w-3.5 h-3.5 text-amber-400"></i>
-              <span className="hidden sm:inline">Laboratorio IA</span>
-            </button>
+            {/* Botón Laboratorio de Pruebas (Exclusivo Desarrollador) */}
+            {isDesarrollador && (
+              <button
+                onClick={() => setShowTestSuiteModal(true)}
+                className="px-2.5 py-1 rounded-lg bg-purple-950/70 hover:bg-purple-900 border border-purple-500/40 text-purple-300 text-xs font-bold flex items-center gap-1.5 transition shadow"
+                title="Abrir Laboratorio de Casos de Prueba"
+              >
+                <i data-lucide="flask-conical" className="w-3.5 h-3.5 text-amber-400"></i>
+                <span className="hidden sm:inline">Laboratorio IA</span>
+              </button>
+            )}
 
-            {/* Exportar CSV */}
-            <a
-              href="/api/aspirantes/export"
-              target="_blank"
-              className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold flex items-center gap-1 border border-slate-700 transition"
-              title="Descargar Excel / CSV"
-            >
-              <i data-lucide="download" className="w-3.5 h-3.5"></i>
-              <span className="hidden lg:inline">Excel</span>
-            </a>
+            {/* Exportar CSV (Desarrollador y Administrador) */}
+            {!isUsuario && (
+              <a
+                href="/api/aspirantes/export"
+                target="_blank"
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold flex items-center gap-1 border border-slate-700 transition"
+                title="Descargar Excel / CSV"
+              >
+                <i data-lucide="download" className="w-3.5 h-3.5"></i>
+                <span className="hidden lg:inline">Excel</span>
+              </a>
+            )}
 
-            {/* Cargar Demo */}
-            {isAdmin && (
+            {/* Cargar Demo (Exclusivo Desarrollador) */}
+            {isDesarrollador && (
               <button
                 onClick={handleSeedDemo}
                 className="px-2.5 py-1 rounded-lg bg-amber-950/60 hover:bg-amber-900/80 text-amber-300 border border-amber-500/40 text-xs font-bold flex items-center gap-1 transition"
@@ -1848,18 +2133,20 @@ function App() {
                       <span>Modo: Asesor Humano (vía WhatsApp)</span>
                     </button>
 
-                    <button
-                      type="button"
-                      onClick={() => setIsAdvisorMode(false)}
-                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold transition flex items-center gap-1 ${
-                        !isAdvisorMode
-                          ? 'bg-emerald-600 text-white shadow'
-                          : 'bg-[#111B21] text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      <i data-lucide="flask-conical" className="w-3 h-3"></i>
-                      <span>Simulador (Test Lab IA)</span>
-                    </button>
+                    {isDesarrollador && (
+                      <button
+                        type="button"
+                        onClick={() => setIsAdvisorMode(false)}
+                        className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold transition flex items-center gap-1 ${
+                          !isAdvisorMode
+                            ? 'bg-emerald-600 text-white shadow'
+                            : 'bg-[#111B21] text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        <i data-lucide="flask-conical" className="w-3 h-3"></i>
+                        <span>Simulador (Test Lab IA)</span>
+                      </button>
+                    )}
                   </div>
 
                   <span className="text-[10px] text-slate-400 font-mono hidden sm:inline">
@@ -2218,8 +2505,8 @@ function App() {
           </div>
         )}
 
-        {/* ====== TAB 3: PLANES DE ESTUDIO ====== */}
-        {activeTab === 'brochures' && (
+        {/* ====== TAB 3: PLANES DE ESTUDIO (SOLO DESARROLLADOR) ====== */}
+        {activeTab === 'brochures' && isDesarrollador && (
           <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
@@ -2283,8 +2570,8 @@ function App() {
           </div>
         )}
 
-        {/* ====== TAB 4: INSPECTOR DE 11 DATOS IA ====== */}
-        {activeTab === 'inspector' && (
+        {/* ====== TAB 4: INSPECTOR DE 11 DATOS IA (SOLO DESARROLLADOR) ====== */}
+        {activeTab === 'inspector' && isDesarrollador && (
           <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
             <div className="flex items-center justify-between">
               <div>
@@ -2347,8 +2634,8 @@ function App() {
           </div>
         )}
 
-        {/* ====== TAB 5: MARIADB (ADMIN) ====== */}
-        {activeTab === 'database' && isAdmin && (
+        {/* ====== TAB 5: MARIADB (SOLO DESARROLLADOR) ====== */}
+        {activeTab === 'database' && isDesarrollador && (
           <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
@@ -2486,8 +2773,8 @@ function App() {
           </div>
         )}
 
-        {/* ====== TAB 7: CONFIGURACIÓN SEDES SAAS (ADMIN) ====== */}
-        {activeTab === 'tenant_config' && isAdmin && (
+        {/* ====== TAB 7: CONFIGURACIÓN SEDES SAAS (SOLO DESARROLLADOR) ====== */}
+        {activeTab === 'tenant_config' && isDesarrollador && (
           <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
             <div className="flex items-center justify-between">
               <div>
@@ -2591,7 +2878,362 @@ function App() {
           </div>
         )}
 
-        {/* ====== TAB 8: SOPORTE & ONBOARDING ====== */}
+        {/* ====== TAB 7.5: GESTIÓN DE USUARIOS RBAC & NOTIFICACIONES SMTP (SOLO DESARROLLADOR) ====== */}
+        {activeTab === 'users_crud' && isDesarrollador && (
+          <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h2 className="font-extrabold text-sm sm:text-base text-white flex items-center gap-2">
+                  <i data-lucide="users" className="w-4 h-4 text-amber-400"></i>
+                  <span>Control de Acceso Basado en Roles (RBAC) & Directorio de Personal</span>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-purple-950 text-purple-300 font-mono border border-purple-500/40">
+                    {usersList.length} Cuentas
+                  </span>
+                </h2>
+                <p className="text-xs text-slate-400">
+                  Administra usuarios, asigna niveles de privilegio (Desarrollador, Administrador, Usuario) y vincula sedes específicas.
+                </p>
+              </div>
+              <button
+                onClick={() => { loadUsers(); loadEmailHistory(); }}
+                className="px-3 py-1.5 rounded-xl bg-[#1E293B] hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-bold transition flex items-center gap-1.5 self-start sm:self-auto"
+              >
+                <i data-lucide="refresh-cw" className="w-3.5 h-3.5 text-amber-400"></i>
+                <span>Sincronizar</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+              {/* Formulario CRUD de Usuarios */}
+              <div className="p-4 rounded-2xl bg-[#0F172A] border border-slate-800 space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
+                  <h3 className="font-extrabold text-xs text-amber-400 flex items-center gap-1.5">
+                    <i data-lucide={editingUserId ? "user-check" : "user-plus"} className="w-4 h-4"></i>
+                    <span>{editingUserId ? `Editar Usuario #${editingUserId}` : 'Registrar Nuevo Usuario / Asesor'}</span>
+                  </h3>
+                  {editingUserId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingUserId(null);
+                        setUserForm({
+                          correo_institucional: '',
+                          nombre_completo: '',
+                          matricula: '',
+                          password: '',
+                          rol: 'usuario',
+                          sede_id: 'campeche',
+                          activo: true
+                        });
+                      }}
+                      className="text-[11px] text-slate-400 hover:text-white underline"
+                    >
+                      Cancelar edición
+                    </button>
+                  )}
+                </div>
+
+                <form onSubmit={handleSaveUser} className="space-y-3">
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-bold text-slate-300">Nombre Completo / Puesto</label>
+                    <input
+                      type="text"
+                      required
+                      value={userForm.nombre_completo}
+                      onChange={(e) => setUserForm({ ...userForm, nombre_completo: e.target.value })}
+                      placeholder="Ej. Lic. Ana Gómez (Coordinadora)"
+                      className="w-full bg-[#1E293B] text-xs text-slate-100 rounded-xl px-3 py-2 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-slate-300">Correo Institucional</label>
+                      <input
+                        type="email"
+                        required
+                        value={userForm.correo_institucional}
+                        onChange={(e) => setUserForm({ ...userForm, correo_institucional: e.target.value })}
+                        placeholder="usuario@red.unid.mx"
+                        className="w-full bg-[#1E293B] text-xs text-slate-100 rounded-xl px-3 py-2 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400 font-mono"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-slate-300">Matrícula / ID</label>
+                      <input
+                        type="text"
+                        value={userForm.matricula}
+                        onChange={(e) => setUserForm({ ...userForm, matricula: e.target.value })}
+                        placeholder="00774343"
+                        className="w-full bg-[#1E293B] text-xs text-slate-100 rounded-xl px-3 py-2 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400 font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-slate-300">Rol RBAC</label>
+                      <select
+                        value={userForm.rol}
+                        onChange={(e) => {
+                          const newRol = e.target.value;
+                          setUserForm({
+                            ...userForm,
+                            rol: newRol,
+                            sede_id: newRol === 'desarrollador' ? '' : (userForm.sede_id || 'campeche')
+                          });
+                        }}
+                        className="w-full bg-[#1E293B] text-xs text-amber-300 font-bold rounded-xl px-3 py-2 border border-slate-700 focus:outline-none cursor-pointer"
+                      >
+                        <option value="desarrollador">Rol 1: Desarrollador (Superadmin)</option>
+                        <option value="administrador">Rol 2: Administrador (Gerente Sede)</option>
+                        <option value="usuario">Rol 3: Usuario (Asesor Admisiones)</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-slate-300">Sede Asignada (sede_id)</label>
+                      {userForm.rol === 'desarrollador' ? (
+                        <div className="w-full bg-slate-900 text-xs text-purple-300 font-mono rounded-xl px-3 py-2 border border-purple-500/30">
+                          GLOBAL (Todas las Sedes)
+                        </div>
+                      ) : (
+                        <select
+                          value={userForm.sede_id || 'campeche'}
+                          onChange={(e) => setUserForm({ ...userForm, sede_id: e.target.value })}
+                          className="w-full bg-[#1E293B] text-xs text-sky-300 font-bold rounded-xl px-3 py-2 border border-slate-700 focus:outline-none cursor-pointer"
+                        >
+                          {campusesList.map((c) => {
+                            const campusId = c.id || c.slug;
+                            const campusName = c.name || c.nombre;
+                            return (
+                              <option key={campusId} value={campusId}>
+                                {campusName} ({campusId})
+                              </option>
+                            );
+                          })}
+                        </select>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-bold text-slate-300">
+                      {editingUserId ? 'Nueva Contraseña (dejar en blanco para conservar)' : 'Contraseña de Acceso'}
+                    </label>
+                    <input
+                      type="password"
+                      required={!editingUserId}
+                      value={userForm.password}
+                      onChange={(e) => setUserForm({ ...userForm, password: e.target.value })}
+                      placeholder={editingUserId ? '•••••••• (Sin cambios)' : 'Contraseña segura'}
+                      className="w-full bg-[#1E293B] text-xs text-slate-100 rounded-xl px-3 py-2 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1">
+                    <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={userForm.activo}
+                        onChange={(e) => setUserForm({ ...userForm, activo: e.target.checked })}
+                        className="rounded border-slate-600 text-amber-500 focus:ring-amber-400"
+                      />
+                      <span>Cuenta Activa</span>
+                    </label>
+
+                    <button
+                      type="submit"
+                      disabled={usersLoading}
+                      className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#FFC72C] to-[#F59E0B] text-slate-950 font-black text-xs shadow hover:brightness-110 transition"
+                    >
+                      {usersLoading ? 'Guardando...' : editingUserId ? 'Actualizar Usuario' : 'Crear Usuario'}
+                    </button>
+                  </div>
+
+                  {userFormMsg && userFormMsg.text && (
+                    <div className={`p-2.5 rounded-xl text-xs font-bold border ${
+                      userFormMsg.type === 'success'
+                        ? 'bg-emerald-950/80 border-emerald-500/40 text-emerald-300'
+                        : 'bg-red-950/80 border-red-500/40 text-red-300'
+                    }`}>
+                      {userFormMsg.text}
+                    </div>
+                  )}
+                </form>
+              </div>
+
+              {/* Tabla de Usuarios Registrados */}
+              <div className="lg:col-span-2 rounded-2xl border border-slate-800 bg-[#0F172A] overflow-hidden shadow-sm flex flex-col">
+                <div className="p-3.5 border-b border-slate-800 bg-[#1E293B]/60 flex items-center justify-between">
+                  <span className="text-xs font-extrabold text-white">Cuentas Activas en MariaDB (Tabla `usuarios`)</span>
+                  <span className="text-[11px] text-slate-400 font-mono">Passwords protegidos con Scrypt Hash</span>
+                </div>
+                <div className="overflow-x-auto flex-1">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-[#1E293B] text-slate-300 font-bold border-b border-slate-800">
+                      <tr>
+                        <th className="p-3">ID</th>
+                        <th className="p-3">Usuario / Correo</th>
+                        <th className="p-3">Rol RBAC</th>
+                        <th className="p-3">Sede (`sede_id`)</th>
+                        <th className="p-3">Estado</th>
+                        <th className="p-3 text-right">Acciones</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800 text-slate-200">
+                      {usersList.map((u) => (
+                        <tr key={u.id} className="hover:bg-slate-800/40 transition">
+                          <td className="p-3 font-mono text-amber-400">#{u.id}</td>
+                          <td className="p-3">
+                            <div className="font-bold text-white">{u.nombre_completo}</div>
+                            <div className="font-mono text-[11px] text-slate-400">{u.correo_institucional}</div>
+                          </td>
+                          <td className="p-3">
+                            <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-extrabold border ${
+                              u.rol === 'desarrollador'
+                                ? 'bg-purple-950/90 text-purple-300 border-purple-500/40'
+                                : u.rol === 'administrador'
+                                ? 'bg-amber-950/90 text-amber-300 border-amber-500/40'
+                                : 'bg-sky-950/90 text-sky-300 border-sky-500/40'
+                            }`}>
+                              {u.rol.toUpperCase()}
+                            </span>
+                          </td>
+                          <td className="p-3 font-mono text-xs">
+                            {u.rol === 'desarrollador' || !u.sede_id ? (
+                              <span className="text-purple-300 font-bold">🌐 GLOBAL (Todas)</span>
+                            ) : (
+                              <span className="text-emerald-300 font-bold uppercase">{u.sede_id}</span>
+                            )}
+                          </td>
+                          <td className="p-3">
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                              u.activo ? 'bg-emerald-950 text-emerald-300' : 'bg-red-950 text-red-300'
+                            }`}>
+                              {u.activo ? 'ACTIVO' : 'INACTIVO'}
+                            </span>
+                          </td>
+                          <td className="p-3 text-right space-x-1.5">
+                            <button
+                              onClick={() => handleEditUserClick(u)}
+                              className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-amber-500 hover:text-slate-950 text-slate-200 text-[11px] font-bold transition"
+                            >
+                              Editar
+                            </button>
+                            <button
+                              onClick={() => handleDeleteUserClick(u.id)}
+                              className="px-2.5 py-1 rounded-lg bg-red-950/80 hover:bg-red-700 text-red-200 text-[11px] font-bold transition"
+                            >
+                              Eliminar
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            {/* Panel de Notificaciones por Correo Electrónico (Nodemailer -> Luisquintero2001@gmail.com) */}
+            <div className="p-4 rounded-2xl bg-[#0F172A] border border-amber-500/30 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+                <div>
+                  <h3 className="font-extrabold text-xs sm:text-sm text-white flex items-center gap-2">
+                    <span>📧 Monitor & Simulador de Triggers Nodemailer</span>
+                    <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-amber-950 text-amber-300 font-mono border border-amber-500/40">
+                      Destino: Luisquintero2001@gmail.com
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Todos los eventos se disparan automáticamente en tiempo real y generan vista previa si no hay credenciales SMTP de producción.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => handleTestEmailTrigger('NUEVO_CONTACTO')}
+                    disabled={emailTesting}
+                    className="px-3 py-1.5 rounded-xl bg-sky-950 hover:bg-sky-900 border border-sky-500/40 text-sky-200 text-[11px] font-bold transition disabled:opacity-50"
+                  >
+                    ⚡ Probar Evento A (Nuevo Contacto)
+                  </button>
+                  <button
+                    onClick={() => handleTestEmailTrigger('DATOS_COMPLETOS')}
+                    disabled={emailTesting}
+                    className="px-3 py-1.5 rounded-xl bg-amber-950 hover:bg-amber-900 border border-amber-500/40 text-amber-200 text-[11px] font-bold transition disabled:opacity-50"
+                  >
+                    ⚡ Probar Evento B (11 Datos JSON)
+                  </button>
+                  <button
+                    onClick={() => handleTestEmailTrigger('CIERRE_INSCRITO')}
+                    disabled={emailTesting}
+                    className="px-3 py-1.5 rounded-xl bg-emerald-950 hover:bg-emerald-900 border border-emerald-500/40 text-emerald-200 text-[11px] font-bold transition disabled:opacity-50"
+                  >
+                    ⚡ Probar Evento C (Alumno Inscrito)
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-[#1E293B] text-slate-300 font-bold border-b border-slate-800">
+                    <tr>
+                      <th className="p-2.5">Hora</th>
+                      <th className="p-2.5">Trigger</th>
+                      <th className="p-2.5">Destinatario</th>
+                      <th className="p-2.5">Asunto</th>
+                      <th className="p-2.5">Estado / Transporte</th>
+                      <th className="p-2.5 text-right">Vista Previa</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800 text-slate-200">
+                    {emailLogs.length === 0 ? (
+                      <tr>
+                        <td colSpan="6" className="p-6 text-center text-slate-500 italic">
+                          Aún no se han disparado notificaciones en esta sesión. Usa los botones de arriba o interactúa en el Chat / Kanban.
+                        </td>
+                      </tr>
+                    ) : (
+                      emailLogs.map((log) => (
+                        <tr key={log.id} className="hover:bg-slate-800/40">
+                          <td className="p-2.5 font-mono text-[11px] text-slate-400">
+                            {new Date(log.timestamp || log.fecha).toLocaleTimeString('es-MX')}
+                          </td>
+                          <td className="p-2.5 font-mono font-bold text-amber-300">{log.eventoTipo || log.evento}</td>
+                          <td className="p-2.5 font-mono text-emerald-300">{log.to || log.destinatario}</td>
+                          <td className="p-2.5 font-semibold text-white">{log.subject || log.asunto}</td>
+                          <td className="p-2.5">
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 font-mono border border-emerald-500/30">
+                              {log.status || log.estado} ({log.transport || 'SMTP'})
+                            </span>
+                          </td>
+                          <td className="p-2.5 text-right">
+                            {log.previewUrl ? (
+                              <a
+                                href={log.previewUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-[11px] font-bold transition"
+                              >
+                                Abrir Correo ↗
+                              </a>
+                            ) : (
+                              <span className="text-[11px] text-slate-500 font-mono">SMTP Directo</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ====== TAB 8: SOPORTE & ONBOARDING (TODOS LOS ROLES) ====== */}
         {activeTab === 'onboarding' && (
           <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
             <div className="flex items-center justify-between">
@@ -2782,7 +3424,7 @@ function App() {
                       type="password"
                       value={loginForm.password}
                       onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
-                      placeholder="admin o user"
+                      placeholder="admin, admin2026 o user"
                       required
                       className="w-full bg-[#1E293B] text-xs text-slate-100 rounded-xl px-3 py-2 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400"
                     />
@@ -2828,10 +3470,46 @@ function App() {
               </button>
             </form>
 
-            <div className="p-2.5 rounded-xl bg-[#1E293B]/60 border border-slate-800 text-[10px] text-slate-400 space-y-1 font-mono">
-              <span className="font-bold text-amber-300 block">Cuentas de Testing:</span>
-              <p>👑 Admin (Sistemas): <code>00774343@red.unid.mx</code> / <code>admin</code></p>
-              <p>📋 Asesor (Admisiones): <code>67676767@red.unid.mx</code> / <code>user</code></p>
+            <div className="p-2.5 rounded-xl bg-[#1E293B]/60 border border-slate-800 text-[10px] text-slate-400 space-y-1.5 font-mono">
+              <span className="font-bold text-amber-300 block">Acceso Rápido RBAC (Testing 1-Click):</span>
+              <div className="grid grid-cols-1 gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthTab('o365');
+                    setO365Email('00774343@red.unid.mx');
+                    setLoginForm({ ...loginForm, username: '00774343', password: 'admin', error: '' });
+                  }}
+                  className="text-left px-2 py-1 rounded bg-purple-950/60 hover:bg-purple-900/80 border border-purple-500/30 text-purple-200 transition flex items-center justify-between"
+                >
+                  <span>🛠️ Rol 1 (Desarrollador Global)</span>
+                  <span>00774343@red.unid.mx / admin</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthTab('o365');
+                    setO365Email('admin.campeche@red.unid.mx');
+                    setLoginForm({ ...loginForm, username: '00881122', password: 'admin2026', error: '' });
+                  }}
+                  className="text-left px-2 py-1 rounded bg-amber-950/60 hover:bg-amber-900/80 border border-amber-500/30 text-amber-200 transition flex items-center justify-between"
+                >
+                  <span>🏛️ Rol 2 (Admin Sede Campeche)</span>
+                  <span>admin.campeche@... / admin2026</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthTab('o365');
+                    setO365Email('67676767@red.unid.mx');
+                    setLoginForm({ ...loginForm, username: '67676767', password: 'user', error: '' });
+                  }}
+                  className="text-left px-2 py-1 rounded bg-sky-950/60 hover:bg-sky-900/80 border border-sky-500/30 text-sky-200 transition flex items-center justify-between"
+                >
+                  <span>🎧 Rol 3 (Usuario Asesor)</span>
+                  <span>67676767@red.unid.mx / user</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -2841,5 +3519,10 @@ function App() {
   );
 }
 
-// Renderizado principal en React
-ReactDOM.render(<App />, document.getElementById('root'));
+// Renderizado principal en React 18
+const rootElement = document.getElementById('root');
+if (ReactDOM.createRoot) {
+  ReactDOM.createRoot(rootElement).render(<App />);
+} else {
+  ReactDOM.render(<App />, rootElement);
+}

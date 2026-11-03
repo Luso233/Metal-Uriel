@@ -69,11 +69,30 @@ CREATE TABLE IF NOT EXISTS `aspirantes` (
 -- Tabla complementaria para almacenar el historial de conversación
 CREATE TABLE IF NOT EXISTS `historial_conversaciones` (
     `id` BIGINT AUTO_INCREMENT PRIMARY KEY,
-    `sede_id` INT NULL,
+    `sede_id` VARCHAR(50) NULL,
     `telefono_celular` VARCHAR(30) NOT NULL,
-    `rol` ENUM('user', 'assistant', 'system') NOT NULL,
+    `rol` ENUM('user', 'assistant', 'system', 'human_advisor') NOT NULL,
     `mensaje` TEXT NOT NULL,
     `timestamp` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     INDEX `idx_historial_telefono` (`telefono_celular`, `timestamp`),
     INDEX `idx_historial_sede` (`sede_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Tabla de Usuarios y Control de Acceso Basado en Roles (RBAC)
+CREATE TABLE IF NOT EXISTS `usuarios` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `correo_institucional` VARCHAR(255) NOT NULL UNIQUE,
+    `nombre_completo` VARCHAR(150) NOT NULL,
+    `matricula` VARCHAR(50) NULL,
+    `password` VARCHAR(255) NOT NULL,
+    `rol` ENUM('desarrollador', 'administrador', 'usuario') NOT NULL DEFAULT 'usuario',
+    `sede_id` VARCHAR(50) NULL DEFAULT NULL COMMENT 'NULL = Global (Desarrollador), o slug de sede ej. campeche',
+    `activo` BOOLEAN DEFAULT TRUE,
+    `ultimo_acceso` TIMESTAMP NULL DEFAULT NULL,
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX `idx_correo` (`correo_institucional`),
+    INDEX `idx_rol` (`rol`),
+    INDEX `idx_sede_usuario` (`sede_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
