@@ -298,28 +298,48 @@ const dbPool = mysql.createPool({
                 updated_by VARCHAR(150) NULL,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+            `CREATE TABLE IF NOT EXISTS pool_categorias (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                slug VARCHAR(80) NOT NULL UNIQUE,
+                nombre VARCHAR(120) NOT NULL,
+                icono VARCHAR(20) DEFAULT '📁',
+                color VARCHAR(40) DEFAULT 'amber',
+                descripcion VARCHAR(255) NULL,
+                orden INT DEFAULT 10,
+                activa TINYINT(1) DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
             `CREATE TABLE IF NOT EXISTS pool_recursos_multimedia (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 codigo_recurso VARCHAR(80) NOT NULL UNIQUE,
                 sede_id VARCHAR(50) DEFAULT 'campeche',
                 ciclo_escolar VARCHAR(60) DEFAULT '2026-3 Septiembre',
-                categoria ENUM('plan_estudios', 'oferta_educativa', 'horarios', 'instalaciones', 'becas_costos') NOT NULL DEFAULT 'plan_estudios',
+                categoria VARCHAR(80) NOT NULL DEFAULT 'plan_estudios',
                 titulo VARCHAR(200) NOT NULL,
                 descripcion_ia TEXT NULL,
                 tags TEXT NULL,
-                tipo_archivo ENUM('pdf', 'imagen', 'info') NOT NULL DEFAULT 'pdf',
+                scope VARCHAR(80) DEFAULT 'campus_campeche',
+                scope_label VARCHAR(150) DEFAULT '🏛️ Campus Campeche (Presencial)',
+                tipo_archivo VARCHAR(40) NOT NULL DEFAULT 'pdf',
                 url_recurso VARCHAR(500) NULL,
                 file_name VARCHAR(200) NULL,
                 modalidad VARCHAR(120) DEFAULT 'Presencial & Online',
                 duracion VARCHAR(100) DEFAULT '3 años (9 cuatrimestres)',
                 rvoe VARCHAR(100) DEFAULT 'SEP-RVOE-OFICIAL',
                 tamano VARCHAR(40) DEFAULT '1.2 MB',
+                subido_por VARCHAR(150) NULL,
                 activo TINYINT(1) DEFAULT 1,
                 updated_by VARCHAR(150) NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 INDEX idx_pool_sede_cat (sede_id, categoria)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+            `ALTER TABLE pool_recursos_multimedia MODIFY COLUMN categoria VARCHAR(80) NOT NULL DEFAULT 'plan_estudios'`,
+            `ALTER TABLE pool_recursos_multimedia MODIFY COLUMN tipo_archivo VARCHAR(40) NOT NULL DEFAULT 'pdf'`,
+            `ALTER TABLE pool_recursos_multimedia ADD COLUMN IF NOT EXISTS scope VARCHAR(80) DEFAULT 'campus_campeche'`,
+            `ALTER TABLE pool_recursos_multimedia ADD COLUMN IF NOT EXISTS scope_label VARCHAR(150) DEFAULT '🏛️ Campus Campeche (Presencial)'`,
+            `ALTER TABLE pool_recursos_multimedia ADD COLUMN IF NOT EXISTS subido_por VARCHAR(150) NULL`
         ];
 
         for (const sql of migrations) {
@@ -344,6 +364,28 @@ const dbPool = mysql.createPool({
                 );
             }
         } catch (_) {}
+
+        // 5.5. Inicializar Categorías base del Pool Multimedia si la tabla está vacía
+        try {
+            const [catRows] = await connection.query('SELECT COUNT(*) as count FROM pool_categorias');
+            if (catRows[0].count === 0) {
+                const baseCategories = [
+                    { slug: 'plan_estudios', nombre: 'Planes de Estudio', icono: '📚', color: 'amber', descripcion: 'Mallas curriculares y planes de estudio por licenciatura e ingeniería', orden: 1 },
+                    { slug: 'oferta_educativa', nombre: 'Oferta Educativa', icono: '🎓', color: 'purple', descripcion: 'Catálogos generales de carreras, modalidades e información académica', orden: 2 },
+                    { slug: 'horarios', nombre: 'Horarios de Clase', icono: '🕒', color: 'emerald', descripcion: 'Horarios de clases por periodo escolar y modalidad', orden: 3 },
+                    { slug: 'instalaciones', nombre: 'Fotos e Instalaciones', icono: '🏛️', color: 'sky', descripcion: 'Fotografías del campus, cabinas de radio/TV, laboratorios y salas', orden: 4 },
+                    { slug: 'becas_costos', nombre: 'Becas y Costos', icono: '💰', color: 'rose', descripcion: 'Convocatorias de becas, colegiaturas, descuentos y financiamiento', orden: 5 }
+                ];
+                for (const c of baseCategories) {
+                    await connection.execute(
+                        `INSERT IGNORE INTO pool_categorias (slug, nombre, icono, color, descripcion, orden, activa) VALUES (?, ?, ?, ?, ?, ?, 1)`,
+                        [c.slug, c.nombre, c.icono, c.color, c.descripcion, c.orden]
+                    );
+                }
+            }
+        } catch (catErr) {
+            console.warn('⚠️ Error poblando pool_categorias:', catErr.message);
+        }
 
         // 6. Sembrar Pool Multimedia de Admisiones desde brochures.json + recursos iniciales de horarios/instalaciones/oferta
         try {
@@ -2738,19 +2780,33 @@ app.get('/api/ciclos', optionalAuthMiddleware, async (req, res) => {
         if (sedeId === 'all' || sedeId === 'todas') sedeId = 'campeche';
 
         const [rows] = await dbPool.query(
-            'SELECT * FROM ciclos_escolares_sede WHERE sede_id = ? ORDER BY id ASC',
+            'SELECT * FROM ciclos_escolares_sede WHERE sede_id = ? LIMIT 1',
             [sedeId]
         );
-        const activeRow = rows.find(r => Boolean(r.es_activo)) || rows[0] || { ciclo_escolar: '2026-3 Septiembre' };
+        let activeCiclo = '2026-3 Septiembre';
+        let list = ['2026-1 Enero', '2026-2 Mayo', '2026-3 Septiembre', '2027-1 Enero'];
+
+        if (rows.length > 0) {
+            activeCiclo = rows[0].ciclo_activo || activeCiclo;
+            try {
+                const parsed = JSON.parse(rows[0].ciclos_disponibles || '[]');
+                if (Array.isArray(parsed) && parsed.length > 0) list = parsed;
+            } catch (_) {}
+        }
+        if (!list.includes(activeCiclo)) list.push(activeCiclo);
+
+        const formattedCiclos = list.map((c, idx) => ({
+            id: idx + 1,
+            sede_id: sedeId,
+            ciclo_escolar: c,
+            es_activo: c === activeCiclo ? 1 : 0
+        }));
+
         res.json({
             success: true,
             sede_id: sedeId,
-            activeCiclo: activeRow.ciclo_escolar,
-            ciclos: rows.length > 0 ? rows : [
-                { id: 1, sede_id: sedeId, ciclo_escolar: '2026-2 Mayo', es_activo: 0 },
-                { id: 2, sede_id: sedeId, ciclo_escolar: '2026-3 Septiembre', es_activo: 1 },
-                { id: 3, sede_id: sedeId, ciclo_escolar: '2027-1 Enero', es_activo: 0 }
-            ]
+            activeCiclo,
+            ciclos: formattedCiclos
         });
     } catch (err) {
         res.json({
@@ -2780,24 +2836,172 @@ app.post('/api/ciclos', optionalAuthMiddleware, async (req, res) => {
         }
         const cleanCiclo = String(ciclo_escolar).trim();
 
-        // Desactivar todos los ciclos de esa sede y activar o insertar el seleccionado
-        await dbPool.execute('UPDATE ciclos_escolares_sede SET es_activo = 0 WHERE sede_id = ?', [sedeId]);
-        await dbPool.execute(`
-            INSERT INTO ciclos_escolares_sede (sede_id, ciclo_escolar, es_activo)
-            VALUES (?, ?, 1)
-            ON DUPLICATE KEY UPDATE es_activo = 1
-        `, [sedeId, cleanCiclo]);
+        const [rows] = await dbPool.query('SELECT * FROM ciclos_escolares_sede WHERE sede_id = ? LIMIT 1', [sedeId]);
+        let list = ['2026-1 Enero', '2026-2 Mayo', '2026-3 Septiembre', '2027-1 Enero'];
+        if (rows.length > 0 && rows[0].ciclos_disponibles) {
+            try {
+                const parsed = JSON.parse(rows[0].ciclos_disponibles);
+                if (Array.isArray(parsed) && parsed.length > 0) list = parsed;
+            } catch (_) {}
+        }
+        if (!list.includes(cleanCiclo)) list.push(cleanCiclo);
 
+        await dbPool.execute(`
+            INSERT INTO ciclos_escolares_sede (sede_id, ciclo_activo, ciclos_disponibles, updated_by)
+            VALUES (?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE ciclo_activo = VALUES(ciclo_activo), ciclos_disponibles = VALUES(ciclos_disponibles), updated_by = VALUES(updated_by)
+        `, [sedeId, cleanCiclo, JSON.stringify(list), req.user?.correo_institucional || 'Admin']);
+
+        activeSchoolCyclesMemory.set(sedeId, cleanCiclo);
         console.log(`📅 [CICLO ESCOLAR ACTIVO] Sede '${sedeId}' actualizada a ciclo: ${cleanCiclo}`);
-        const [rows] = await dbPool.query('SELECT * FROM ciclos_escolares_sede WHERE sede_id = ? ORDER BY id ASC', [sedeId]);
+
+        const formattedCiclos = list.map((c, idx) => ({
+            id: idx + 1,
+            sede_id: sedeId,
+            ciclo_escolar: c,
+            es_activo: c === cleanCiclo ? 1 : 0
+        }));
+
         res.json({
             success: true,
             message: `Ciclo escolar activo actualizado a ${cleanCiclo}`,
             activeCiclo: cleanCiclo,
-            ciclos: rows
+            ciclos: formattedCiclos
         });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ==========================================
+// 0.5. CRUD Completo de Categorías del Pool Multimedia (/api/pool/categories)
+// ==========================================
+const DEFAULT_POOL_CATEGORIES = [
+    { id: 1, slug: 'plan_estudios', nombre: 'Planes de Estudio', icono: '📚', color: 'amber', descripcion: 'Mallas curriculares y planes de estudio por licenciatura e ingeniería', orden: 1 },
+    { id: 2, slug: 'oferta_educativa', nombre: 'Oferta Educativa', icono: '🎓', color: 'purple', descripcion: 'Catálogos generales de carreras, modalidades e información académica', orden: 2 },
+    { id: 3, slug: 'horarios', nombre: 'Horarios de Clase', icono: '🕒', color: 'emerald', descripcion: 'Horarios de clases por periodo escolar y modalidad', orden: 3 },
+    { id: 4, slug: 'instalaciones', nombre: 'Fotos e Instalaciones', icono: '🏛️', color: 'sky', descripcion: 'Fotografías del campus, cabinas de radio/TV, laboratorios y salas', orden: 4 },
+    { id: 5, slug: 'becas_costos', nombre: 'Becas y Costos', icono: '💰', color: 'rose', descripcion: 'Convocatorias de becas, colegiaturas, descuentos y financiamiento', orden: 5 }
+];
+
+app.get('/api/pool/categories', optionalAuthMiddleware, async (req, res) => {
+    try {
+        const [rows] = await dbPool.query('SELECT * FROM pool_categorias WHERE activa = 1 ORDER BY orden ASC, id ASC');
+        if (rows && rows.length > 0) {
+            return res.json({ success: true, categories: rows });
+        }
+        return res.json({ success: true, categories: DEFAULT_POOL_CATEGORIES });
+    } catch (err) {
+        return res.json({ success: true, categories: DEFAULT_POOL_CATEGORIES });
+    }
+});
+
+app.post('/api/pool/categories', optionalAuthMiddleware, async (req, res) => {
+    try {
+        const { nombre, icono, color, descripcion, slug: customSlug } = req.body;
+        if (!nombre || !String(nombre).trim()) {
+            return res.status(400).json({ success: false, error: 'El nombre de la categoría es obligatorio.' });
+        }
+        const cleanNombre = String(nombre).trim();
+        let slug = (customSlug || cleanNombre)
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-z0-9]+/g, '_')
+            .replace(/^_+|_+$/g, '')
+            .substring(0, 60);
+        if (!slug) slug = `cat_${Date.now()}`;
+
+        const [existing] = await dbPool.query('SELECT id FROM pool_categorias WHERE slug = ? LIMIT 1', [slug]);
+        if (existing.length > 0) {
+            slug = `${slug}_${Date.now().toString().slice(-3)}`;
+        }
+
+        const cleanIcono = (icono || '📁').trim();
+        const cleanColor = (color || 'amber').trim();
+        const cleanDesc = (descripcion || '').trim();
+
+        const [result] = await dbPool.execute(
+            `INSERT INTO pool_categorias (slug, nombre, icono, color, descripcion, orden, activa) VALUES (?, ?, ?, ?, ?, 10, 1)`,
+            [slug, cleanNombre, cleanIcono, cleanColor, cleanDesc]
+        );
+
+        const newCat = {
+            id: result.insertId,
+            slug,
+            nombre: cleanNombre,
+            icono: cleanIcono,
+            color: cleanColor,
+            descripcion: cleanDesc,
+            activa: 1
+        };
+        console.log(`🏷️ [POOL CATEGORÍA CREADA] ${cleanIcono} ${cleanNombre} (${slug})`);
+        return res.status(201).json({ success: true, category: newCat });
+    } catch (err) {
+        console.error('Error creando categoría del Pool:', err);
+        return res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.put('/api/pool/categories/:id', optionalAuthMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { nombre, icono, color, descripcion } = req.body;
+        if (!nombre || !String(nombre).trim()) {
+            return res.status(400).json({ success: false, error: 'El nombre de la categoría es obligatorio.' });
+        }
+
+        const [rows] = await dbPool.query('SELECT * FROM pool_categorias WHERE id = ? OR slug = ? LIMIT 1', [id, id]);
+        if (rows.length === 0) {
+            return res.status(404).json({ success: false, error: 'Categoría no encontrada.' });
+        }
+        const current = rows[0];
+        const cleanNombre = String(nombre).trim();
+        const cleanIcono = (icono || current.icono || '📁').trim();
+        const cleanColor = (color || current.color || 'amber').trim();
+        const cleanDesc = descripcion !== undefined ? String(descripcion).trim() : (current.descripcion || '');
+
+        await dbPool.execute(
+            `UPDATE pool_categorias SET nombre = ?, icono = ?, color = ?, descripcion = ? WHERE id = ?`,
+            [cleanNombre, cleanIcono, cleanColor, cleanDesc, current.id]
+        );
+
+        console.log(`✏️ [POOL CATEGORÍA ACTUALIZADA] ${cleanIcono} ${cleanNombre} (${current.slug})`);
+        return res.json({
+            success: true,
+            category: { ...current, nombre: cleanNombre, icono: cleanIcono, color: cleanColor, descripcion: cleanDesc }
+        });
+    } catch (err) {
+        console.error('Error actualizando categoría del Pool:', err);
+        return res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.delete('/api/pool/categories/:id', optionalAuthMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const [rows] = await dbPool.query('SELECT * FROM pool_categorias WHERE id = ? OR slug = ? LIMIT 1', [id, id]);
+        if (rows.length === 0) {
+            return res.status(404).json({ success: false, error: 'Categoría no encontrada.' });
+        }
+        const targetCat = rows[0];
+
+        // Reasignar recursos de esta categoría a 'oferta_educativa' (o la primera disponible) para no perder recursos
+        const [otherCats] = await dbPool.query('SELECT slug FROM pool_categorias WHERE id != ? ORDER BY orden ASC, id ASC LIMIT 1', [targetCat.id]);
+        const fallbackSlug = otherCats.length > 0 ? otherCats[0].slug : 'plan_estudios';
+
+        await dbPool.execute('UPDATE pool_recursos_multimedia SET categoria = ? WHERE categoria = ?', [fallbackSlug, targetCat.slug]);
+        await dbPool.execute('DELETE FROM pool_categorias WHERE id = ?', [targetCat.id]);
+
+        console.log(`🗑️ [POOL CATEGORÍA ELIMINADA] ${targetCat.nombre} (${targetCat.slug}) -> recursos movidos a '${fallbackSlug}'`);
+        return res.json({
+            success: true,
+            message: `Categoría "${targetCat.nombre}" eliminada. Sus recursos fueron reubicados en "${fallbackSlug}".`,
+            fallbackSlug
+        });
+    } catch (err) {
+        console.error('Error eliminando categoría del Pool:', err);
+        return res.status(500).json({ success: false, error: err.message });
     }
 });
 
@@ -2828,13 +3032,13 @@ app.get('/api/brochures', optionalAuthMiddleware, async (req, res) => {
     }
 });
 
-// 2. Crear nuevo recurso en el Pool Multimedia (Planes, Oferta, Horarios, Instalaciones, Becas) - Abierto a los 3 roles
+// 2. Crear nuevo recurso en el Pool Multimedia (Planes, Oferta, Horarios, Instalaciones, Becas y Categorías Personalizadas) - Abierto a los 3 roles
 async function handleCreatePoolResource(req, res) {
     try {
         const {
             titulo, carrera, categoria, descripcion_ia, scope, modalidad,
-            duracion, rvoe, fileName, pdfUrl, url_recurso, size, tags,
-            ciclo_escolar, tipo_archivo, fileData
+            duracion, rvoe, fileName, file_name, pdfUrl, url_recurso, size, tags,
+            ciclo_escolar, tipo_archivo, fileData, file_data_base64
         } = req.body;
 
         const finalTitle = (titulo || carrera || '').trim();
@@ -2847,7 +3051,14 @@ async function handleCreatePoolResource(req, res) {
             sedeId = req.user.sede_id;
         }
 
-        const codigoRecurso = (req.body.codigo_recurso || req.body.id || finalTitle.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '_')).substring(0, 55);
+        let codigoRecurso = (req.body.codigo_recurso || req.body.id || finalTitle.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')).substring(0, 50);
+        if (!codigoRecurso) codigoRecurso = `recurso_${Date.now()}`;
+
+        const [dupCheck] = await dbPool.query('SELECT id FROM pool_recursos_multimedia WHERE codigo_recurso = ? LIMIT 1', [codigoRecurso]);
+        if (dupCheck.length > 0) {
+            codigoRecurso = `${codigoRecurso}_${Date.now().toString().slice(-4)}`;
+        }
+
         const finalCategoria = categoria || 'plan_estudios';
         const finalModalidad = (modalidad || 'Presencial').trim();
         const finalCiclo = ciclo_escolar || await getActiveCicloEscolar(sedeId);
@@ -2857,14 +3068,16 @@ async function handleCreatePoolResource(req, res) {
         else if (scope === 'ejecutiva_campeche') scopeLabel = '👔 Campus Campeche (Ejecutiva / Dual)';
         else if (scope === 'todas') scopeLabel = '🎓 Recurso Institucional UNID';
 
-        // Procesar subida híbrida (Archivo directo en Base64 o URL externa)
+        // Procesar subida híbrida (Archivo directo en Base64 desde la computadora o URL externa)
+        const incomingBase64 = fileData || file_data_base64 || '';
+        const incomingFileName = fileName || file_name || '';
         let uploadedMeta = null;
-        if (fileData && String(fileData).startsWith('data:')) {
-            uploadedMeta = saveUploadedBase64File(fileData, fileName, codigoRecurso);
+        if (incomingBase64 && String(incomingBase64).startsWith('data:')) {
+            uploadedMeta = saveUploadedBase64File(incomingBase64, incomingFileName, codigoRecurso);
         }
 
         const finalTipoArchivo = uploadedMeta ? uploadedMeta.tipo_archivo : (tipo_archivo || 'pdf');
-        const finalFileName = uploadedMeta ? uploadedMeta.file_name : (fileName ? fileName.trim() : `${codigoRecurso}.${finalTipoArchivo === 'imagen' ? 'png' : 'pdf'}`);
+        const finalFileName = uploadedMeta ? uploadedMeta.file_name : (incomingFileName ? incomingFileName.trim() : `${codigoRecurso}.${finalTipoArchivo === 'imagen' ? 'png' : 'pdf'}`);
         const finalUrl = uploadedMeta ? uploadedMeta.url_recurso : ((url_recurso || pdfUrl || '').trim() || `/api/brochures/${codigoRecurso}/download`);
         const finalSize = uploadedMeta ? uploadedMeta.tamano : (size ? size.trim() : '1.2 MB');
         const parsedTags = Array.isArray(tags)
@@ -2878,8 +3091,8 @@ async function handleCreatePoolResource(req, res) {
             INSERT INTO pool_recursos_multimedia (
                 codigo_recurso, sede_id, ciclo_escolar, categoria, titulo, descripcion_ia,
                 scope, scope_label, modalidad, duracion, rvoe, tipo_archivo,
-                file_name, url_recurso, tamano, tags, subido_por, activo
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                file_name, url_recurso, tamano, tags, subido_por, updated_by, activo
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         `, [
             codigoRecurso,
             sedeId,
@@ -2897,6 +3110,7 @@ async function handleCreatePoolResource(req, res) {
             finalUrl,
             finalSize,
             JSON.stringify(parsedTags),
+            req.user?.correo_institucional || 'admin@red.unid.mx',
             req.user?.correo_institucional || 'admin@red.unid.mx'
         ]);
 
@@ -2922,7 +3136,14 @@ async function handleCreatePoolResource(req, res) {
             tags: parsedTags
         };
 
-        // Mantener sincronizado brochures.json si es plan de estudios o becas
+        // Si es un PDF autogenerado (sin archivo subido), generar su PDF físico en /public/uploads/recursos/
+        if (!uploadedMeta && finalTipoArchivo === 'pdf') {
+            try {
+                fs.writeFileSync(path.join(UPLOADS_DIR, finalFileName), generateOfficialPdfBuffer(newBrochureCompat));
+            } catch (_) {}
+        }
+
+        // Mantener sincronizado brochures.json
         const existingIdx = UNID_BROCHURES.findIndex(b => b.id === codigoRecurso);
         if (existingIdx >= 0) {
             UNID_BROCHURES[existingIdx] = newBrochureCompat;
@@ -2948,8 +3169,8 @@ async function handleUpdatePoolResource(req, res) {
         const { id } = req.params;
         const {
             titulo, carrera, categoria, descripcion_ia, scope, modalidad,
-            duracion, rvoe, fileName, pdfUrl, url_recurso, size, tags,
-            ciclo_escolar, tipo_archivo, fileData
+            duracion, rvoe, fileName, file_name, pdfUrl, url_recurso, size, tags,
+            ciclo_escolar, tipo_archivo, fileData, file_data_base64
         } = req.body;
 
         const [rows] = await dbPool.query(
@@ -2963,9 +3184,11 @@ async function handleUpdatePoolResource(req, res) {
         }
 
         const codigoRecurso = current.codigo_recurso || current.id || id;
+        const incomingBase64 = fileData || file_data_base64 || '';
+        const incomingFileName = fileName || file_name || '';
         let uploadedMeta = null;
-        if (fileData && String(fileData).startsWith('data:')) {
-            uploadedMeta = saveUploadedBase64File(fileData, fileName, codigoRecurso);
+        if (incomingBase64 && String(incomingBase64).startsWith('data:')) {
+            uploadedMeta = saveUploadedBase64File(incomingBase64, incomingFileName, codigoRecurso);
         }
 
         const finalTitle = (titulo || carrera || current.titulo || current.carrera || '').trim();
@@ -2981,8 +3204,8 @@ async function handleUpdatePoolResource(req, res) {
         else if (finalScope === 'todas') scopeLabel = '🎓 Recurso Institucional UNID';
 
         const finalTipoArchivo = uploadedMeta ? uploadedMeta.tipo_archivo : (tipo_archivo || current.tipo_archivo || 'pdf');
-        const finalFileName = uploadedMeta ? uploadedMeta.file_name : (fileName ? fileName.trim() : (current.file_name || current.fileName));
-        const finalUrl = uploadedMeta ? uploadedMeta.url_recurso : ((url_recurso !== undefined ? url_recurso : (pdfUrl !== undefined ? pdfUrl : (current.url_recurso || current.pdfUrl))) || '').trim();
+        const finalFileName = uploadedMeta ? uploadedMeta.file_name : (incomingFileName ? incomingFileName.trim() : (current.file_name || current.fileName || `${codigoRecurso}.pdf`));
+        const finalUrl = uploadedMeta ? uploadedMeta.url_recurso : ((url_recurso !== undefined && url_recurso !== '' ? url_recurso : (pdfUrl !== undefined && pdfUrl !== '' ? pdfUrl : (current.url_recurso || current.pdfUrl || `/api/brochures/${codigoRecurso}/download`)))).trim();
         const finalSize = uploadedMeta ? uploadedMeta.tamano : (size ? size.trim() : (current.tamano || current.size || '1.2 MB'));
         const finalDuracion = duracion ? duracion.trim() : (current.duracion || '3 años (9 cuatrimestres)');
         const finalRvoe = rvoe ? rvoe.trim() : (current.rvoe || 'SEP-RVOE-OFICIAL');
@@ -3004,12 +3227,13 @@ async function handleUpdatePoolResource(req, res) {
                 UPDATE pool_recursos_multimedia SET
                     ciclo_escolar = ?, categoria = ?, titulo = ?, descripcion_ia = ?,
                     scope = ?, scope_label = ?, modalidad = ?, duracion = ?, rvoe = ?,
-                    tipo_archivo = ?, file_name = ?, url_recurso = ?, tamano = ?, tags = ?
+                    tipo_archivo = ?, file_name = ?, url_recurso = ?, tamano = ?, tags = ?, updated_by = ?
                 WHERE id = ?
             `, [
                 finalCiclo, finalCategoria, finalTitle, finalDescripcionIa,
                 finalScope, scopeLabel, finalModalidad, finalDuracion, finalRvoe,
                 finalTipoArchivo, finalFileName, finalUrl, finalSize, JSON.stringify(parsedTags),
+                req.user?.correo_institucional || 'admin@red.unid.mx',
                 rows[0].id
             ]);
         }
@@ -3034,6 +3258,13 @@ async function handleUpdatePoolResource(req, res) {
             size: finalSize,
             tags: parsedTags
         };
+
+        // Si es un PDF autogenerado (no subido manualmente), regenerar su archivo físico en /public/uploads/recursos/ con los nuevos datos
+        if (!uploadedMeta && finalTipoArchivo === 'pdf' && !finalUrl.startsWith('/uploads/')) {
+            try {
+                fs.writeFileSync(path.join(UPLOADS_DIR, finalFileName), generateOfficialPdfBuffer(updatedObj));
+            } catch (_) {}
+        }
 
         const bIndex = UNID_BROCHURES.findIndex(b => b.id === codigoRecurso);
         if (bIndex !== -1) {

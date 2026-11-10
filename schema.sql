@@ -100,23 +100,40 @@ CREATE TABLE IF NOT EXISTS `usuarios` (
     INDEX `idx_sede_usuario` (`sede_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Tabla del Pool Multimedia de Admisiones (Agrupado por Categoría General y Sede)
+-- Tabla de Categorías Dinámicas del Pool Multimedia (CRUD Completo desde la UI)
+CREATE TABLE IF NOT EXISTS `pool_categorias` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `slug` VARCHAR(80) NOT NULL UNIQUE,
+    `nombre` VARCHAR(120) NOT NULL,
+    `icono` VARCHAR(20) DEFAULT '📁',
+    `color` VARCHAR(40) DEFAULT 'amber',
+    `descripcion` VARCHAR(255) NULL,
+    `orden` INT DEFAULT 10,
+    `activa` BOOLEAN DEFAULT TRUE,
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Tabla del Pool Multimedia de Admisiones (Agrupado por Categoría Dinámica y Sede)
 CREATE TABLE IF NOT EXISTS `pool_recursos_multimedia` (
     `id` INT AUTO_INCREMENT PRIMARY KEY,
     `codigo_recurso` VARCHAR(80) NOT NULL UNIQUE,
     `sede_id` VARCHAR(50) DEFAULT 'campeche' COMMENT 'Slug de la sede o global',
     `ciclo_escolar` VARCHAR(60) DEFAULT '2026-3 Septiembre',
-    `categoria` ENUM('plan_estudios', 'oferta_educativa', 'horarios', 'instalaciones', 'becas_costos') NOT NULL DEFAULT 'plan_estudios',
+    `categoria` VARCHAR(80) NOT NULL DEFAULT 'plan_estudios',
     `titulo` VARCHAR(200) NOT NULL,
     `descripcion_ia` TEXT NULL COMMENT 'Contexto que lee la IA para responder dudas y ofrecer el archivo',
     `tags` TEXT NULL COMMENT 'Palabras clave separadas por coma',
-    `tipo_archivo` ENUM('pdf', 'imagen', 'info') NOT NULL DEFAULT 'pdf',
+    `scope` VARCHAR(80) DEFAULT 'campus_campeche',
+    `scope_label` VARCHAR(150) DEFAULT '🏛️ Campus Campeche (Presencial)',
+    `tipo_archivo` VARCHAR(40) NOT NULL DEFAULT 'pdf',
     `url_recurso` VARCHAR(500) NULL,
     `file_name` VARCHAR(200) NULL,
     `modalidad` VARCHAR(120) DEFAULT 'Presencial & Online',
     `duracion` VARCHAR(100) DEFAULT '3 años (9 cuatrimestres)',
     `rvoe` VARCHAR(100) DEFAULT 'SEP-RVOE-OFICIAL',
     `tamano` VARCHAR(40) DEFAULT '1.2 MB',
+    `subido_por` VARCHAR(150) NULL,
     `activo` BOOLEAN DEFAULT TRUE,
     `updated_by` VARCHAR(150) NULL,
     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

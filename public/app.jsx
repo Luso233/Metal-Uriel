@@ -354,7 +354,7 @@ function App() {
   const [smtpSaving, setSmtpSaving] = useState(false);
   const [smtpMsg, setSmtpMsg] = useState({ text: '', type: '' });
 
-  // Estados del Pool Multimedia (Planes, Oferta, Horarios, Instalaciones) y Ciclos Escolares
+  // Estados del Pool Multimedia (Planes, Oferta, Horarios, Instalaciones) y Categorías CRUD
   const [ciclosList, setCiclosList] = useState([]);
   const [activeCiclo, setActiveCiclo] = useState('2026-3 Septiembre');
   const [newCicloInput, setNewCicloInput] = useState('');
@@ -363,9 +363,11 @@ function App() {
   const [showPoolModal, setShowPoolModal] = useState(false);
   const [editingPoolId, setEditingPoolId] = useState(null);
   const [poolSaving, setPoolSaving] = useState(false);
+  const [poolMsg, setPoolMsg] = useState({ type: '', text: '' });
   const [poolForm, setPoolForm] = useState({
     titulo: '',
     categoria: 'plan_estudios',
+    ciclo_escolar: '2026-3 Septiembre',
     modalidad: 'Presencial',
     duracion: '3 años (9 cuatrimestres)',
     rvoe: 'SEP-RVOE-OFICIAL',
@@ -375,6 +377,25 @@ function App() {
     tipo_archivo: 'pdf',
     fileName: '',
     fileData: ''
+  });
+
+  // Estados CRUD de Categorías del Pool Multimedia
+  const [poolCategories, setPoolCategories] = useState([
+    { id: 1, slug: 'plan_estudios', nombre: 'Planes de Estudio', icono: '📚', color: 'amber', descripcion: 'Mapas curriculares y planes de estudio oficiales con RVOE SEP' },
+    { id: 2, slug: 'oferta_educativa', nombre: 'Oferta Educativa', icono: '🎓', color: 'purple', descripcion: 'Catálogos generales de licenciaturas, maestrías y modalidades' },
+    { id: 3, slug: 'horarios', nombre: 'Horarios de Clase', icono: '🕒', color: 'emerald', descripcion: 'Horarios de clase por turno y periodo cuatrimestral' },
+    { id: 4, slug: 'instalaciones', nombre: 'Fotos e Instalaciones', icono: '🏛️', color: 'sky', descripcion: 'Fotografías del campus, laboratorios, cabinas y áreas comunes' },
+    { id: 5, slug: 'becas_costos', nombre: 'Becas y Costos', icono: '💰', color: 'rose', descripcion: 'Tabuladores de colegiaturas, inscripciones, promociones y becas' }
+  ]);
+  const [showCategoryModal, setShowCategoryModal] = useState(false);
+  const [editingCategoryId, setEditingCategoryId] = useState(null);
+  const [categorySaving, setCategorySaving] = useState(false);
+  const [categoryMsg, setCategoryMsg] = useState({ type: '', text: '' });
+  const [categoryForm, setCategoryForm] = useState({
+    nombre: '',
+    icono: '📁',
+    color: 'amber',
+    descripcion: ''
   });
 
   // Helper de cabeceras autenticadas con JWT
@@ -402,6 +423,7 @@ function App() {
     loadConversations();
     loadPromptData();
     loadAnalytics();
+    loadPoolCategories();
     loadBrochures();
     loadTenants();
     loadTenantDetails('campeche');
@@ -689,6 +711,98 @@ function App() {
     }
   };
 
+  const loadPoolCategories = async () => {
+    try {
+      const res = await fetch('/api/pool/categories', { headers: getAuthHeaders() });
+      const data = await res.json();
+      if (data.success && Array.isArray(data.categories) && data.categories.length > 0) {
+        setPoolCategories(data.categories);
+      }
+    } catch (e) {
+      console.error('Error cargando categorías del Pool:', e);
+    }
+  };
+
+  const handleSaveCategory = async (e) => {
+    if (e) e.preventDefault();
+    if (!categoryForm.nombre.trim()) {
+      setCategoryMsg({ type: 'error', text: 'El nombre de la categoría es obligatorio.' });
+      return;
+    }
+    setCategorySaving(true);
+    setCategoryMsg({ type: '', text: '' });
+    try {
+      const url = editingCategoryId ? `/api/pool/categories/${editingCategoryId}` : '/api/pool/categories';
+      const method = editingCategoryId ? 'PUT' : 'POST';
+      const res = await fetch(url, {
+        method,
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(categoryForm)
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (Array.isArray(data.categories)) {
+          setPoolCategories(data.categories);
+        } else {
+          await loadPoolCategories();
+        }
+        setCategoryMsg({
+          type: 'success',
+          text: editingCategoryId ? '✅ Categoría actualizada correctamente.' : '✅ Nueva categoría creada en el Pool.'
+        });
+        setEditingCategoryId(null);
+        setCategoryForm({ nombre: '', icono: '📁', color: 'amber', descripcion: '' });
+        loadBrochures();
+      } else {
+        setCategoryMsg({ type: 'error', text: '❌ ' + (data.error || 'No se pudo guardar la categoría.') });
+      }
+    } catch (err) {
+      setCategoryMsg({ type: 'error', text: '❌ Error de red: ' + err.message });
+    } finally {
+      setCategorySaving(false);
+    }
+  };
+
+  const handleEditCategory = (cat) => {
+    setEditingCategoryId(cat.id || cat.slug);
+    setCategoryForm({
+      nombre: cat.nombre || '',
+      icono: cat.icono || '📁',
+      color: cat.color || 'amber',
+      descripcion: cat.descripcion || ''
+    });
+    setCategoryMsg({ type: '', text: '' });
+    setShowCategoryModal(true);
+  };
+
+  const handleDeleteCategory = async (cat) => {
+    const idOrSlug = cat.id || cat.slug;
+    if (!confirm(`¿Seguro que deseas eliminar la categoría "${cat.nombre}"? Los recursos asociados se moverán automáticamente a otra categoría para no perderse.`)) return;
+    try {
+      const res = await fetch(`/api/pool/categories/${encodeURIComponent(idOrSlug)}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (Array.isArray(data.categories)) {
+          setPoolCategories(data.categories);
+        } else {
+          await loadPoolCategories();
+        }
+        if (poolCategoryFilter === cat.slug) {
+          setPoolCategoryFilter('all');
+        }
+        setCategoryMsg({ type: 'success', text: `🗑️ Categoría "${cat.nombre}" eliminada.` });
+        loadBrochures();
+      } else {
+        alert('No se pudo eliminar la categoría: ' + (data.error || 'Error'));
+      }
+    } catch (err) {
+      alert('Error eliminando categoría: ' + err.message);
+    }
+  };
+
   const loadBrochures = async () => {
     try {
       const res = await fetch('/api/pool', { headers: getAuthHeaders() });
@@ -704,8 +818,8 @@ function App() {
   const handlePoolFileChange = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 18 * 1024 * 1024) {
-      alert('El archivo supera los 18 MB permitidos.');
+    if (file.size > 20 * 1024 * 1024) {
+      setPoolMsg({ type: 'error', text: '❌ El archivo supera los 20 MB permitidos.' });
       return;
     }
     const isImg = file.type.startsWith('image/');
@@ -715,26 +829,31 @@ function App() {
         ...prev,
         fileName: file.name,
         fileData: ev.target.result,
-        tipo_archivo: isImg ? 'imagen' : 'pdf'
+        tipo_archivo: isImg ? 'imagen' : 'pdf',
+        titulo: prev.titulo || file.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ')
       }));
+      setPoolMsg({ type: 'success', text: `📎 Archivo cargado desde tu equipo: ${file.name}` });
     };
     reader.readAsDataURL(file);
   };
 
   const handleSavePoolItem = async (e) => {
     if (e) e.preventDefault();
-    if (!poolForm.titulo.trim()) {
-      alert('El título del recurso o carrera es obligatorio.');
+    if (!poolForm.titulo || !poolForm.titulo.trim()) {
+      setPoolMsg({ type: 'error', text: '❌ El título del recurso o carrera es obligatorio.' });
       return;
     }
     setPoolSaving(true);
+    setPoolMsg({ type: '', text: '' });
     try {
-      const url = editingPoolId ? `/api/pool/${editingPoolId}` : '/api/pool';
+      const targetId = editingPoolId ? encodeURIComponent(editingPoolId) : '';
+      const url = editingPoolId ? `/api/pool/${targetId}` : '/api/pool';
       const method = editingPoolId ? 'PUT' : 'POST';
       const payload = {
         ...poolForm,
-        carrera: poolForm.titulo,
-        ciclo_escolar: activeCiclo,
+        carrera: poolForm.titulo.trim(),
+        titulo: poolForm.titulo.trim(),
+        ciclo_escolar: poolForm.ciclo_escolar || activeCiclo || '2026-3 Septiembre',
         sede_id: selectedCampus === 'all' ? 'campeche' : selectedCampus
       };
       const res = await fetch(url, {
@@ -746,9 +865,11 @@ function App() {
       if (data.success) {
         setShowPoolModal(false);
         setEditingPoolId(null);
+        setPoolMsg({ type: '', text: '' });
         setPoolForm({
           titulo: '',
-          categoria: 'plan_estudios',
+          categoria: poolCategories[0]?.slug || 'plan_estudios',
+          ciclo_escolar: activeCiclo || '2026-3 Septiembre',
           modalidad: 'Presencial',
           duracion: '3 años (9 cuatrimestres)',
           rvoe: 'SEP-RVOE-OFICIAL',
@@ -759,22 +880,25 @@ function App() {
           fileName: '',
           fileData: ''
         });
-        loadBrochures();
+        await loadBrochures();
       } else {
-        alert('Error guardando recurso: ' + (data.error || 'Error desconocido'));
+        setPoolMsg({ type: 'error', text: '❌ Error guardando recurso: ' + (data.error || 'Error desconocido') });
       }
     } catch (err) {
-      alert('Error de conexión: ' + err.message);
+      setPoolMsg({ type: 'error', text: '❌ Error de conexión: ' + err.message });
     } finally {
       setPoolSaving(false);
     }
   };
 
   const handleEditPoolItem = (b) => {
-    setEditingPoolId(b.codigo_recurso || b.id);
+    const itemId = b.codigo_recurso || b.id || b.db_id;
+    setEditingPoolId(itemId);
+    setPoolMsg({ type: '', text: '' });
     setPoolForm({
       titulo: b.titulo || b.carrera || '',
       categoria: b.categoria || 'plan_estudios',
+      ciclo_escolar: b.ciclo_escolar || activeCiclo || '2026-3 Septiembre',
       modalidad: b.modalidad || 'Presencial',
       duracion: b.duracion || '3 años (9 cuatrimestres)',
       rvoe: b.rvoe || 'SEP-RVOE-OFICIAL',
@@ -788,16 +912,23 @@ function App() {
     setShowPoolModal(true);
   };
 
-  const handleDeletePoolItem = async (id, title) => {
-    if (!confirm(`¿Seguro que deseas eliminar "${title || id}" del Pool Multimedia?`)) return;
+  const handleDeletePoolItem = async (itemOrId, maybeTitle) => {
+    const id = typeof itemOrId === 'object' && itemOrId !== null
+      ? (itemOrId.codigo_recurso || itemOrId.id || itemOrId.db_id)
+      : itemOrId;
+    const title = typeof itemOrId === 'object' && itemOrId !== null
+      ? (itemOrId.titulo || itemOrId.carrera || id)
+      : (maybeTitle || id);
+    if (!id) return;
+    if (!confirm(`¿Seguro que deseas eliminar "${title}" del Pool Multimedia?`)) return;
     try {
-      const res = await fetch(`/api/pool/${id}`, {
+      const res = await fetch(`/api/pool/${encodeURIComponent(id)}`, {
         method: 'DELETE',
         headers: getAuthHeaders()
       });
       const data = await res.json();
       if (data.success) {
-        loadBrochures();
+        await loadBrochures();
       } else {
         alert('No se pudo eliminar: ' + (data.error || 'Error'));
       }
@@ -926,6 +1057,7 @@ function App() {
     setUsersLoading(true);
     try {
       const res = await fetch('/api/users', { headers: getAuthHeaders() });
+      if (!res.ok) return;
       const data = await res.json();
       if (data.success) {
         setUsersList(data.users || []);
@@ -2819,7 +2951,7 @@ function App() {
         {/* ====== TAB 3: POOL MULTIMEDIA, PLANES, OFERTA, HORARIOS E INSTALACIONES (TODOS LOS ROLES) ====== */}
         {activeTab === 'brochures' && (
           <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
-            {/* Encabezado y Botón Nuevo Recurso */}
+            {/* Encabezado y Botones de CRUD (Recursos + Categorías) */}
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
               <div>
                 <h2 className="font-extrabold text-sm sm:text-base text-white flex items-center gap-2 flex-wrap">
@@ -2827,12 +2959,15 @@ function App() {
                   <span className="text-xs px-2 py-0.5 rounded-full bg-amber-950 text-amber-300 font-mono border border-amber-500/40">
                     {brochures.length} Recursos Activos
                   </span>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-purple-950 text-purple-300 font-mono border border-purple-500/40">
+                    {poolCategories.length} Categorías
+                  </span>
                   <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 font-mono border border-emerald-500/40">
                     Ciclo: {activeCiclo}
                   </span>
                 </h2>
                 <p className="text-xs text-slate-400">
-                  Metal-Uriel consulta este Pool en tiempo real para responder dudas y (previa confirmación del alumno) adjuntar el PDF o imagen exacta por WhatsApp.
+                  Sube archivos directamente desde tu computadora (PDF, PNG, JPG, WEBP), organízalos en las categorías que desees y edita su contexto para que Metal-Uriel los envíe por WhatsApp.
                 </p>
               </div>
 
@@ -2844,23 +2979,39 @@ function App() {
                     value={brochureSearch}
                     onChange={(e) => setBrochureSearch(e.target.value)}
                     placeholder="Buscar carrera, horario, foto..."
-                    className="bg-[#1E293B] text-xs text-slate-100 placeholder-slate-400 rounded-xl px-3 py-2 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400 w-56"
+                    className="bg-[#1E293B] text-xs text-slate-100 placeholder-slate-400 rounded-xl px-3 py-2 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400 w-52"
                   />
                 </div>
 
+                {/* Botón CRUD de Categorías */}
                 <button
+                  type="button"
+                  onClick={() => {
+                    setEditingCategoryId(null);
+                    setCategoryForm({ nombre: '', icono: '📁', color: 'amber', descripcion: '' });
+                    setCategoryMsg({ type: '', text: '' });
+                    setShowCategoryModal(true);
+                  }}
+                  className="px-3.5 py-2 rounded-xl bg-purple-950/90 hover:bg-purple-900 text-purple-200 border border-purple-500/40 font-black text-xs transition shadow flex items-center gap-1.5"
+                >
+                  <span>🏷️ Categorías (CRUD)</span>
+                </button>
+
+                {/* Botón Subir / Nuevo Recurso */}
+                <button
+                  type="button"
                   onClick={() => {
                     setEditingPoolId(null);
                     setPoolForm({
-                      categoria: poolCategoryFilter === 'all' ? 'plan_estudios' : poolCategoryFilter,
+                      categoria: poolCategoryFilter === 'all' ? (poolCategories[0]?.slug || 'plan_estudios') : poolCategoryFilter,
                       ciclo_escolar: activeCiclo || '2026-3 Septiembre',
                       titulo: '',
                       descripcion_ia: '',
                       tags: '',
                       tipo_archivo: 'pdf',
                       url_recurso: '',
-                      file_name: '',
-                      file_data_base64: '',
+                      fileName: '',
+                      fileData: '',
                       modalidad: 'Ejecutiva / Escolarizada',
                       duracion: '9 Cuatrimestres (3 años)',
                       rvoe: 'RVOE SEP Oficial'
@@ -2920,31 +3071,232 @@ function App() {
               </div>
             </div>
 
-            {/* Pestañas de Categoría General del Pool */}
-            <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-800 pb-2.5">
-              {[
-                { id: 'all', label: '🌐 Todos los Recursos' },
-                { id: 'plan_estudios', label: '📚 Planes de Estudio' },
-                { id: 'oferta_educativa', label: '🎓 Oferta Educativa' },
-                { id: 'horarios', label: '🕒 Horarios de Clase' },
-                { id: 'instalaciones', label: '🏛️ Fotos e Instalaciones' },
-                { id: 'becas_costos', label: '💰 Becas y Costos' }
-              ].map(cat => (
+            {/* Pestañas Dinámicas de Categorías del Pool + Acciones Rápidas de Categoría */}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
+              <div className="flex flex-wrap items-center gap-1.5">
                 <button
-                  key={cat.id}
-                  onClick={() => setPoolCategoryFilter(cat.id)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition ${
-                    poolCategoryFilter === cat.id
+                  type="button"
+                  onClick={() => setPoolCategoryFilter('all')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+                    poolCategoryFilter === 'all'
                       ? 'bg-amber-500 text-slate-950 shadow font-black'
                       : 'bg-[#0F172A] text-slate-300 hover:bg-slate-800 border border-slate-800'
                   }`}
                 >
-                  {cat.label}
+                  <span>🌐 Todos los Recursos</span>
+                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/20 font-mono">
+                    {brochures.length}
+                  </span>
                 </button>
-              ))}
+
+                {poolCategories.map(cat => {
+                  const count = brochures.filter(b => (b.categoria || 'plan_estudios') === cat.slug).length;
+                  const isSelected = poolCategoryFilter === cat.slug;
+                  return (
+                    <div key={cat.id || cat.slug} className="inline-flex items-center gap-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setPoolCategoryFilter(cat.slug)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+                          isSelected
+                            ? 'bg-amber-500 text-slate-950 shadow font-black'
+                            : 'bg-[#0F172A] text-slate-300 hover:bg-slate-800 border border-slate-800'
+                        }`}
+                      >
+                        <span>{cat.icono || '📁'} {cat.nombre}</span>
+                        <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/20 font-mono">
+                          {count}
+                        </span>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingCategoryId(null);
+                  setCategoryForm({ nombre: '', icono: '📁', color: 'amber', descripcion: '' });
+                  setCategoryMsg({ type: '', text: '' });
+                  setShowCategoryModal(true);
+                }}
+                className="text-[11px] font-bold text-purple-300 hover:text-purple-200 px-2.5 py-1 rounded-lg bg-purple-950/50 border border-purple-500/30 transition"
+              >
+                + Nueva / Editar Categorías
+              </button>
             </div>
 
-            {/* Modal para Crear / Editar Recurso del Pool (Subida Directa PDF/JPG/PNG o Link) */}
+            {/* Modal CRUD de Categorías del Pool */}
+            {showCategoryModal && (
+              <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                <div className="bg-[#0F172A] border border-purple-500/40 rounded-2xl max-w-2xl w-full p-5 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                    <div>
+                      <h3 className="font-extrabold text-sm text-white flex items-center gap-2">
+                        <span>🏷️ Administrar Categorías del Pool Multimedia (CRUD)</span>
+                      </h3>
+                      <p className="text-[11px] text-slate-400">
+                        Crea nuevas categorías, modifica el nombre o icono de las existentes, o elimina las que no necesites.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowCategoryModal(false)}
+                      className="text-slate-400 hover:text-white text-sm font-bold px-2 py-1"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  {/* Formulario Crear / Editar Categoría */}
+                  <form onSubmit={handleSaveCategory} className="p-3.5 rounded-xl bg-[#1E293B]/70 border border-slate-700 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-extrabold text-purple-300">
+                        {editingCategoryId ? '✏️ Editando Categoría' : '➕ Crear Nueva Categoría'}
+                      </span>
+                      {editingCategoryId && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingCategoryId(null);
+                            setCategoryForm({ nombre: '', icono: '📁', color: 'amber', descripcion: '' });
+                            setCategoryMsg({ type: '', text: '' });
+                          }}
+                          className="text-[11px] text-slate-400 hover:text-white underline"
+                        >
+                          Cancelar edición
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
+                      <div className="sm:col-span-2 space-y-1">
+                        <label className="text-[11px] font-bold text-slate-300">Nombre de la Categoría</label>
+                        <input
+                          type="text"
+                          required
+                          value={categoryForm.nombre}
+                          onChange={(e) => setCategoryForm({ ...categoryForm, nombre: e.target.value })}
+                          placeholder="Ej. Calendario Escolar / Reglamentos / Talleres"
+                          className="w-full bg-[#0F172A] text-xs text-slate-100 rounded-xl px-3 py-2 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-purple-400"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-bold text-slate-300">Icono (Emoji)</label>
+                        <input
+                          type="text"
+                          value={categoryForm.icono}
+                          onChange={(e) => setCategoryForm({ ...categoryForm, icono: e.target.value })}
+                          placeholder="📚 🎓 🕒 🏛️ 💰 📁"
+                          className="w-full bg-[#0F172A] text-xs text-center text-slate-100 rounded-xl px-3 py-2 border border-slate-700 focus:outline-none"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-bold text-slate-300">Color de Etiqueta</label>
+                        <select
+                          value={categoryForm.color}
+                          onChange={(e) => setCategoryForm({ ...categoryForm, color: e.target.value })}
+                          className="w-full bg-[#0F172A] text-xs text-amber-300 font-bold rounded-xl px-3 py-2 border border-slate-700 focus:outline-none"
+                        >
+                          <option value="amber">🟡 Ámbar / Dorado</option>
+                          <option value="purple">🟣 Morado</option>
+                          <option value="emerald">🟢 Esmeralda</option>
+                          <option value="sky">🔵 Azul Cielo</option>
+                          <option value="rose">🔴 Rosa / Coral</option>
+                          <option value="indigo">靛 Índigo</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-slate-300">Descripción breve (para organización y contexto del bot)</label>
+                      <input
+                        type="text"
+                        value={categoryForm.descripcion}
+                        onChange={(e) => setCategoryForm({ ...categoryForm, descripcion: e.target.value })}
+                        placeholder="Ej. Documentos e imágenes oficiales de esta sección..."
+                        className="w-full bg-[#0F172A] text-xs text-slate-200 rounded-xl px-3 py-1.5 border border-slate-700 focus:outline-none"
+                      />
+                    </div>
+
+                    {categoryMsg && categoryMsg.text && (
+                      <div className={`p-2 rounded-xl text-xs font-bold border ${
+                        categoryMsg.type === 'success'
+                          ? 'bg-emerald-950/80 border-emerald-500/40 text-emerald-300'
+                          : 'bg-red-950/80 border-red-500/40 text-red-300'
+                      }`}>
+                        {categoryMsg.text}
+                      </div>
+                    )}
+
+                    <div className="flex justify-end">
+                      <button
+                        type="submit"
+                        disabled={categorySaving}
+                        className="px-4 py-2 rounded-xl bg-gradient-to-r from-purple-500 to-indigo-500 hover:brightness-110 text-white font-black text-xs shadow transition"
+                      >
+                        {categorySaving ? 'Guardando...' : editingCategoryId ? 'Guardar Cambios de Categoría' : '➕ Guardar Nueva Categoría'}
+                      </button>
+                    </div>
+                  </form>
+
+                  {/* Lista de Categorías Existentes */}
+                  <div className="space-y-2">
+                    <div className="text-xs font-bold text-slate-300">
+                      Categorías Activas ({poolCategories.length})
+                    </div>
+                    <div className="divide-y divide-slate-800 border border-slate-800 rounded-xl overflow-hidden bg-[#0B1120]">
+                      {poolCategories.map(cat => {
+                        const count = brochures.filter(b => (b.categoria || 'plan_estudios') === cat.slug).length;
+                        return (
+                          <div key={cat.id || cat.slug} className="p-3 flex items-center justify-between gap-3 hover:bg-slate-900/60 transition">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <span className="text-lg">{cat.icono || '📁'}</span>
+                              <div className="min-w-0">
+                                <div className="text-xs font-bold text-white flex items-center gap-2">
+                                  <span>{cat.nombre}</span>
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">
+                                    slug: {cat.slug}
+                                  </span>
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-950/80 text-amber-300 font-mono border border-amber-500/30">
+                                    {count} recursos
+                                  </span>
+                                </div>
+                                {cat.descripcion && (
+                                  <p className="text-[11px] text-slate-400 truncate">{cat.descripcion}</p>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => handleEditCategory(cat)}
+                                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold transition"
+                              >
+                                ✏️ Editar
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteCategory(cat)}
+                                className="px-2.5 py-1 rounded-lg bg-red-950/80 hover:bg-red-800 text-red-200 text-[11px] font-bold transition"
+                              >
+                                🗑️ Eliminar
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Modal para Crear / Editar Recurso del Pool (Subida Directa PDF/JPG/PNG/WEBP o Link) */}
             {showPoolModal && (
               <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 z-50">
                 <div className="bg-[#0F172A] border border-amber-500/40 rounded-2xl max-w-2xl w-full p-5 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
@@ -2952,23 +3304,41 @@ function App() {
                     <h3 className="font-extrabold text-sm text-white flex items-center gap-2">
                       <span>{editingPoolId ? '✏️ Editar Recurso del Pool Multimedia' : '➕ Subir Nuevo Recurso al Pool Multimedia'}</span>
                     </h3>
-                    <button onClick={() => setShowPoolModal(false)} className="text-slate-400 hover:text-white text-sm font-bold">✕</button>
+                    <button
+                      type="button"
+                      onClick={() => setShowPoolModal(false)}
+                      className="text-slate-400 hover:text-white text-sm font-bold px-2 py-1"
+                    >
+                      ✕
+                    </button>
                   </div>
 
                   <form onSubmit={handleSavePoolItem} className="space-y-3">
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                       <div className="space-y-1">
-                        <label className="text-[11px] font-bold text-slate-300">Categoría del Pool</label>
+                        <div className="flex items-center justify-between">
+                          <label className="text-[11px] font-bold text-slate-300">Categoría del Pool</label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowPoolModal(false);
+                              setShowCategoryModal(true);
+                            }}
+                            className="text-[10px] text-purple-300 hover:underline font-bold"
+                          >
+                            + Categorías
+                          </button>
+                        </div>
                         <select
                           value={poolForm.categoria}
                           onChange={(e) => setPoolForm({ ...poolForm, categoria: e.target.value })}
                           className="w-full bg-[#1E293B] text-xs text-amber-300 font-bold rounded-xl px-3 py-2 border border-slate-700 focus:outline-none"
                         >
-                          <option value="plan_estudios">📚 Plan de Estudios</option>
-                          <option value="oferta_educativa">🎓 Oferta Educativa General</option>
-                          <option value="horarios">🕒 Horarios de Clase</option>
-                          <option value="instalaciones">🏛️ Fotos / Instalaciones</option>
-                          <option value="becas_costos">💰 Becas y Costos</option>
+                          {poolCategories.map(cat => (
+                            <option key={cat.id || cat.slug} value={cat.slug}>
+                              {cat.icono || '📁'} {cat.nombre}
+                            </option>
+                          ))}
                         </select>
                       </div>
 
@@ -2988,7 +3358,7 @@ function App() {
                         <label className="text-[11px] font-bold text-slate-300">Ciclo Escolar</label>
                         <input
                           type="text"
-                          value={poolForm.ciclo_escolar}
+                          value={poolForm.ciclo_escolar || activeCiclo}
                           onChange={(e) => setPoolForm({ ...poolForm, ciclo_escolar: e.target.value })}
                           placeholder="Ej. 2026-3 Septiembre"
                           className="w-full bg-[#1E293B] text-xs text-emerald-300 font-bold rounded-xl px-3 py-2 border border-slate-700 focus:outline-none"
@@ -3008,34 +3378,50 @@ function App() {
                       />
                     </div>
 
-                    {/* Subida Híbrida: Archivo Local o URL Externa */}
-                    <div className="p-3 rounded-xl bg-[#1E293B]/60 border border-slate-700 space-y-2.5">
-                      <div className="flex items-center justify-between">
+                    {/* Subida Híbrida: Archivo Local desde la Computadora o URL */}
+                    <div className="p-3.5 rounded-xl bg-[#1E293B]/60 border border-amber-500/30 space-y-2.5">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
                         <label className="text-[11px] font-extrabold text-amber-300">
-                          📤 Opción A: Subir Archivo desde tu Computadora (PDF, PNG, JPG, WEBP)
+                          📤 Opción A: Subir Archivo directamente desde tu Computadora (PDF, PNG, JPG, WEBP)
                         </label>
-                        {poolForm.file_data_base64 && (
-                          <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 font-mono">
-                            ✓ Archivo listo: {poolForm.file_name}
-                          </span>
+                        {poolForm.fileData && (
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 font-mono border border-emerald-500/40">
+                              ✓ Listo para guardar: {poolForm.fileName}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setPoolForm({ ...poolForm, fileData: '', fileName: '' })}
+                              className="text-[10px] text-red-300 hover:underline"
+                            >
+                              Quitar
+                            </button>
+                          </div>
                         )}
                       </div>
+
                       <input
                         type="file"
-                        accept=".pdf,image/png,image/jpeg,image/webp"
+                        accept=".pdf,application/pdf,image/png,image/jpeg,image/jpg,image/webp"
                         onChange={handlePoolFileChange}
                         className="w-full text-xs text-slate-300 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-amber-500 file:text-slate-950 hover:file:bg-amber-400 cursor-pointer"
                       />
 
-                      <div className="space-y-1 pt-1 border-t border-slate-800">
+                      {poolForm.fileData && poolForm.tipo_archivo === 'imagen' && (
+                        <div className="rounded-xl overflow-hidden border border-slate-700 bg-slate-950 max-h-40 flex items-center justify-center">
+                          <img src={poolForm.fileData} alt="Vista previa" className="max-h-40 object-contain" />
+                        </div>
+                      )}
+
+                      <div className="space-y-1 pt-2 border-t border-slate-800">
                         <label className="text-[11px] font-bold text-slate-400">
-                          🔗 Opción B: O pegar URL externa (CDN / Drive / Web) si no subes archivo local
+                          🔗 Opción B: Ruta local o URL externa (si no subes archivo nuevo, se conserva el actual o se genera PDF oficial automático)
                         </label>
                         <input
                           type="text"
                           value={poolForm.url_recurso}
                           onChange={(e) => setPoolForm({ ...poolForm, url_recurso: e.target.value })}
-                          placeholder="https://... o /uploads/recursos/..."
+                          placeholder="/uploads/recursos/... o https://..."
                           className="w-full bg-[#0F172A] text-xs text-slate-200 rounded-xl px-3 py-1.5 border border-slate-700 focus:outline-none font-mono"
                         />
                       </div>
@@ -3079,11 +3465,10 @@ function App() {
                         🤖 Contexto / Resumen para Metal-Uriel (`descripcion_ia`)
                       </label>
                       <textarea
-                        rows="2"
-                        required
+                        rows="3"
                         value={poolForm.descripcion_ia}
                         onChange={(e) => setPoolForm({ ...poolForm, descripcion_ia: e.target.value })}
-                        placeholder="Escribe qué contiene este plan, horario o instalación. Metal-Uriel leerá esto para responder dudas del aspirante antes de ofrecerle el archivo."
+                        placeholder="Escribe qué contiene este plan, horario, beca o instalación. Metal-Uriel leerá esto para responder dudas del aspirante y enviarle este archivo."
                         className="w-full bg-[#1E293B] text-xs text-slate-100 rounded-xl p-2.5 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-emerald-400"
                       />
                     </div>
@@ -3124,7 +3509,7 @@ function App() {
                         disabled={poolSaving}
                         className="px-5 py-2 rounded-xl bg-gradient-to-r from-[#FFC72C] to-[#F59E0B] text-slate-950 font-black text-xs shadow hover:brightness-110 transition"
                       >
-                        {poolSaving ? 'Guardando...' : editingPoolId ? 'Guardar Cambios' : 'Publicar en el Pool IA'}
+                        {poolSaving ? 'Guardando...' : editingPoolId ? '💾 Guardar Cambios' : '🚀 Publicar en el Pool IA'}
                       </button>
                     </div>
                   </form>
@@ -3146,25 +3531,35 @@ function App() {
                   );
                 })
                 .map((b) => {
-                  const catLabels = {
-                    plan_estudios: { text: '📚 Plan de Estudios', color: 'bg-amber-950/80 text-amber-300 border-amber-500/30' },
-                    oferta_educativa: { text: '🎓 Oferta Educativa', color: 'bg-purple-950/80 text-purple-300 border-purple-500/30' },
-                    horarios: { text: '🕒 Horarios', color: 'bg-emerald-950/80 text-emerald-300 border-emerald-500/30' },
-                    instalaciones: { text: '🏛️ Instalaciones', color: 'bg-sky-950/80 text-sky-300 border-sky-500/30' },
-                    becas_costos: { text: '💰 Becas y Costos', color: 'bg-rose-950/80 text-rose-300 border-rose-500/30' }
+                  const colorMap = {
+                    amber: 'bg-amber-950/80 text-amber-300 border-amber-500/30',
+                    purple: 'bg-purple-950/80 text-purple-300 border-purple-500/30',
+                    emerald: 'bg-emerald-950/80 text-emerald-300 border-emerald-500/30',
+                    sky: 'bg-sky-950/80 text-sky-300 border-sky-500/30',
+                    rose: 'bg-rose-950/80 text-rose-300 border-rose-500/30',
+                    indigo: 'bg-indigo-950/80 text-indigo-300 border-indigo-500/30'
                   };
-                  const badge = catLabels[b.categoria || 'plan_estudios'] || catLabels.plan_estudios;
-                  const resourceUrl = b.url_recurso || b.pdfUrl || `/api/brochures/${b.id}/download`;
+                  const catObj = poolCategories.find(c => c.slug === (b.categoria || 'plan_estudios'));
+                  const badgeText = catObj
+                    ? `${catObj.icono || '📁'} ${catObj.nombre}`
+                    : `📚 ${b.categoria || 'Plan de Estudios'}`;
+                  const badgeColor = colorMap[catObj?.color || 'amber'] || colorMap.amber;
+
+                  const itemCode = b.codigo_recurso || b.id || b.db_id;
+                  const rawUrl = b.url_recurso || b.pdfUrl || '';
+                  const resourceUrl = (rawUrl && (rawUrl.startsWith('/uploads/') || rawUrl.startsWith('/api/')))
+                    ? rawUrl
+                    : `/api/brochures/${encodeURIComponent(itemCode)}/download`;
 
                   return (
                     <div
-                      key={b.db_id || b.id}
+                      key={b.db_id || b.codigo_recurso || b.id}
                       className="p-4 rounded-2xl bg-[#0F172A] border border-slate-800 hover:border-amber-400/50 transition shadow-sm space-y-2.5 flex flex-col justify-between"
                     >
                       <div className="space-y-2">
                         <div className="flex items-center justify-between gap-1.5 flex-wrap">
-                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${badge.color}`}>
-                            {badge.text}
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${badgeColor}`}>
+                            {badgeText}
                           </span>
                           <div className="flex items-center gap-1">
                             <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-900 text-emerald-300 font-mono border border-slate-700">
@@ -3196,26 +3591,30 @@ function App() {
                         <a
                           href={resourceUrl}
                           target="_blank"
+                          rel="noopener noreferrer"
                           className="flex-1 py-1.5 px-2 rounded-xl bg-gradient-to-r from-[#FFC72C] to-[#F59E0B] hover:brightness-110 text-slate-950 font-black text-[11px] text-center transition shadow"
                         >
-                          {b.tipo_archivo === 'imagen' ? '🖼️ Ver Imagen' : '📥 Abrir PDF'}
+                          {b.tipo_archivo === 'imagen' ? '🖼️ Abrir Imagen' : '📥 Abrir Recurso PDF'}
                         </a>
                         <button
-                          onClick={() => handleSendBrochureQuick(b.id)}
+                          type="button"
+                          onClick={() => handleSendBrochureQuick(itemCode)}
                           className="py-1.5 px-2.5 rounded-xl bg-emerald-950 hover:bg-emerald-800 text-emerald-200 border border-emerald-500/30 font-bold text-[11px] transition"
                           title="Enviar inmediatamente al aspirante activo en el chat"
                         >
                           📤 Enviar
                         </button>
                         <button
+                          type="button"
                           onClick={() => handleEditPoolItem(b)}
-                          className="py-1.5 px-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-[11px] transition"
+                          className="py-1.5 px-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-[11px] transition"
                           title="Editar recurso"
                         >
-                          ✏️
+                          ✏️ Editar
                         </button>
                         <button
-                          onClick={() => handleDeletePoolItem(b)}
+                          type="button"
+                          onClick={() => handleDeletePoolItem(itemCode, b.titulo || b.carrera)}
                           className="py-1.5 px-2 rounded-xl bg-red-950/80 hover:bg-red-800 text-red-200 font-bold text-[11px] transition"
                           title="Eliminar recurso del Pool"
                         >

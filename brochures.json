@@ -10,7 +10,17 @@
     "fileName": "Plan_Estudios_Ingenieria_Software_UNID_2026.pdf",
     "pdfUrl": "/api/brochures/software/download",
     "size": "1.4 MB",
-    "tags": ["software", "sistemas", "programacion", "computacion", "ti", "informatica", "codigo", "ingenieria", "computacionales"]
+    "tags": [
+      "software",
+      "sistemas",
+      "programacion",
+      "computacion",
+      "ti",
+      "informatica",
+      "codigo",
+      "ingenieria",
+      "computacionales"
+    ]
   },
   {
     "id": "derecho",
@@ -23,7 +33,16 @@
     "fileName": "Plan_Estudios_Licenciatura_Derecho_UNID_2026.pdf",
     "pdfUrl": "/api/brochures/derecho/download",
     "size": "1.2 MB",
-    "tags": ["derecho", "leyes", "juridicas", "abogacia", "abogado", "penal", "civil", "juridico"]
+    "tags": [
+      "derecho",
+      "leyes",
+      "juridicas",
+      "abogacia",
+      "abogado",
+      "penal",
+      "civil",
+      "juridico"
+    ]
   },
   {
     "id": "administracion_empresarial",
@@ -36,7 +55,15 @@
     "fileName": "Plan_Estudios_Administracion_Empresarial_UNID_2026.pdf",
     "pdfUrl": "/api/brochures/administracion_empresarial/download",
     "size": "1.1 MB",
-    "tags": ["administracion", "negocios", "empresarial", "empresas", "gestion", "finanzas", "liderazgo"]
+    "tags": [
+      "administracion",
+      "negocios",
+      "empresarial",
+      "empresas",
+      "gestion",
+      "finanzas",
+      "liderazgo"
+    ]
   },
   {
     "id": "administracion_turisticas",
@@ -49,7 +76,15 @@
     "fileName": "Plan_Estudios_Administracion_Empresas_Turisticas_UNID_2026.pdf",
     "pdfUrl": "/api/brochures/administracion_turisticas/download",
     "size": "1.3 MB",
-    "tags": ["turismo", "turisticas", "hoteles", "hoteleria", "viajes", "hospitalidad", "administracion turistica"]
+    "tags": [
+      "turismo",
+      "turisticas",
+      "hoteles",
+      "hoteleria",
+      "viajes",
+      "hospitalidad",
+      "administracion turistica"
+    ]
   },
   {
     "id": "arquitectura",
@@ -62,7 +97,14 @@
     "fileName": "Plan_Estudios_Arquitectura_UNID_2026.pdf",
     "pdfUrl": "/api/brochures/arquitectura/download",
     "size": "2.1 MB",
-    "tags": ["arquitectura", "construccion", "diseno arquitectonico", "planos", "urbanismo", "edificacion"]
+    "tags": [
+      "arquitectura",
+      "construccion",
+      "diseno arquitectonico",
+      "planos",
+      "urbanismo",
+      "edificacion"
+    ]
   },
   {
     "id": "comunicacion",
@@ -75,7 +117,16 @@
     "fileName": "Plan_Estudios_Comunicacion_UNID_2026.pdf",
     "pdfUrl": "/api/brochures/comunicacion/download",
     "size": "1.5 MB",
-    "tags": ["comunicacion", "medios", "periodismo", "radio", "television", "audiovisual", "redes", "prensa"]
+    "tags": [
+      "comunicacion",
+      "medios",
+      "periodismo",
+      "radio",
+      "television",
+      "audiovisual",
+      "redes",
+      "prensa"
+    ]
   },
   {
     "id": "contabilidad",
@@ -88,7 +139,15 @@
     "fileName": "Plan_Estudios_Contabilidad_Finanzas_UNID_2026.pdf",
     "pdfUrl": "/api/brochures/contabilidad/download",
     "size": "1.2 MB",
-    "tags": ["contabilidad", "finanzas", "contador", "fiscal", "impuestos", "auditoria", "costos"]
+    "tags": [
+      "contabilidad",
+      "finanzas",
+      "contador",
+      "fiscal",
+      "impuestos",
+      "auditoria",
+      "costos"
+    ]
   },
   {
     "id": "diseno",
@@ -101,7 +160,17 @@
     "fileName": "Plan_Estudios_Diseno_Grafico_Digital_UNID_2026.pdf",
     "pdfUrl": "/api/brochures/diseno/download",
     "size": "1.8 MB",
-    "tags": ["diseno", "grafico", "digital", "animacion", "arte", "multimedia", "publicidad", "creatividad", "ilustracion"]
+    "tags": [
+      "diseno",
+      "grafico",
+      "digital",
+      "animacion",
+      "arte",
+      "multimedia",
+      "publicidad",
+      "creatividad",
+      "ilustracion"
+    ]
   },
   {
     "id": "educacion_fisica",
@@ -114,7 +183,15 @@
     "fileName": "Plan_Estudios_Educacion_Fisica_Deporte_UNID_2026.pdf",
     "pdfUrl": "/api/brochures/educacion_fisica/download",
     "size": "1.6 MB",
-    "tags": ["educacion fisica", "deporte", "fitness", "entrenamiento", "recreacion", "salud deportiva", "atletismo"]
+    "tags": [
+      "educacion fisica",
+      "deporte",
+      "fitness",
+      "entrenamiento",
+      "recreacion",
+      "salud deportiva",
+      "atletismo"
+    ]
   },
   {
     "id": "mercadotecnia",
@@ -127,7 +204,15 @@
     "fileName": "Plan_Estudios_Mercadotecnia_Estrategica_UNID_2026.pdf",
     "pdfUrl": "/api/brochures/mercadotecnia/download",
     "size": "1.4 MB",
-    "tags": ["mercadotecnia", "marketing", "publicidad", "ventas", "branding", "comercial", "estrategia"]
+    "tags": [
+      "mercadotecnia",
+      "marketing",
+      "publicidad",
+      "ventas",
+      "branding",
+      "comercial",
+      "estrategia"
+    ]
   },
   {
     "id": "ejecutiva_administracion",
@@ -140,7 +225,13 @@
     "fileName": "Plan_Estudios_Ejecutiva_Administracion_UNID_2026.pdf",
     "pdfUrl": "/api/brochures/ejecutiva_administracion/download",
     "size": "1.1 MB",
-    "tags": ["ejecutiva administracion", "adultos", "sabatino", "administracion ejecutiva", "trabajo y estudio"]
+    "tags": [
+      "ejecutiva administracion",
+      "adultos",
+      "sabatino",
+      "administracion ejecutiva",
+      "trabajo y estudio"
+    ]
   },
   {
     "id": "ejecutiva_derecho",
@@ -153,7 +244,12 @@
     "fileName": "Plan_Estudios_Ejecutiva_Derecho_UNID_2026.pdf",
     "pdfUrl": "/api/brochures/ejecutiva_derecho/download",
     "size": "1.2 MB",
-    "tags": ["ejecutiva derecho", "leyes ejecutivas", "derecho sabatino", "abogado ejecutivo"]
+    "tags": [
+      "ejecutiva derecho",
+      "leyes ejecutivas",
+      "derecho sabatino",
+      "abogado ejecutivo"
+    ]
   },
   {
     "id": "dual_administracion",
@@ -166,7 +262,13 @@
     "fileName": "Plan_Estudios_Modelo_Dual_Administracion_UNID_2026.pdf",
     "pdfUrl": "/api/brochures/dual_administracion/download",
     "size": "1.4 MB",
-    "tags": ["dual", "modelo dual", "empresa aula", "direccion empresarial", "practica empresa"]
+    "tags": [
+      "dual",
+      "modelo dual",
+      "empresa aula",
+      "direccion empresarial",
+      "practica empresa"
+    ]
   },
   {
     "id": "psicologia",
@@ -179,7 +281,15 @@
     "fileName": "Plan_Estudios_Psicologia_UNID_2026.pdf",
     "pdfUrl": "/api/brochures/psicologia/download",
     "size": "1.3 MB",
-    "tags": ["psicologia", "salud", "recursos humanos", "organizacional", "mente", "rrhh", "conducta"]
+    "tags": [
+      "psicologia",
+      "salud",
+      "recursos humanos",
+      "organizacional",
+      "mente",
+      "rrhh",
+      "conducta"
+    ]
   },
   {
     "id": "criminologia",
@@ -192,7 +302,14 @@
     "fileName": "Plan_Estudios_Criminologia_Criminalistica_UNID_2026.pdf",
     "pdfUrl": "/api/brochures/criminologia/download",
     "size": "1.5 MB",
-    "tags": ["criminologia", "criminalistica", "forense", "investigacion", "peritaje", "seguridad"]
+    "tags": [
+      "criminologia",
+      "criminalistica",
+      "forense",
+      "investigacion",
+      "peritaje",
+      "seguridad"
+    ]
   },
   {
     "id": "pedagogia",
@@ -205,7 +322,14 @@
     "fileName": "Plan_Estudios_Pedagogia_UNID_2026.pdf",
     "pdfUrl": "/api/brochures/pedagogia/download",
     "size": "1.2 MB",
-    "tags": ["pedagogia", "educacion", "ensenanza", "docencia", "aprendizaje", "didactica"]
+    "tags": [
+      "pedagogia",
+      "educacion",
+      "ensenanza",
+      "docencia",
+      "aprendizaje",
+      "didactica"
+    ]
   },
   {
     "id": "comercio_internacional",
@@ -218,7 +342,15 @@
     "fileName": "Plan_Estudios_Comercio_Negocios_Internacionales_UNID_2026.pdf",
     "pdfUrl": "/api/brochures/comercio_internacional/download",
     "size": "1.4 MB",
-    "tags": ["comercio", "negocios internacionales", "aduanas", "logistica", "importacion", "exportacion", "aranceles"]
+    "tags": [
+      "comercio",
+      "negocios internacionales",
+      "aduanas",
+      "logistica",
+      "importacion",
+      "exportacion",
+      "aranceles"
+    ]
   },
   {
     "id": "becas",
@@ -231,6 +363,42 @@
     "fileName": "Guia_Becas_y_Financiamiento_UNID_2026.pdf",
     "pdfUrl": "/api/brochures/becas/download",
     "size": "890 KB",
-    "tags": ["beca", "becas", "costo", "costos", "precio", "mensualidad", "colegiatura", "descuento", "financiamiento", "apoyo"]
+    "tags": [
+      "beca",
+      "becas",
+      "costo",
+      "costos",
+      "precio",
+      "mensualidad",
+      "colegiatura",
+      "descuento",
+      "financiamiento",
+      "apoyo"
+    ]
+  },
+  {
+    "id": "reglamento_deportivo_test",
+    "codigo_recurso": "reglamento_deportivo_test",
+    "sede_id": "campeche",
+    "ciclo_escolar": "2026-3 Septiembre",
+    "categoria": "talleres_deportivos",
+    "titulo": "Reglamento Deportivo Test",
+    "carrera": "Reglamento Deportivo Test",
+    "descripcion_ia": "Documento de prueba subido desde PC",
+    "scope": "campus_campeche",
+    "scopeLabel": "🏛️ Campus Campeche (Presencial)",
+    "modalidad": "Presencial",
+    "duracion": "Anual",
+    "rvoe": "UNID-2026",
+    "tipo_archivo": "pdf",
+    "fileName": "reglamento_test.pdf",
+    "pdfUrl": "/uploads/recursos/1794352503590_reglamento_test.pdf",
+    "url_recurso": "/uploads/recursos/1794352503590_reglamento_test.pdf",
+    "size": "0 KB",
+    "tags": [
+      "deportes",
+      "futbol",
+      "talleres"
+    ]
   }
 ]
