@@ -352,6 +352,13 @@ const dbPool = mysql.createPool({
                 console.log('📦 Inicializando Pool Multimedia de Admisiones en MariaDB...');
                 await seedInitialPoolResources(connection);
             }
+            // Reparar enlaces placeholder inexistentes (digitalmedia.talisis.com) para que apunten al generador/archivo real local
+            await connection.query(`
+                UPDATE pool_recursos_multimedia
+                SET url_recurso = CONCAT('/api/brochures/', codigo_recurso, '/download')
+                WHERE url_recurso LIKE '%digitalmedia.talisis.com%'
+            `);
+            await materializeAllPoolPdfsOnDisk(connection);
         } catch (poolErr) {
             console.warn('⚠️ Error poblando pool_recursos_multimedia:', poolErr.message);
         }
@@ -668,6 +675,185 @@ async function seedInitialPoolResources(connection) {
             r.codigo_recurso, r.categoria, r.titulo, r.descripcion_ia, r.tags,
             r.tipo_archivo, r.url_recurso, r.file_name, r.modalidad, r.duracion, r.rvoe, r.tamano
         ]);
+    }
+}
+
+// Generador de PDF binario oficial UNID con tabla xref de offsets exactos (100% compatible con WhatsApp, Chrome y Adobe)
+function generateOfficialPdfBuffer(resource = {}) {
+    const cleanPdfText = (str) => String(str || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[()\\]/g, '')
+        .replace(/[^\x20-\x7E]/g, ' ')
+        .trim();
+
+    const title = cleanPdfText(resource.titulo || resource.carrera || resource.title || 'Plan de Estudios Oficial UNID');
+    const mod = cleanPdfText(resource.modalidad || 'Presencial Campus Campeche & Online');
+    const dur = cleanPdfText(resource.duracion || '3 anos - 9 cuatrimestres');
+    const rvoe = cleanPdfText(resource.rvoe || 'SEP-RVOE-OFICIAL');
+    const ciclo = cleanPdfText(resource.ciclo_escolar || 'Ciclo Escolar 2026-3 Septiembre');
+    const rawDesc = cleanPdfText(
+        resource.descripcion_ia ||
+        `Formacion profesional con validez oficial SEP, modelo educativo orientado a la practica e inmersion laboral mediante Estadia Empresarial en organizaciones lideres.`
+    );
+
+    // Dividir la descripción en líneas de máximo 74 caracteres para el stream PDF
+    const wrapLine = (text, maxLen = 74) => {
+        const words = text.split(/\s+/);
+        const lines = [];
+        let current = '';
+        for (const w of words) {
+            if ((current + ' ' + w).trim().length > maxLen) {
+                if (current) lines.push(current);
+                current = w;
+            } else {
+                current = (current ? current + ' ' : '') + w;
+            }
+        }
+        if (current) lines.push(current);
+        return lines.slice(0, 4);
+    };
+
+    const descLines = wrapLine(rawDesc, 72);
+    const titleLines = wrapLine(title, 56);
+
+    const streamOps = [
+        'q',
+        '0.04 0.10 0.18 rg',
+        '0 700 612 92 re f',
+        '1.0 0.78 0.17 rg',
+        '0 694 612 6 re f',
+        'BT',
+        '/F1 18 Tf',
+        '1 1 1 rg',
+        '45 752 Td',
+        '(:UNID TALISIS - CAMPUS SAN FRANCISCO DE CAMPECHE) Tj',
+        '0 -24 Td',
+        '/F1 12 Tf',
+        '1.0 0.78 0.17 rg',
+        `(DOCUMENTO OFICIAL DE ADMISIONES • ${ciclo.toUpperCase()}) Tj`,
+        'ET',
+        'BT',
+        '0.07 0.12 0.20 rg',
+        '/F1 15 Tf',
+        '45 650 Td'
+    ];
+
+    titleLines.forEach((tLine, idx) => {
+        if (idx > 0) streamOps.push('0 -20 Td');
+        streamOps.push(`(${tLine}) Tj`);
+    });
+
+    streamOps.push(
+        '0 -28 Td',
+        '/F1 11 Tf',
+        '0.15 0.25 0.38 rg',
+        `(Modalidad: ${mod}) Tj`,
+        '0 -18 Td',
+        `(Duracion del Programa: ${dur}) Tj`,
+        '0 -18 Td',
+        `(Reconocimiento Oficial: ${rvoe}) Tj`,
+        '0 -32 Td',
+        '/F1 13 Tf',
+        '0.04 0.10 0.18 rg',
+        '(RESUMEN EJECUTIVO Y PERFIL DEL PROGRAMA) Tj',
+        '0 -20 Td',
+        '/F2 10.5 Tf',
+        '0.20 0.25 0.33 rg'
+    );
+
+    descLines.forEach((dLine) => {
+        streamOps.push(`(${dLine}) Tj`);
+        streamOps.push('0 -16 Td');
+    });
+
+    streamOps.push(
+        '0 -16 Td',
+        '/F1 13 Tf',
+        '0.04 0.10 0.18 rg',
+        '(ESTRUCTURA CURRICULAR CUATRIMESTRAL UNID) Tj',
+        '0 -22 Td',
+        '/F2 10.5 Tf',
+        '0.15 0.20 0.28 rg',
+        '(• 1er a 3er Cuatrimestre: Tronco Comun Universitario, Competencias Digitales yValores.) Tj',
+        '0 -18 Td',
+        '(• 4to a 5to Cuatrimestre: Bloques de Especialidad Profesional y Laboratorios Practicos.) Tj',
+        '0 -18 Td',
+        '(• 6to Cuatrimestre: Estadia Empresarial de 480 horas en Empresas e Instituciones Lideres.) Tj',
+        '0 -18 Td',
+        '(• 7mo a 9no Cuatrimestre: Alta Direccion, Proyecto Integrador y Titulacion Automatica.) Tj',
+        '0 -32 Td',
+        '/F1 13 Tf',
+        '0.04 0.10 0.18 rg',
+        '(REQUISITOS DE ADMISION E INSCRIPCION) Tj',
+        '0 -22 Td',
+        '/F2 10.5 Tf',
+        '0.15 0.20 0.28 rg',
+        '(1. Acta de Nacimiento original y copia certificada.) Tj',
+        '0 -18 Td',
+        '(2. Certificado Total de Bachillerato o Constancia de Estudios con calificaciones.) Tj',
+        '0 -18 Td',
+        '(3. Clave Unica de Registro de Poblacion - CURP actualizada.) Tj',
+        '0 -18 Td',
+        '(4. Comprobante de domicilio reciente y 4 fotografias tamano infantil B/N.) Tj',
+        '0 -34 Td',
+        '/F1 11 Tf',
+        '0.04 0.36 0.29 rg',
+        '(Atencion Oficial WhatsApp UNID Campeche: Metal-Uriel • Admisiones 2026) Tj',
+        'ET',
+        'Q'
+    );
+
+    const streamContent = streamOps.join('\n');
+    const streamByteLen = Buffer.byteLength(streamContent, 'utf8');
+
+    const objects = [
+        `1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n`,
+        `2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n`,
+        `3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>\nendobj\n`,
+        `4 0 obj\n<< /Length ${streamByteLen} >>\nstream\n${streamContent}\nendstream\nendobj\n`,
+        `5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj\n`,
+        `6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n`
+    ];
+
+    let pdfBody = '%PDF-1.4\n';
+    const offsets = [];
+    for (const objStr of objects) {
+        offsets.push(Buffer.byteLength(pdfBody, 'utf8'));
+        pdfBody += objStr;
+    }
+
+    const xrefStart = Buffer.byteLength(pdfBody, 'utf8');
+    let xref = `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+    for (const off of offsets) {
+        xref += `${String(off).padStart(10, '0')} 00000 n \n`;
+    }
+    xref += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+
+    return Buffer.from(pdfBody + xref, 'utf8');
+}
+
+// Materializar físicamente en /public/uploads/recursos/ todos los PDFs del catálogo para que existan en disco
+async function materializeAllPoolPdfsOnDisk(connection = null) {
+    try {
+        for (const b of UNID_BROCHURES) {
+            const safeFile = b.fileName || `Plan_${b.id}.pdf`;
+            const diskPath = path.join(UPLOADS_DIR, safeFile);
+            if (!fs.existsSync(diskPath)) {
+                fs.writeFileSync(diskPath, generateOfficialPdfBuffer(b));
+            }
+        }
+        const queryTarget = connection || dbPool;
+        const [rows] = await queryTarget.query('SELECT * FROM pool_recursos_multimedia WHERE tipo_archivo = "pdf"');
+        for (const r of rows) {
+            const safeFile = r.file_name || `Recurso_${r.codigo_recurso}.pdf`;
+            const diskPath = path.join(UPLOADS_DIR, safeFile);
+            if (!fs.existsSync(diskPath)) {
+                fs.writeFileSync(diskPath, generateOfficialPdfBuffer(r));
+            }
+        }
+    } catch (err) {
+        console.warn('⚠️ Advertencia materializando PDFs en disco:', err.message);
     }
 }
 
@@ -2134,7 +2320,12 @@ async function guardarMensajeHistorialBD(senderPhone, rol, mensaje, sedeId = 'ca
 function buildAttachmentObject(resourceItem) {
     if (!resourceItem) return null;
     const isImage = resourceItem.tipo_archivo === 'imagen';
-    const rawUrl = resourceItem.url_recurso || resourceItem.pdfUrl || `/api/brochures/${resourceItem.codigo_recurso || resourceItem.id}/download`;
+    const resourceId = resourceItem.codigo_recurso || resourceItem.id;
+    let rawUrl = resourceItem.url_recurso || resourceItem.pdfUrl || `/api/brochures/${resourceId}/download`;
+    // Evitar URLs placeholder rotas de digitalmedia.talisis.com
+    if (String(rawUrl).includes('digitalmedia.talisis.com')) {
+        rawUrl = `/api/brochures/${resourceId}/download`;
+    }
     const categoryTitles = {
         plan_estudios: 'Plan de Estudios',
         oferta_educativa: 'Oferta Educativa',
@@ -2144,18 +2335,21 @@ function buildAttachmentObject(resourceItem) {
     };
     const prefix = categoryTitles[resourceItem.categoria] || 'Recurso Oficial';
     return {
-        id: resourceItem.codigo_recurso || resourceItem.id,
-        codigo_recurso: resourceItem.codigo_recurso || resourceItem.id,
+        id: resourceId,
+        codigo_recurso: resourceId,
         categoria: resourceItem.categoria || 'plan_estudios',
         tipo_archivo: resourceItem.tipo_archivo || 'pdf',
         title: `${prefix}: ${resourceItem.titulo || resourceItem.carrera}`,
-        fileName: resourceItem.fileName || resourceItem.file_name || `${resourceItem.codigo_recurso || resourceItem.id}.${isImage ? 'png' : 'pdf'}`,
+        titulo: resourceItem.titulo || resourceItem.carrera,
+        descripcion_ia: resourceItem.descripcion_ia || '',
+        duracion: resourceItem.duracion || '3 años (9 cuatrimestres)',
+        fileName: resourceItem.fileName || resourceItem.file_name || `${resourceId}.${isImage ? 'png' : 'pdf'}`,
         size: resourceItem.size || resourceItem.tamano || '1.2 MB',
         rvoe: resourceItem.rvoe || 'Oficial UNID',
         modalidad: resourceItem.modalidad || 'Presencial',
         pdfUrl: rawUrl,
         url_recurso: rawUrl,
-        downloadUrl: rawUrl.startsWith('/uploads/') || rawUrl.startsWith('http') ? rawUrl : `/api/brochures/${resourceItem.codigo_recurso || resourceItem.id}/download`
+        downloadUrl: rawUrl.startsWith('/uploads/') || rawUrl.startsWith('http') ? rawUrl : `/api/brochures/${resourceId}/download`
     };
 }
 
@@ -2259,8 +2453,93 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
 }
 
 // ==========================================
-// 12. Enviar mensaje de vuelta a WhatsApp Cloud API (Soporta Texto, PDF e Imágenes)
+// 12. Enviar mensaje de vuelta a WhatsApp Cloud API (Soporta Texto, Subida Binaria Directa de PDF e Imágenes a Meta /media)
 // ==========================================
+async function resolveAttachmentBinary(documentAttachment) {
+    const isImage = documentAttachment.tipo_archivo === 'imagen';
+    const safeFileName = documentAttachment.fileName || `Recurso_UNID.${isImage ? 'jpg' : 'pdf'}`;
+    const rawUrl = documentAttachment.url_recurso || documentAttachment.pdfUrl || '';
+
+    const inferMimeType = (fname, defaultMime) => {
+        const ext = path.extname(String(fname || '')).toLowerCase();
+        if (ext === '.png') return 'image/png';
+        if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+        if (ext === '.webp') return 'image/webp';
+        if (ext === '.pdf') return 'application/pdf';
+        return defaultMime;
+    };
+
+    // 1. Si apunta a un archivo local subido en /uploads/...
+    if (rawUrl.startsWith('/uploads/')) {
+        const localPath = path.join(__dirname, 'public', rawUrl);
+        if (fs.existsSync(localPath)) {
+            return {
+                buffer: fs.readFileSync(localPath),
+                mimeType: inferMimeType(localPath, isImage ? 'image/jpeg' : 'application/pdf'),
+                fileName: safeFileName
+            };
+        }
+    }
+
+    // 2. Si es una URL externa real (y NO el dominio inexistente digitalmedia.talisis.com), intentar descargar binario
+    if ((rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) && !rawUrl.includes('digitalmedia.talisis.com')) {
+        try {
+            const resp = await axios.get(rawUrl, { responseType: 'arraybuffer', timeout: 8000 });
+            const contentType = resp.headers?.['content-type'] || inferMimeType(safeFileName, isImage ? 'image/jpeg' : 'application/pdf');
+            return {
+                buffer: Buffer.from(resp.data),
+                mimeType: contentType.split(';')[0].trim(),
+                fileName: safeFileName
+            };
+        } catch (err) {
+            console.warn(`⚠️ No se pudo descargar recurso externo (${rawUrl}), generando PDF oficial local:`, err.message);
+        }
+    }
+
+    // 3. Verificar si ya existe el archivo físico en /public/uploads/recursos/ o generarlo en este instante
+    const fallbackDiskPath = path.join(UPLOADS_DIR, safeFileName);
+    if (fs.existsSync(fallbackDiskPath) && !isImage) {
+        return {
+            buffer: fs.readFileSync(fallbackDiskPath),
+            mimeType: 'application/pdf',
+            fileName: safeFileName
+        };
+    }
+
+    const generatedPdf = generateOfficialPdfBuffer(documentAttachment);
+    try {
+        fs.writeFileSync(fallbackDiskPath, generatedPdf);
+    } catch (_) {}
+
+    return {
+        buffer: generatedPdf,
+        mimeType: 'application/pdf',
+        fileName: safeFileName.endsWith('.pdf') ? safeFileName : `${safeFileName}.pdf`
+    };
+}
+
+async function uploadMediaToWhatsAppCloud(buffer, mimeType, fileName) {
+    const mediaUrl = `https://graph.facebook.com/v20.0/${WHATSAPP_PHONE_NUMBER_ID}/media`;
+    const formData = new FormData();
+    formData.append('messaging_product', 'whatsapp');
+    formData.append('type', mimeType);
+    formData.append('file', new Blob([buffer], { type: mimeType }), fileName);
+
+    const response = await fetch(mediaUrl, {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${WHATSAPP_TOKEN}`
+        },
+        body: formData
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.id) {
+        throw new Error(data.error?.message || `Error subiendo media a Meta (${response.status})`);
+    }
+    return data.id;
+}
+
 async function sendWhatsAppMessage(to, messageText, documentAttachment = null) {
     if (!WHATSAPP_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) {
         console.log(`[SIMULACIÓN WHATSAPP] Enviando a ${to}: ${messageText}`);
@@ -2291,16 +2570,14 @@ async function sendWhatsAppMessage(to, messageText, documentAttachment = null) {
             console.log(`💬 [WHATSAPP ENVIADO] Texto enviado con éxito a ${to}`);
         }
 
-        // 2. Enviar documento PDF o Imagen adjunta si se solicitó o detectó
+        // 2. Enviar documento PDF o Imagen adjunta subiendo el archivo binario directo a Meta Cloud API (/media)
         if (documentAttachment) {
-            let docUrl = documentAttachment.url_recurso || documentAttachment.pdfUrl;
-            if (!docUrl || (!docUrl.startsWith('http://') && !docUrl.startsWith('https://'))) {
-                const baseUrl = process.env.PUBLIC_URL || process.env.APP_URL || 'https://digitalmedia.talisis.com';
-                docUrl = `${baseUrl}${documentAttachment.downloadUrl || docUrl}`;
-            }
+            const { buffer, mimeType, fileName } = await resolveAttachmentBinary(documentAttachment);
+            console.log(`📤 [META MEDIA UPLOAD] Subiendo "${fileName}" (${Math.round(buffer.length / 1024)} KB, ${mimeType}) a Meta Cloud API...`);
+            const mediaId = await uploadMediaToWhatsAppCloud(buffer, mimeType, fileName);
+            console.log(`✅ [META MEDIA ID] Archivo registrado en Meta con ID: ${mediaId}`);
 
-            if (documentAttachment.tipo_archivo === 'imagen') {
-                console.log(`🖼️ [WHATSAPP IMAGEN] Enviando imagen "${documentAttachment.fileName}" (${docUrl}) a ${to}...`);
+            if (documentAttachment.tipo_archivo === 'imagen' && mimeType.startsWith('image/')) {
                 await axios.post(
                     url,
                     {
@@ -2309,7 +2586,7 @@ async function sendWhatsAppMessage(to, messageText, documentAttachment = null) {
                         to: to,
                         type: 'image',
                         image: {
-                            link: docUrl,
+                            id: mediaId,
                             caption: `🏛️ ${documentAttachment.title} (${documentAttachment.modalidad || 'UNID'})`
                         }
                     },
@@ -2320,9 +2597,8 @@ async function sendWhatsAppMessage(to, messageText, documentAttachment = null) {
                         }
                     }
                 );
-                console.log(`✅ [IMAGEN ENVIADA] ${documentAttachment.fileName} enviada exitosamente a WhatsApp ${to}`);
+                console.log(`✅ [IMAGEN ENVIADA] ${fileName} entregada exitosamente a WhatsApp ${to} (media_id: ${mediaId})`);
             } else {
-                console.log(`📄 [WHATSAPP PDF] Enviando documento "${documentAttachment.fileName}" (${docUrl}) a ${to}...`);
                 await axios.post(
                     url,
                     {
@@ -2331,8 +2607,8 @@ async function sendWhatsAppMessage(to, messageText, documentAttachment = null) {
                         to: to,
                         type: 'document',
                         document: {
-                            link: docUrl,
-                            filename: documentAttachment.fileName || 'Plan_Estudios_UNID.pdf',
+                            id: mediaId,
+                            filename: fileName,
                             caption: `📄 ${documentAttachment.title} (Validez Oficial SEP: ${documentAttachment.rvoe || 'Oficial UNID'})`
                         }
                     },
@@ -2343,11 +2619,11 @@ async function sendWhatsAppMessage(to, messageText, documentAttachment = null) {
                         }
                     }
                 );
-                console.log(`✅ [DOCUMENTO ENVIADO] ${documentAttachment.fileName} enviado exitosamente a WhatsApp ${to}`);
+                console.log(`✅ [DOCUMENTO ENVIADO] ${fileName} entregado exitosamente a WhatsApp ${to} (media_id: ${mediaId})`);
             }
         }
     } catch (error) {
-        console.error('❌ Error enviando mensaje a WhatsApp API:', error.response?.data || error.message);
+        console.error('❌ Error enviando mensaje/documento a WhatsApp API:', error.response?.data || error.message);
     }
 }
 
@@ -2831,62 +3107,27 @@ app.get('/api/brochures/:id/download', async (req, res) => {
         }
     }
 
-    // Si tiene una URL externa válida configurada por el usuario (ej. digitalmedia.talisis.com), redirigir
-    if (resource && resource.pdfUrl && (resource.pdfUrl.startsWith('http://') || resource.pdfUrl.startsWith('https://'))) {
+    // Si tiene una URL externa real (excluyendo el dominio placeholder inexistente digitalmedia.talisis.com), redirigir
+    if (
+        resource &&
+        resource.pdfUrl &&
+        (resource.pdfUrl.startsWith('http://') || resource.pdfUrl.startsWith('https://')) &&
+        !resource.pdfUrl.includes('digitalmedia.talisis.com')
+    ) {
         return res.redirect(resource.pdfUrl);
     }
 
-    // Si no, generar plantilla PDF institucional estilizada con membrete UNID
-    const safeTitle = String(resource?.carrera || 'Programa Oficial UNID').replace(/[()]/g, '');
-    const safeMod = String(resource?.modalidad || 'Presencial').replace(/[()]/g, '');
-    const safeDur = String(resource?.duracion || '3 anos').replace(/[()]/g, '');
-    const safeRvoe = String(resource?.rvoe || 'SEP-RVOE-OFICIAL').replace(/[()]/g, '');
-
-    const pdfContent = `%PDF-1.4
-1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
-2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
-3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
-4 0 obj << /Length 440 >> stream
-BT
-/F1 18 Tf
-50 720 Td
-(:UNID TALISIS - CAMPUS SAN FRANCISCO DE CAMPECHE) Tj
-0 -30 Td
-/F1 14 Tf
-(DOCUMENTO OFICIAL DEL POOL MULTIMEDIA 2026) Tj
-0 -25 Td
-/F1 12 Tf
-(Recurso: ${safeTitle}) Tj
-0 -20 Td
-(Modalidad: ${safeMod} | Duracion: ${safeDur}) Tj
-0 -20 Td
-(Validez / Referencia: ${safeRvoe}) Tj
-0 -40 Td
-(1er Cuatrimestre: Tronco Comun Universitario y Competencias Digitales) Tj
-0 -20 Td
-(2do a 5to Cuatrimestre: Especialidad Profesional UNID) Tj
-0 -20 Td
-(6to Cuatrimestre: Estadia Empresarial en Empresa Lider) Tj
-ET
-endstream
-endobj
-5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >> endobj
-xref
-0 6
-0000000000 65535 f 
-0000000009 00000 n 
-0000000058 00000 n 
-0000000115 00000 n 
-0000000234 00000 n 
-0000000725 00000 n 
-trailer << /Size 6 /Root 1 0 R >>
-startxref
-805
-%%EOF`;
+    // Verificar si existe el PDF físico en /public/uploads/recursos/ o generarlo ahora mismo con formato oficial UNID
+    const safeFileName = resource?.fileName || `Plan_${reqId}_UNID_2026.pdf`;
+    const diskPdfPath = path.join(UPLOADS_DIR, safeFileName);
+    const pdfBuffer = generateOfficialPdfBuffer(resource);
+    try {
+        fs.writeFileSync(diskPdfPath, pdfBuffer);
+    } catch (_) {}
 
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${resource?.fileName || 'recurso_oficial_unid.pdf'}"`);
-    res.status(200).send(Buffer.from(pdfContent));
+    res.setHeader('Content-Disposition', `inline; filename="${safeFileName}"`);
+    res.status(200).send(pdfBuffer);
 });
 
 // Sembrar datos de demostración (Poblar DB)

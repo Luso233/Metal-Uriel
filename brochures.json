@@ -8,7 +8,7 @@
     "duracion": "3 años (9 cuatrimestres)",
     "rvoe": "SEP-RVOE-2024-0982",
     "fileName": "Plan_Estudios_Ingenieria_Software_UNID_2026.pdf",
-    "pdfUrl": "https://digitalmedia.talisis.com/unid/plan-de-estudios/2024/ing-software-y-sistemas-computacionales.pdf",
+    "pdfUrl": "/api/brochures/software/download",
     "size": "1.4 MB",
     "tags": ["software", "sistemas", "programacion", "computacion", "ti", "informatica", "codigo", "ingenieria", "computacionales"]
   },
@@ -21,7 +21,7 @@
     "duracion": "3 años (9 cuatrimestres)",
     "rvoe": "SEP-RVOE-2023-1140",
     "fileName": "Plan_Estudios_Licenciatura_Derecho_UNID_2026.pdf",
-    "pdfUrl": "https://digitalmedia.talisis.com/unid/plan-de-estudios/2024/lic-derecho-y-ciencias-juridicas.pdf",
+    "pdfUrl": "/api/brochures/derecho/download",
     "size": "1.2 MB",
     "tags": ["derecho", "leyes", "juridicas", "abogacia", "abogado", "penal", "civil", "juridico"]
   },
@@ -34,7 +34,7 @@
     "duracion": "3 años (9 cuatrimestres)",
     "rvoe": "SEP-RVOE-2023-0850",
     "fileName": "Plan_Estudios_Administracion_Empresarial_UNID_2026.pdf",
-    "pdfUrl": "https://digitalmedia.talisis.com/unid/plan-de-estudios/2024/lic-administracion-empresarial.pdf",
+    "pdfUrl": "/api/brochures/administracion_empresarial/download",
     "size": "1.1 MB",
     "tags": ["administracion", "negocios", "empresarial", "empresas", "gestion", "finanzas", "liderazgo"]
   },
@@ -47,7 +47,7 @@
     "duracion": "3 años (9 cuatrimestres)",
     "rvoe": "SEP-RVOE-2023-0912",
     "fileName": "Plan_Estudios_Administracion_Empresas_Turisticas_UNID_2026.pdf",
-    "pdfUrl": "https://digitalmedia.talisis.com/unid/plan-de-estudios/2024/lic-administracion-de-empresas-turisticas.pdf",
+    "pdfUrl": "/api/brochures/administracion_turisticas/download",
     "size": "1.3 MB",
     "tags": ["turismo", "turisticas", "hoteles", "hoteleria", "viajes", "hospitalidad", "administracion turistica"]
   },
@@ -60,7 +60,7 @@
     "duracion": "3 años (9 cuatrimestres)",
     "rvoe": "SEP-RVOE-2024-0315",
     "fileName": "Plan_Estudios_Arquitectura_UNID_2026.pdf",
-    "pdfUrl": "https://digitalmedia.talisis.com/unid/plan-de-estudios/2024/lic-arquitectura.pdf",
+    "pdfUrl": "/api/brochures/arquitectura/download",
     "size": "2.1 MB",
     "tags": ["arquitectura", "construccion", "diseno arquitectonico", "planos", "urbanismo", "edificacion"]
   },
@@ -73,7 +73,7 @@
     "duracion": "3 años (9 cuatrimestres)",
     "rvoe": "SEP-RVOE-2023-0678",
     "fileName": "Plan_Estudios_Comunicacion_UNID_2026.pdf",
-    "pdfUrl": "https://digitalmedia.talisis.com/unid/plan-de-estudios/2024/lic-ciencias-y-tecnicas-de-la-comunicacion.pdf",
+    "pdfUrl": "/api/brochures/comunicacion/download",
     "size": "1.5 MB",
     "tags": ["comunicacion", "medios", "periodismo", "radio", "television", "audiovisual", "redes", "prensa"]
   },
@@ -86,7 +86,7 @@
     "duracion": "3 años (9 cuatrimestres)",
     "rvoe": "SEP-RVOE-2023-0544",
     "fileName": "Plan_Estudios_Contabilidad_Finanzas_UNID_2026.pdf",
-    "pdfUrl": "https://digitalmedia.talisis.com/unid/plan-de-estudios/2024/lic-contabilidad-y-finanzas.pdf",
+    "pdfUrl": "/api/brochures/contabilidad/download",
     "size": "1.2 MB",
     "tags": ["contabilidad", "finanzas", "contador", "fiscal", "impuestos", "auditoria", "costos"]
   },
@@ -99,7 +99,7 @@
     "duracion": "3 años (9 cuatrimestres)",
     "rvoe": "SEP-RVOE-2024-0430",
     "fileName": "Plan_Estudios_Diseno_Grafico_Digital_UNID_2026.pdf",
-    "pdfUrl": "https://digitalmedia.talisis.com/unid/plan-de-estudios/2024/lic-diseno-grafico-digital.pdf",
+    "pdfUrl": "/api/brochures/diseno/download",
     "size": "1.8 MB",
     "tags": ["diseno", "grafico", "digital", "animacion", "arte", "multimedia", "publicidad", "creatividad", "ilustracion"]
   },
@@ -112,7 +112,7 @@
     "duracion": "3 años (9 cuatrimestres)",
     "rvoe": "SEP-RVOE-2023-0422",
     "fileName": "Plan_Estudios_Educacion_Fisica_Deporte_UNID_2026.pdf",
-    "pdfUrl": "https://digitalmedia.talisis.com/unid/plan-de-estudios/2024/lic-educacion-fisica-recreacion-y-deporte.pdf",
+    "pdfUrl": "/api/brochures/educacion_fisica/download",
     "size": "1.6 MB",
     "tags": ["educacion fisica", "deporte", "fitness", "entrenamiento", "recreacion", "salud deportiva", "atletismo"]
   },
@@ -125,7 +125,7 @@
     "duracion": "3 años (9 cuatrimestres)",
     "rvoe": "SEP-RVOE-2023-0881",
     "fileName": "Plan_Estudios_Mercadotecnia_Estrategica_UNID_2026.pdf",
-    "pdfUrl": "https://digitalmedia.talisis.com/unid/plan-de-estudios/2024/lic-mercadotecnia-estrategica.pdf",
+    "pdfUrl": "/api/brochures/mercadotecnia/download",
     "size": "1.4 MB",
     "tags": ["mercadotecnia", "marketing", "publicidad", "ventas", "branding", "comercial", "estrategia"]
   },
@@ -138,7 +138,7 @@
     "duracion": "3 años (Flexibilidad de horarios)",
     "rvoe": "SEP-RVOE-2023-0850",
     "fileName": "Plan_Estudios_Ejecutiva_Administracion_UNID_2026.pdf",
-    "pdfUrl": "https://digitalmedia.talisis.com/unid/plan-de-estudios/2024/lic-administracion-empresarial.pdf",
+    "pdfUrl": "/api/brochures/ejecutiva_administracion/download",
     "size": "1.1 MB",
     "tags": ["ejecutiva administracion", "adultos", "sabatino", "administracion ejecutiva", "trabajo y estudio"]
   },
@@ -151,7 +151,7 @@
     "duracion": "3 años (Flexibilidad de horarios)",
     "rvoe": "SEP-RVOE-2023-1140",
     "fileName": "Plan_Estudios_Ejecutiva_Derecho_UNID_2026.pdf",
-    "pdfUrl": "https://digitalmedia.talisis.com/unid/plan-de-estudios/2024/lic-derecho-y-ciencias-juridicas.pdf",
+    "pdfUrl": "/api/brochures/ejecutiva_derecho/download",
     "size": "1.2 MB",
     "tags": ["ejecutiva derecho", "leyes ejecutivas", "derecho sabatino", "abogado ejecutivo"]
   },
@@ -164,7 +164,7 @@
     "duracion": "3 años (Práctica profesional continua)",
     "rvoe": "SEP-RVOE-2023-0850",
     "fileName": "Plan_Estudios_Modelo_Dual_Administracion_UNID_2026.pdf",
-    "pdfUrl": "https://digitalmedia.talisis.com/unid/plan-de-estudios/2024/lic-administracion-empresarial.pdf",
+    "pdfUrl": "/api/brochures/dual_administracion/download",
     "size": "1.4 MB",
     "tags": ["dual", "modelo dual", "empresa aula", "direccion empresarial", "practica empresa"]
   },
@@ -177,7 +177,7 @@
     "duracion": "3 años (9 cuatrimestres)",
     "rvoe": "SEP-RVOE-2023-0720",
     "fileName": "Plan_Estudios_Psicologia_UNID_2026.pdf",
-    "pdfUrl": "https://digitalmedia.talisis.com/unid/plan-de-estudios/2024/lic-psicologia-organizacional.pdf",
+    "pdfUrl": "/api/brochures/psicologia/download",
     "size": "1.3 MB",
     "tags": ["psicologia", "salud", "recursos humanos", "organizacional", "mente", "rrhh", "conducta"]
   },
@@ -190,7 +190,7 @@
     "duracion": "3 años (9 cuatrimestres)",
     "rvoe": "SEP-RVOE-2024-0112",
     "fileName": "Plan_Estudios_Criminologia_Criminalistica_UNID_2026.pdf",
-    "pdfUrl": "https://digitalmedia.talisis.com/unid/plan-de-estudios/2024/lic-criminologia-y-criminalistica.pdf",
+    "pdfUrl": "/api/brochures/criminologia/download",
     "size": "1.5 MB",
     "tags": ["criminologia", "criminalistica", "forense", "investigacion", "peritaje", "seguridad"]
   },
@@ -203,7 +203,7 @@
     "duracion": "3 años (9 cuatrimestres)",
     "rvoe": "SEP-RVOE-2023-0331",
     "fileName": "Plan_Estudios_Pedagogia_UNID_2026.pdf",
-    "pdfUrl": "https://digitalmedia.talisis.com/unid/plan-de-estudios/2024/lic-pedagogia.pdf",
+    "pdfUrl": "/api/brochures/pedagogia/download",
     "size": "1.2 MB",
     "tags": ["pedagogia", "educacion", "ensenanza", "docencia", "aprendizaje", "didactica"]
   },
@@ -216,7 +216,7 @@
     "duracion": "3 años (9 cuatrimestres)",
     "rvoe": "SEP-RVOE-2023-0945",
     "fileName": "Plan_Estudios_Comercio_Negocios_Internacionales_UNID_2026.pdf",
-    "pdfUrl": "https://digitalmedia.talisis.com/unid/plan-de-estudios/2024/lic-comercio-y-negocios-internacionales.pdf",
+    "pdfUrl": "/api/brochures/comercio_internacional/download",
     "size": "1.4 MB",
     "tags": ["comercio", "negocios internacionales", "aduanas", "logistica", "importacion", "exportacion", "aranceles"]
   },
@@ -229,7 +229,7 @@
     "duracion": "Convocatoria 2026",
     "rvoe": "Oficial UNID Talisis",
     "fileName": "Guia_Becas_y_Financiamiento_UNID_2026.pdf",
-    "pdfUrl": "https://digitalmedia.talisis.com/unid/guia-becas-2026.pdf",
+    "pdfUrl": "/api/brochures/becas/download",
     "size": "890 KB",
     "tags": ["beca", "becas", "costo", "costos", "precio", "mensualidad", "colegiatura", "descuento", "financiamiento", "apoyo"]
   }
