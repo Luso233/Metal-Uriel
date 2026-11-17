@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS `aspirantes` (
     `modalidad_estudios` VARCHAR(100) NOT NULL,
     `ciclo_escolar` VARCHAR(60) DEFAULT '2026-3 Septiembre',
     `es_foraneo` BOOLEAN DEFAULT FALSE,
+    `aviso_privacidad_aceptado` BOOLEAN DEFAULT TRUE,
     `estado_prospecto` VARCHAR(50) DEFAULT 'nuevo',
     `nivel_interes` VARCHAR(20) DEFAULT 'Alto',
     `resumen_ia` TEXT NULL,

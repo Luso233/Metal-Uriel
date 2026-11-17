@@ -3642,19 +3642,35 @@ function App() {
               </div>
             </div>
 
-            {/* Banner de CURP Oficial Calculada por IA */}
-            <div className="p-4 rounded-2xl bg-[#0F172A] border border-sky-500/40 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="space-y-0.5">
-                <span className="text-xs font-bold text-sky-300 flex items-center gap-1.5">
-                  <i data-lucide="shield-check" className="w-4 h-4 text-sky-400"></i>
-                  <span>CURP Oficial de Renapo (Cálculo Automático por Algoritmo)</span>
-                </span>
-                <p className="text-[11px] text-slate-400">
-                  Metal-Uriel calcula la clave única de registro en el backend sin pedirla al alumno en el chat.
-                </p>
+            {/* Banner de CURP Oficial Calculada por IA y Cumplimiento LFPDPPP */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              <div className="p-4 rounded-2xl bg-[#0F172A] border border-sky-500/40 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="space-y-0.5">
+                  <span className="text-xs font-bold text-sky-300 flex items-center gap-1.5">
+                    <i data-lucide="shield-check" className="w-4 h-4 text-sky-400"></i>
+                    <span>CURP Oficial de Renapo (Cálculo Automático)</span>
+                  </span>
+                  <p className="text-[11px] text-slate-400">
+                    Metal-Uriel calcula la clave única en el backend sin pedirla al alumno en el chat.
+                  </p>
+                </div>
+                <div className="px-3.5 py-1.5 rounded-xl bg-sky-950 border border-sky-500/40 font-mono font-black text-sm text-sky-300 tracking-widest self-start sm:self-auto shadow-inner">
+                  {liveExtractedFields.curp || 'PENDIENTE DE DATOS BÁSICOS'}
+                </div>
               </div>
-              <div className="px-3.5 py-1.5 rounded-xl bg-sky-950 border border-sky-500/40 font-mono font-black text-sm text-sky-300 tracking-widest self-start sm:self-auto shadow-inner">
-                {liveExtractedFields.curp || 'PENDIENTE DE DATOS BÁSICOS'}
+
+              <div className="p-4 rounded-2xl bg-[#0F172A] border border-emerald-500/40 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="space-y-0.5">
+                  <span className="text-xs font-bold text-emerald-300 flex items-center gap-1.5">
+                    <span>🔒 Protección de Datos Personales (LFPDPPP)</span>
+                  </span>
+                  <p className="text-[11px] text-slate-400">
+                    Aviso de Privacidad UNID desplegado en primer contacto (<code>unid.edu.mx/aviso-de-privacidad</code>).
+                  </p>
+                </div>
+                <div className="px-3 py-1.5 rounded-xl bg-emerald-950 border border-emerald-500/40 font-mono font-bold text-xs text-emerald-300 self-start sm:self-auto">
+                  ✓ CONSENTIMIENTO ACTIVO
+                </div>
               </div>
             </div>
 

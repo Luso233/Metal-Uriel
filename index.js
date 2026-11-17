@@ -270,6 +270,7 @@ const dbPool = mysql.createPool({
         // 4. Migraciones de la tabla aspirantes, historial, ciclos escolares y pool multimedia
         const migrations = [
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS curp VARCHAR(18) NULL`,
+            `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS aviso_privacidad_aceptado TINYINT(1) DEFAULT 1`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS sede_id VARCHAR(50) NULL DEFAULT 'campeche'`,
             `ALTER TABLE aspirantes MODIFY COLUMN sede_id VARCHAR(50) NULL DEFAULT 'campeche'`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS ciclo_escolar VARCHAR(60) DEFAULT '2026-3 Septiembre'`,
@@ -1073,30 +1074,30 @@ const ALL_SUPPORTED_MODELS = [
         description: 'Enruta automáticamente al mejor modelo disponible. Si uno agota su cuota (429/403), salta en milisegundos al siguiente sin interrupciones.',
         isConfigured: true
     },
-    // Google Gemini
+    // Google Gemini (Versiones Comerciales Oficiales Google GenAI SDK)
     {
-        id: 'gemini-3.5-flash-lite',
-        name: 'Google Gemini 3.5 Flash Lite',
-        provider: 'google',
-        providerName: 'Google Gemini',
-        icon: '✨',
-        badge: 'Rápido',
-        description: 'Ultra rápido y de alta capacidad de cuota para WhatsApp.',
-        isConfigured: isValidApiKey(process.env.GEMINI_API_KEY)
-    },
-    {
-        id: 'gemini-3.6-flash',
-        name: 'Google Gemini 3.6 Flash',
+        id: 'gemini-2.5-flash',
+        name: 'Google Gemini 2.5 Flash',
         provider: 'google',
         providerName: 'Google Gemini',
         icon: '⚡',
-        badge: 'Equilibrado',
-        description: 'Gran capacidad de comprensión contextual y persuasión.',
+        badge: 'Estándar Oficial',
+        description: 'Motor cognitivo principal de baja latencia y alta comprensión contextual.',
         isConfigured: isValidApiKey(process.env.GEMINI_API_KEY)
     },
     {
-        id: 'gemini-3.1-pro-preview',
-        name: 'Google Gemini 3.1 Pro',
+        id: 'gemini-2.5-flash-lite',
+        name: 'Google Gemini 2.5 Flash Lite',
+        provider: 'google',
+        providerName: 'Google Gemini',
+        icon: '✨',
+        badge: 'Ultra Rápido',
+        description: 'Ultra rápido y de alta capacidad de cuota para atención masiva en WhatsApp.',
+        isConfigured: isValidApiKey(process.env.GEMINI_API_KEY)
+    },
+    {
+        id: 'gemini-2.5-pro',
+        name: 'Google Gemini 2.5 Pro',
         provider: 'google',
         providerName: 'Google Gemini',
         icon: '🧠',
@@ -1214,19 +1215,22 @@ const PROMPT_FILE_PATH = path.join(__dirname, 'system_prompt.txt');
 const PROMPT_PRESETS = [
     {
         id: 'metal_uriel',
-        name: '🐺 Metal-Uriel Oficial (Conciso, Ágil y Asistente UNID)',
-        description: 'Respuestas breves (1-2 oraciones), recolección progresiva de datos oficiales, entrega inmediata de planes de estudio en PDF y cálculo automático de CURP.',
+        name: '🐺 Metal-Uriel Oficial (Conciso, Ágil y Asistente UNID • LFPDPPP)',
+        description: 'Respuestas breves (1-2 oraciones), despliegue de Aviso de Privacidad LFPDPPP, recolección de 11 datos oficiales, envío de PDFs y cálculo automático de CURP.',
         prompt: `Eres Metal-Uriel, asesor oficial de admisiones de la Universidad Interamericana para el Desarrollo (UNID) Campus San Francisco de Campeche.
 
 🎯 TU OBJETIVO PRINCIPAL:
 1. Orientar de forma clara, directa y amable a los aspirantes sobre la oferta educativa, planes de estudio y modalidades de la UNID.
-2. Recopilar progresivamente los datos necesarios para generar su ficha oficial de admisión.
+2. Recopilar progresivamente los 11 datos necesarios para generar su ficha oficial de admisión.
 3. Tus respuestas deben ser BREVES, directas y concisas (1 a 2 oraciones por mensaje). Evita párrafos largos, explicaciones redundantes o repetir costos y promociones a menos que el aspirante los pida explícitamente.
+
+🔒 CUMPLIMIENTO NORMATIVO Y AVISO DE PRIVACIDAD (LFPDPPP):
+- En tu PRIMER mensaje de bienvenida a un nuevo prospecto, informa brevemente que sus datos personales están protegidos conforme a la Ley Federal de Protección de Datos Personales en Posesión de los Particulares (LFPDPPP) y comparte el Aviso de Privacidad oficial: https://www.unid.edu.mx/aviso-de-privacidad/ indicando que al continuar la conversación otorga su consentimiento para fines de admisión.
 
 🚫 REGLA ESTRICTA SOBRE LA CURP:
 - NUNCA le pidas la CURP al aspirante en la conversación. El sistema calcula la CURP de forma automática y transparente a partir de su nombre, fecha de nacimiento, sexo y estado.
 
-📋 DATOS A RECOPILAR PROGRESIVAMENTE:
+📋 DATOS A RECOPILAR PROGRESIVAMENTE (11 CAMPOS OFICIALES):
 1. Nombre completo
 2. Fecha de nacimiento (AAAA-MM-DD o comprensible)
 3. Sexo (Masculino / Femenino / Otro)
@@ -1254,6 +1258,7 @@ const PROMPT_PRESETS = [
 \`\`\`json
 {
   "completado": true,
+  "aviso_privacidad_aceptado": true,
   "nombre_completo": "string",
   "fecha_nacimiento": "YYYY-MM-DD",
   "sexo": "string",
@@ -1525,7 +1530,14 @@ async function llamarAPI_Gemini(modelId, prompt, history) {
         throw new Error('Google Gemini no tiene API Key configurada.');
     }
 
-    const targetModel = modelId && modelId.startsWith('gemini') ? modelId : 'gemini-3.5-flash-lite';
+    const legacyMap = {
+        'gemini-3.5-flash': 'gemini-2.5-flash',
+        'gemini-3.5-flash-lite': 'gemini-2.5-flash-lite',
+        'gemini-3.6-flash': 'gemini-2.5-flash',
+        'gemini-3.1-pro-preview': 'gemini-2.5-pro'
+    };
+    const normalizedId = legacyMap[modelId] || modelId;
+    const targetModel = normalizedId && normalizedId.startsWith('gemini') ? normalizedId : 'gemini-2.5-flash';
     const geminiContents = history.map(h => ({
         role: h.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: h.content }]
@@ -1648,7 +1660,7 @@ async function llamarAPI_Groq(modelId, prompt, history) {
 
 // Jerarquía de Fallback Predeterminada
 const FALLBACK_PROVIDER_PIPELINE = [
-    { provider: 'google', fn: llamarAPI_Gemini, defaultModel: 'gemini-3.5-flash-lite', check: () => isValidApiKey(process.env.GEMINI_API_KEY) },
+    { provider: 'google', fn: llamarAPI_Gemini, defaultModel: 'gemini-2.5-flash', check: () => isValidApiKey(process.env.GEMINI_API_KEY) },
     { provider: 'anthropic', fn: llamarAPI_Claude, defaultModel: 'claude-3-5-haiku-20241022', check: () => isValidApiKey(process.env.ANTHROPIC_API_KEY) },
     { provider: 'openai', fn: llamarAPI_OpenAI, defaultModel: 'gpt-4o-mini', check: () => isValidApiKey(process.env.OPENAI_API_KEY) },
     { provider: 'deepseek', fn: llamarAPI_DeepSeek, defaultModel: 'deepseek-chat', check: () => isValidApiKey(process.env.DEEPSEEK_API_KEY) },
@@ -4915,7 +4927,7 @@ app.post('/api/conversations/send-brochure', async (req, res) => {
 // ==========================================
 // 16. Inicialización del Servidor
 // ==========================================
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     console.log(`====================================================`);
     console.log(`🐺 :UNID Centro de Mando • Metal-Uriel en Puerto ${PORT}`);
     console.log(`🛡️ Modo de Inferencia: ${globalActiveModelId}`);
@@ -4925,4 +4937,14 @@ app.listen(PORT, () => {
     console.log(`🔗 Webhook de WhatsApp: http://localhost:${PORT}/webhook`);
     console.log(`🔑 Token de Verificación: ${VERIFY_TOKEN}`);
     console.log(`====================================================`);
+});
+
+server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+        console.warn(`\n⚠️ [AVISO] El puerto ${PORT} ya está en uso por otra instancia activa de Metal-Uriel.`);
+        console.warn(`👉 La aplicación ya está corriendo en http://localhost:${PORT} (no necesitas abrir otra terminal, o cierra la anterior antes de ejecutar npm run dev).\n`);
+        process.exit(0);
+    } else {
+        console.error('🔥 Error en el servidor HTTP:', err);
+    }
 });

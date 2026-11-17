@@ -6,7 +6,7 @@
 ![Node.js](https://img.shields.io/badge/Node.js-v20+-339933?style=for-the-badge&logo=node.js&logoColor=white)
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-3.4-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white)
-![Google Gemini](https://img.shields.io/badge/Google_Gemini-3.5_Flash-4285F4?style=for-the-badge&logo=google&logoColor=white)
+![Google Gemini](https://img.shields.io/badge/Google_Gemini-2.5_Flash-4285F4?style=for-the-badge&logo=google&logoColor=white)
 ![MariaDB](https://img.shields.io/badge/MariaDB-11.x-003545?style=for-the-badge&logo=mariadb&logoColor=white)
 ![Meta WhatsApp](https://img.shields.io/badge/Meta-WhatsApp_Cloud_API-25D366?style=for-the-badge&logo=whatsapp&logoColor=white)
 
@@ -30,7 +30,7 @@ Personificado como el embajador cibernético del lobo rojo institucional (*Metal
 
 ### 🧠 1. Motor de Inferencia en Cascada Multi-Proveedor & Circuit Breaker
 - **Alta Disponibilidad 24/7:** Inferencia tolerante a fallos con soporte unificado para:
-  - **Google Gemini** (`gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.1-pro-preview`)
+  - **Google Gemini** (`gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.5-pro`)
   - **Anthropic Claude** (`claude-3-5-haiku`, `claude-3-5-sonnet`)
   - **OpenAI** (`gpt-4o-mini`, `gpt-4o`)
   - **DeepSeek** (`deepseek-chat`)
@@ -71,46 +71,57 @@ Personificado como el embajador cibernético del lobo rojo institucional (*Metal
 
 ```mermaid
 flowchart TD
-    subgraph Aspirantes ["📱 Canales de Entrada"]
-        WA["WhatsApp Cloud API (Meta)"]
-        WEB["Simulador Web / Centro de Mando"]
+    subgraph Canales ["📱 Canales de Entrada & Interacción"]
+        WA["WhatsApp Cloud API (Meta Graph v20.0)"]
+        WEB["Centro de Mando Web (React 18 • Live Inbox & Kanban)"]
+    end
+
+    subgraph Seguridad ["🔐 Seguridad, Gobernanza & Cumplimiento Legal"]
+        AUTH["Autenticación Stateless (Microsoft Entra ID SSO & JWT)"]
+        RBAC["Control de Acceso RBAC (3 Roles: Desarrollador / Admin Sede / Asesor)"]
+        TENANT["Tenant Resolver SaaS & Bóveda Cifrada AES-256-GCM"]
+        LFPDPPP["Guardrail Legal LFPDPPP (Aviso de Privacidad UNID & Consentimiento)"]
     end
 
     subgraph Backend ["⚡ Servidor Node.js + Express (Puerto 3000)"]
-        AUTH["Módulo Auth (Office 365 & JWT)"]
-        CASCADE["Gestor de Fallback Multi-LLM en Cascada"]
-        MEM["Memoria Contextual de Conversación"]
-        GEO["Motor de Reglas Geográficas & Anti-Alucinación"]
-        BROCHURE["Despachador de Planes de Estudio PDF"]
-        MAIL["Notificador por Correo (Nodemailer)"]
+        MEM["Memoria Contextual Híbrida (Zero-Brain-Damage + Historial SQL)"]
+        CASCADE["Orquestador Multi-LLM en Cascada & Circuit Breaker"]
+        GEO["Motor de Reglas Geográficas, Anti-Alucinación & Cálculo CURP"]
+        POOL_MGR["Gestor Pool Multimedia & Categorías CRUD (Upload Binario a Meta)"]
+        MAIL["Servicio de Alertas SMTP (Nodemailer • 3 Eventos Clave)"]
     end
 
-    subgraph AI_Providers ["🤖 Proveedores de IA"]
-        GEMINI["Google Gemini 3.5/3.6"]
-        CLAUDE["Anthropic Claude 3.5"]
-        OPENAI["OpenAI GPT-4o"]
-        GROQ["Groq Cloud Llama 3.3"]
+    subgraph AI_Providers ["🤖 Proveedores de IA (Inferencia Resiliente)"]
+        GEMINI["Google Gemini 2.5 Flash (Principal)"]
+        CLAUDE["Anthropic Claude 3.5 Haiku/Sonnet"]
+        OPENAI["OpenAI GPT-4o-mini / GPT-4o"]
+        GROQ["DeepSeek V3 / Groq Llama 3.3"]
     end
 
-    subgraph Storage ["💾 Persistencia"]
-        MARIADB[("MariaDB (unid_admisiones)")]
-        JSON_FILES["brochures.json / system_prompt.txt"]
+    subgraph Storage ["💾 Capa de Persistencia Híbrida"]
+        MARIADB[("MariaDB (aspirantes, sedes, usuarios,\nhistorial, pool_recursos, pool_categorias)")]
+        FILES["Repositorio Físico (/uploads/recursos/ PDF/IMG,\nbrochures.json & system_prompt.txt)"]
     end
 
-    WA -->|Webhook POST /webhook| Backend
-    WEB -->|REST API /api/chat| Backend
+    WA <-->|Webhook POST /webhook & Media Upload| TENANT
+    WEB <-->|REST API + Bearer JWT| AUTH
+    AUTH --> RBAC
+    RBAC --> Backend
+    TENANT --> LFPDPPP
+    LFPDPPP --> MEM
+    MEM --> CASCADE
 
-    Backend --> CASCADE
     CASCADE -->|1. Principal| GEMINI
     CASCADE -->|2. Respaldo| CLAUDE
     CASCADE -->|3. Respaldo| OPENAI
     CASCADE -->|4. Respaldo| GROQ
 
     CASCADE --> GEO
-    GEO --> BROCHURE
-    GEO -->|Lead Completo 11 Datos| MARIADB
-    GEO -->|Ficha Generada| MAIL
-    GEO --> JSON_FILES
+    GEO -->|Solicitud de Plan / Horario / Beca| POOL_MGR
+    POOL_MGR <--> FILES
+    POOL_MGR <--> MARIADB
+    GEO -->|Ficha 11 Datos + CURP + Consentimiento LFPDPPP| MARIADB
+    GEO -->|Triggers: Nuevo / Ficha / Inscrito| MAIL
 ```
 
 ---
