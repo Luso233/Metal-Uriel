@@ -923,16 +923,32 @@ loadBrochuresFromDisk();
 
 // Memoria en caché del Ciclo Escolar Activo por sede
 const activeSchoolCyclesMemory = new Map([['campeche', '2026-3 Septiembre']]);
+const activeSchoolCyclesFetchedAt = new Map();
+const CICLO_CACHE_TTL_MS = 60 * 1000;
+
+function invalidateCicloCache(sedeId = null) {
+    if (sedeId) {
+        activeSchoolCyclesFetchedAt.delete(sedeId);
+    } else {
+        activeSchoolCyclesFetchedAt.clear();
+    }
+}
 
 async function getActiveCicloEscolar(sedeId = 'campeche') {
     const cleanSede = sedeId || 'campeche';
+    const lastFetched = activeSchoolCyclesFetchedAt.get(cleanSede) || 0;
+    if (Date.now() - lastFetched < CICLO_CACHE_TTL_MS && activeSchoolCyclesMemory.has(cleanSede)) {
+        return activeSchoolCyclesMemory.get(cleanSede);
+    }
     try {
         const [rows] = await dbPool.query('SELECT ciclo_activo FROM ciclos_escolares_sede WHERE sede_id = ? LIMIT 1', [cleanSede]);
         if (rows.length > 0 && rows[0].ciclo_activo) {
             activeSchoolCyclesMemory.set(cleanSede, rows[0].ciclo_activo);
+            activeSchoolCyclesFetchedAt.set(cleanSede, Date.now());
             return rows[0].ciclo_activo;
         }
     } catch (_) {}
+    activeSchoolCyclesFetchedAt.set(cleanSede, Date.now());
     return activeSchoolCyclesMemory.get(cleanSede) || '2026-3 Septiembre';
 }
 
@@ -1399,10 +1415,13 @@ function reloadRuntimeConfig() {
     META_APP_SECRET = process.env.META_APP_SECRET || '';
     WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || '';
     WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || '';
+    META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v22.0';
     ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
     ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'unid2026';
     globalActiveModelId = process.env.DEFAULT_AI_MODEL || 'auto-fallback';
     providerCooldowns.clear();
+    modelCooldowns.clear();
+    metaMediaIdCache.clear();
     initAiClients();
     // Actualizar nombre dinámico del modelo Ollama en catálogo
     const ollamaEntry = ALL_SUPPORTED_MODELS.find(m => m.provider === 'ollama');
@@ -1422,28 +1441,38 @@ const ALL_SUPPORTED_MODELS = [
         providerName: 'Auto-Fallback',
         icon: '🛡️',
         badge: 'Recomendado',
-        description: 'Enruta automáticamente al mejor modelo disponible. Si uno agota su cuota (429/403), salta en milisegundos al siguiente sin interrupciones.',
+        description: 'Enruta automáticamente al motor más veloz disponible (Gemini 3.5 Flash Lite ~1.4s -> Gemini 4 Hydrogen -> Groq -> OpenAI). Si un modelo tiene congestión (503/429), salta al instante sin perder contexto.',
         isConfigured: true
     },
     // Google Gemini (Versiones Comerciales Oficiales Google GenAI SDK)
-    {
-        id: 'gemini-3.8-flash',
-        name: 'Google Gemini 3.8 Flash',
-        provider: 'google',
-        providerName: 'Google Gemini',
-        icon: '⚡',
-        badge: 'Estándar Oficial',
-        description: 'Motor cognitivo principal de última generación, baja latencia y alta comprensión contextual.',
-        isConfigured: isValidApiKey(process.env.GEMINI_API_KEY)
-    },
     {
         id: 'gemini-3.5-flash-lite',
         name: 'Google Gemini 3.5 Flash Lite',
         provider: 'google',
         providerName: 'Google Gemini',
+        icon: '⚡',
+        badge: 'Ultra Rápido (~1.4s)',
+        description: 'Motor principal recomendado para WhatsApp: respuesta en ~1.4s sin latencia de pensamiento, costo mínimo y máxima cuota.',
+        isConfigured: isValidApiKey(process.env.GEMINI_API_KEY)
+    },
+    {
+        id: 'gemini-4-hydrogen',
+        name: 'Google Gemini 4 Hydrogen',
+        provider: 'google',
+        providerName: 'Google Gemini',
+        icon: '🚀',
+        badge: 'Gemini 4 Equilibrado',
+        description: 'Modelo rápido de nueva generación Gemini 4 con excelente comprensión multimodal y razonamiento ligero.',
+        isConfigured: isValidApiKey(process.env.GEMINI_API_KEY)
+    },
+    {
+        id: 'gemini-3.8-flash',
+        name: 'Google Gemini 3.8 Flash',
+        provider: 'google',
+        providerName: 'Google Gemini',
         icon: '✨',
-        badge: 'Ultra Rápido',
-        description: 'Ultra rápido y de alta capacidad de cuota para atención masiva en WhatsApp.',
+        badge: 'Flash Avanzado',
+        description: 'Motor cognitivo avanzado con razonamiento profundo (sujeto a picos de demanda 503; respaldo automático a Flash Lite).',
         isConfigured: isValidApiKey(process.env.GEMINI_API_KEY)
     },
     {
@@ -1452,7 +1481,7 @@ const ALL_SUPPORTED_MODELS = [
         provider: 'google',
         providerName: 'Google Gemini',
         icon: '🧠',
-        badge: 'Avanzado',
+        badge: 'Frontera',
         description: 'Máxima capacidad de razonamiento lógico institucional de frontera.',
         isConfigured: isValidApiKey(process.env.GEMINI_API_KEY)
     },
@@ -1536,9 +1565,60 @@ const ALL_SUPPORTED_MODELS = [
 let globalActiveModelId = process.env.DEFAULT_AI_MODEL || 'auto-fallback';
 
 // ==========================================
-// 4. Mecanismo de Cooldown / Circuit Breaker
+// 4. Mecanismo de Cooldown / Circuit Breaker (Proveedor + Modelo Individual)
 // ==========================================
+let META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v22.0';
 const providerCooldowns = new Map(); // providerKey -> timestamp expiración en ms
+const modelCooldowns = new Map();    // modelId -> timestamp expiración en ms
+const metaMediaIdCache = new Map();  // cacheKey -> { mediaId, expiresAt }
+const whatsappMessageStatuses = new Map(); // wamid -> { status, timestamp, recipientId, error }
+const phoneProcessingQueues = new Map();   // canonicalPhone -> Promise tail
+
+function withTimeout(promise, timeoutMs, label = 'operación') {
+    let timer = null;
+    return Promise.race([
+        promise,
+        new Promise((_, reject) => {
+            timer = setTimeout(() => {
+                const err = new Error(`Timeout excedido (${timeoutMs}ms) en ${label}`);
+                err.code = 'ETIMEDOUT';
+                err.status = 504;
+                reject(err);
+            }, timeoutMs);
+            if (typeof timer.unref === 'function') timer.unref();
+        })
+    ]).finally(() => {
+        if (timer) clearTimeout(timer);
+    });
+}
+
+function enqueuePhoneTask(canonicalKey, taskFn) {
+    const key = canonicalKey || 'global';
+    const prev = phoneProcessingQueues.get(key) || Promise.resolve();
+    const next = prev.then(() => taskFn(), () => taskFn()).finally(() => {
+        if (phoneProcessingQueues.get(key) === next) {
+            phoneProcessingQueues.delete(key);
+        }
+    });
+    phoneProcessingQueues.set(key, next);
+    return next;
+}
+
+function isModelInCooldown(modelId) {
+    const expiresAt = modelCooldowns.get(modelId);
+    if (!expiresAt) return false;
+    if (Date.now() > expiresAt) {
+        modelCooldowns.delete(modelId);
+        return false;
+    }
+    return true;
+}
+
+function setModelCooldown(modelId, durationMinutes = 3, reason = 'Congestión/503') {
+    const expiresAt = Date.now() + (durationMinutes * 60 * 1000);
+    modelCooldowns.set(modelId, expiresAt);
+    console.warn(`⏳ [MODEL COOLDOWN] Modelo '${modelId}' en pausa por ${durationMinutes} min (${reason}).`);
+}
 
 function isProviderInCooldown(providerKey) {
     const expiresAt = providerCooldowns.get(providerKey);
@@ -1806,7 +1886,19 @@ function normalizeForMatch(str) {
         .trim();
 }
 
+const poolItemsCache = new Map(); // sedeKey -> { items, fetchedAt }
+const POOL_CACHE_TTL_MS = 60 * 1000;
+
+function invalidatePoolCache() {
+    poolItemsCache.clear();
+}
+
 async function getActivePoolItems(sedeId = null) {
+    const cacheKey = (sedeId && sedeId !== 'all' && sedeId !== 'todas') ? String(sedeId) : '__all__';
+    const cached = poolItemsCache.get(cacheKey);
+    if (cached && (Date.now() - cached.fetchedAt) < POOL_CACHE_TTL_MS) {
+        return cached.items;
+    }
     try {
         let query = 'SELECT * FROM pool_recursos_multimedia WHERE activo = 1';
         const params = [];
@@ -1817,7 +1909,7 @@ async function getActivePoolItems(sedeId = null) {
         query += ' ORDER BY id ASC';
         const [rows] = await dbPool.query(query, params);
         if (rows && rows.length > 0) {
-            return rows.map(r => {
+            const mapped = rows.map(r => {
                 let parsedTags = [];
                 try {
                     parsedTags = typeof r.tags === 'string' ? JSON.parse(r.tags) : (Array.isArray(r.tags) ? r.tags : []);
@@ -1847,11 +1939,13 @@ async function getActivePoolItems(sedeId = null) {
                     tags: parsedTags
                 };
             });
+            poolItemsCache.set(cacheKey, { items: mapped, fetchedAt: Date.now() });
+            return mapped;
         }
     } catch (_) {}
 
     // Fallback a UNID_BROCHURES en memoria si la BD no está lista
-    return UNID_BROCHURES.map(b => ({
+    const fallbackItems = UNID_BROCHURES.map(b => ({
         ...b,
         codigo_recurso: b.id,
         categoria: b.id === 'becas' ? 'becas_costos' : 'plan_estudios',
@@ -1860,6 +1954,8 @@ async function getActivePoolItems(sedeId = null) {
         tipo_archivo: 'pdf',
         url_recurso: b.pdfUrl
     }));
+    poolItemsCache.set(cacheKey, { items: fallbackItems, fetchedAt: Date.now() });
+    return fallbackItems;
 }
 
 function detectBrochureRequest(userMessage, senderPhone = null, llmReply = '', poolItems = null) {
@@ -1984,26 +2080,28 @@ function detectBrochureRequest(userMessage, senderPhone = null, llmReply = '', p
 }
 
 // ==========================================
-// 7. Adaptadores Normalizados para cada Proveedor de IA
+// 7. Adaptadores Normalizados para cada Proveedor de IA (Ultra-Baja Latencia + Timeouts Estrictos)
 // ==========================================
 
-// Adaptador 1: Google Gemini
+// Adaptador 1: Google Gemini (Smart Thinking + Per-Model Cooldown + Timeout Estricto)
 async function llamarAPI_Gemini(modelId, prompt, history) {
     if (!geminiClient || !isValidApiKey(process.env.GEMINI_API_KEY)) {
         throw new Error('Google Gemini no tiene API Key configurada.');
     }
 
     const legacyMap = {
-        'gemini-2.5-flash': 'gemini-3.8-flash',
+        'gemini-2.5-flash': 'gemini-3.5-flash-lite',
         'gemini-2.5-flash-lite': 'gemini-3.5-flash-lite',
-        'gemini-2.5-pro': 'gemini-4-argon',
-        'gemini-3.5-flash': 'gemini-3.8-flash',
-        'gemini-3.6-flash': 'gemini-3.8-flash',
+        'gemini-2.5-pro': 'gemini-4-hydrogen',
+        'gemini-3.5-flash': 'gemini-3.5-flash-lite',
+        'gemini-3.6-flash': 'gemini-4-hydrogen',
         'gemini-3.1-pro-preview': 'gemini-4-argon'
     };
     const normalizedId = legacyMap[modelId] || modelId;
-    const primaryModel = (normalizedId && normalizedId.startsWith('gemini')) ? normalizedId : 'gemini-3.8-flash';
-    const candidateModels = Array.from(new Set([primaryModel, 'gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-4-argon']));
+    const primaryModel = (normalizedId && normalizedId.startsWith('gemini')) ? normalizedId : 'gemini-3.5-flash-lite';
+    const rawCandidates = Array.from(new Set([primaryModel, 'gemini-3.5-flash-lite', 'gemini-4-hydrogen', 'gemini-3.8-flash', 'gemini-4-argon']));
+    const activeCandidates = rawCandidates.filter(m => !isModelInCooldown(m));
+    const candidateModels = activeCandidates.length > 0 ? activeCandidates : rawCandidates;
 
     const geminiContents = history.map(h => ({
         role: h.role === 'assistant' ? 'model' : 'user',
@@ -2012,15 +2110,27 @@ async function llamarAPI_Gemini(modelId, prompt, history) {
 
     let lastErr = null;
     for (const targetModel of candidateModels) {
+        const isLite = /flash-lite/i.test(targetModel);
+        const timeoutMs = isLite ? 9500 : 13000;
+        const modelConfig = {
+            systemInstruction: prompt,
+            temperature: 0.7,
+            maxOutputTokens: isLite ? 1024 : 2048,
+            thinkingConfig: {
+                thinkingLevel: isLite ? 'minimal' : 'low'
+            }
+        };
+
         try {
-            const response = await geminiClient.models.generateContent({
-                model: targetModel,
-                contents: geminiContents,
-                config: {
-                    systemInstruction: prompt,
-                    temperature: 0.7
-                }
-            });
+            const response = await withTimeout(
+                geminiClient.models.generateContent({
+                    model: targetModel,
+                    contents: geminiContents,
+                    config: modelConfig
+                }),
+                timeoutMs,
+                `Gemini (${targetModel})`
+            );
 
             const replyText = response.text ? response.text.trim() : '';
             if (replyText) {
@@ -2028,7 +2138,41 @@ async function llamarAPI_Gemini(modelId, prompt, history) {
             }
         } catch (err) {
             lastErr = err;
-            console.warn(`⚠️ [GEMINI SUB-FALLBACK] Modelo ${targetModel} no disponible (${err.message?.slice(0, 80)}), probando siguiente variante Gemini...`);
+            const status = err.status || err.response?.status || err.statusCode;
+            const msg = String(err.message || '');
+
+            // Error de autenticación o API Key inválida: abortar toda la sub-cascada Gemini al instante
+            if (status === 401 || status === 403 || /api key not valid|invalid api key|permission_denied/i.test(msg)) {
+                throw err;
+            }
+
+            // Si un modelo específico rechaza thinkingConfig, reintentar sin thinkingConfig una vez
+            if (status === 400 && /thinking/i.test(msg)) {
+                try {
+                    const retryResp = await withTimeout(
+                        geminiClient.models.generateContent({
+                            model: targetModel,
+                            contents: geminiContents,
+                            config: { systemInstruction: prompt, temperature: 0.7, maxOutputTokens: 1500 }
+                        }),
+                        timeoutMs,
+                        `Gemini-retry (${targetModel})`
+                    );
+                    const retryText = retryResp.text ? retryResp.text.trim() : '';
+                    if (retryText) {
+                        return { reply: retryText, modelUsed: targetModel, provider: 'Google Gemini' };
+                    }
+                } catch (retryErr) {
+                    lastErr = retryErr;
+                }
+            }
+
+            // Si este modelo concreto está saturado (503/504/429/Timeout), ponerlo en cooldown 3 min
+            if (status === 503 || status === 504 || status === 429 || err.code === 'ETIMEDOUT' || /high demand|overloaded|timeout|unavailable/i.test(msg)) {
+                setModelCooldown(targetModel, 3, `${status || err.code || 'saturado'}`);
+            }
+
+            console.warn(`⚠️ [GEMINI SUB-FALLBACK] Modelo ${targetModel} no disponible (${msg.slice(0, 80)}), probando siguiente variante Gemini...`);
         }
     }
 
@@ -2047,13 +2191,17 @@ async function llamarAPI_Claude(modelId, prompt, history) {
         content: h.content
     }));
 
-    const response = await anthropicClient.messages.create({
-        model: targetModel,
-        max_tokens: 1000,
-        system: prompt,
-        messages: claudeMessages,
-        temperature: 0.7
-    });
+    const response = await withTimeout(
+        anthropicClient.messages.create({
+            model: targetModel,
+            max_tokens: 1000,
+            system: prompt,
+            messages: claudeMessages,
+            temperature: 0.7
+        }),
+        12000,
+        `Anthropic (${targetModel})`
+    );
 
     const replyText = response.content?.[0]?.type === 'text' ? response.content[0].text.trim() : '';
     if (!replyText) throw new Error('Respuesta vacía de Anthropic Claude.');
@@ -2072,12 +2220,16 @@ async function llamarAPI_OpenAI(modelId, prompt, history) {
         ...history.map(h => ({ role: h.role, content: h.content }))
     ];
 
-    const response = await openaiClient.chat.completions.create({
-        model: targetModel,
-        messages: openAiMessages,
-        temperature: 0.7,
-        max_tokens: 800
-    });
+    const response = await withTimeout(
+        openaiClient.chat.completions.create({
+            model: targetModel,
+            messages: openAiMessages,
+            temperature: 0.7,
+            max_tokens: 800
+        }),
+        12000,
+        `OpenAI (${targetModel})`
+    );
 
     const replyText = response.choices[0]?.message?.content?.trim() || '';
     if (!replyText) throw new Error('Respuesta vacía de OpenAI.');
@@ -2096,12 +2248,16 @@ async function llamarAPI_DeepSeek(modelId, prompt, history) {
         ...history.map(h => ({ role: h.role, content: h.content }))
     ];
 
-    const response = await deepseekClient.chat.completions.create({
-        model: targetModel,
-        messages: messages,
-        temperature: 0.7,
-        max_tokens: 800
-    });
+    const response = await withTimeout(
+        deepseekClient.chat.completions.create({
+            model: targetModel,
+            messages: messages,
+            temperature: 0.7,
+            max_tokens: 800
+        }),
+        13000,
+        `DeepSeek (${targetModel})`
+    );
 
     const replyText = response.choices[0]?.message?.content?.trim() || '';
     if (!replyText) throw new Error('Respuesta vacía de DeepSeek.');
@@ -2120,12 +2276,16 @@ async function llamarAPI_Groq(modelId, prompt, history) {
         ...history.map(h => ({ role: h.role, content: h.content }))
     ];
 
-    const response = await groqClient.chat.completions.create({
-        model: targetModel,
-        messages: messages,
-        temperature: 0.7,
-        max_tokens: 800
-    });
+    const response = await withTimeout(
+        groqClient.chat.completions.create({
+            model: targetModel,
+            messages: messages,
+            temperature: 0.7,
+            max_tokens: 800
+        }),
+        9500,
+        `Groq (${targetModel})`
+    );
 
     const replyText = response.choices[0]?.message?.content?.trim() || '';
     if (!replyText) throw new Error('Respuesta vacía de Groq.');
@@ -2175,13 +2335,13 @@ async function llamarAPI_Ollama(modelId, prompt, history) {
 // 8. Motor de Inferencia en Cascada con Fallback Inteligente y Cooldown
 // ==========================================
 
-// Jerarquía de Fallback Predeterminada (Nube primero -> Ollama Local opcional como último eslabón)
+// Jerarquía de Fallback Predeterminada (Ordenada por velocidad y costo: Gemini Flash Lite -> Groq LPU -> OpenAI -> Claude -> DeepSeek -> Ollama)
 const FALLBACK_PROVIDER_PIPELINE = [
-    { provider: 'google', fn: llamarAPI_Gemini, defaultModel: 'gemini-3.8-flash', check: () => isValidApiKey(process.env.GEMINI_API_KEY) },
-    { provider: 'anthropic', fn: llamarAPI_Claude, defaultModel: 'claude-3-5-haiku-20241022', check: () => isValidApiKey(process.env.ANTHROPIC_API_KEY) },
-    { provider: 'openai', fn: llamarAPI_OpenAI, defaultModel: 'gpt-4o-mini', check: () => isValidApiKey(process.env.OPENAI_API_KEY) },
-    { provider: 'deepseek', fn: llamarAPI_DeepSeek, defaultModel: 'deepseek-chat', check: () => isValidApiKey(process.env.DEEPSEEK_API_KEY) },
+    { provider: 'google', fn: llamarAPI_Gemini, defaultModel: 'gemini-3.5-flash-lite', check: () => isValidApiKey(process.env.GEMINI_API_KEY) },
     { provider: 'groq', fn: llamarAPI_Groq, defaultModel: 'llama-3.3-70b-versatile', check: () => isValidApiKey(process.env.GROQ_API_KEY) },
+    { provider: 'openai', fn: llamarAPI_OpenAI, defaultModel: 'gpt-4o-mini', check: () => isValidApiKey(process.env.OPENAI_API_KEY) },
+    { provider: 'anthropic', fn: llamarAPI_Claude, defaultModel: 'claude-3-5-haiku-20241022', check: () => isValidApiKey(process.env.ANTHROPIC_API_KEY) },
+    { provider: 'deepseek', fn: llamarAPI_DeepSeek, defaultModel: 'deepseek-chat', check: () => isValidApiKey(process.env.DEEPSEEK_API_KEY) },
     { provider: 'ollama', fn: llamarAPI_Ollama, defaultModel: 'ollama-local', check: () => isOllamaConfigured() }
 ];
 
@@ -2202,9 +2362,11 @@ async function callMetalUrielLLM(senderPhone, userMessage, requestedModelId = nu
 
     let currentPrompt = getActivePrompt();
 
-    // Cargar Ciclo Escolar Activo y Pool de Recursos Multimedia desde MariaDB
-    const cicloActivo = await getActiveCicloEscolar(sedeId);
-    const poolItems = await getActivePoolItems(sedeId);
+    // Cargar Ciclo Escolar Activo y Pool de Recursos Multimedia (en paralelo y con caché TTL 60s)
+    const [cicloActivo, poolItems] = await Promise.all([
+        getActiveCicloEscolar(sedeId),
+        getActivePoolItems(sedeId)
+    ]);
 
     const poolCatalogSummary = poolItems.map(item =>
         `• [Código: ${item.codigo_recurso}] (${item.categoria.toUpperCase()} | ${item.tipo_archivo.toUpperCase()}) "${item.titulo}" — Modalidad: ${item.modalidad || 'Presencial'}. Info: ${item.descripcion_ia || ''}`
@@ -2335,6 +2497,7 @@ INSTRUCCIONES CLAVE DE ATENCIÓN:
             touchUserSession(canonicalKey);
             result.isFallbackSwitch = (i > 0);
             result.latencyMs = latencyMs;
+            result.poolItems = poolItems;
             if (i > 0) {
                 result.switchedFrom = providersToTry[0].provider;
             }
@@ -3106,29 +3269,40 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
     const dialPhone = pickBestDialPhone([senderPhone]);
     const isFirstContactInMemory = !conversationMemory.has(canonical) && !conversationMemory.has(senderPhone);
 
+    // 1. En arranque en frío de este teléfono, hidratar contexto previo antes de llamar a la IA
     if (isFirstContactInMemory) {
         await hydrateConversationFromDb(canonical);
-        const regResult = await registrarLeadInicialEnBD(dialPhone, messageText, sedeId);
-        if (regResult.isNew) {
-            dispararNotificacionCorreo('NUEVO_CONTACTO', {
-                telefono_celular: dialPhone,
-                mensaje_inicial: messageText,
-                sede_id: sedeId,
-                insertId: regResult.insertId
-            }).catch(console.error);
-        }
     }
 
-    await guardarMensajeHistorialBD(dialPhone, 'user', messageText, sedeId, {
-        senderName: meta.senderName || 'Aspirante',
-        whatsappMessageId: meta.whatsappMessageId || null
-    });
+    // 2. Registrar lead inicial + persistir mensaje del usuario EN PARALELO con la inferencia IA (cero espera DB)
+    const preDbPromises = [];
+    if (isFirstContactInMemory) {
+        preDbPromises.push(
+            registrarLeadInicialEnBD(dialPhone, messageText, sedeId).then((regResult) => {
+                if (regResult.isNew) {
+                    dispararNotificacionCorreo('NUEVO_CONTACTO', {
+                        telefono_celular: dialPhone,
+                        mensaje_inicial: messageText,
+                        sede_id: sedeId,
+                        insertId: regResult.insertId
+                    }).catch(console.error);
+                }
+            }).catch(() => {})
+        );
+    }
+    preDbPromises.push(
+        guardarMensajeHistorialBD(dialPhone, 'user', messageText, sedeId, {
+            senderName: meta.senderName || 'Aspirante',
+            whatsappMessageId: meta.whatsappMessageId || null
+        }).catch(() => {})
+    );
 
-    const { reply: llmReply, modelUsed } = await callMetalUrielLLM(canonical, messageText, requestedModelId, sedeId);
+    const llmResult = await callMetalUrielLLM(canonical, messageText, requestedModelId, sedeId);
+    const { reply: llmReply, modelUsed, latencyMs } = llmResult;
     
-    // Separar y limpiar cualquier JSON y tags técnicos
+    // Separar y limpiar cualquier JSON y tags técnicos (reutilizando poolItems ya cacheados)
     const { cleanReply, jsonData } = extractJsonFromLlmReply(llmReply);
-    const poolItems = await getActivePoolItems(sedeId);
+    const poolItems = Array.isArray(llmResult.poolItems) ? llmResult.poolItems : await getActivePoolItems(sedeId);
     const brochureDetected = detectBrochureRequest(messageText, dialPhone, llmReply, poolItems);
     const formattedAttachment = buildAttachmentObject(brochureDetected);
 
@@ -3184,11 +3358,15 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
             `¡Bienvenido a la familia UNID! 🔴🐾`
         );
 
-        await guardarMensajeHistorialBD(dialPhone, 'assistant', finalReply, sedeId, {
-            senderName: 'Metal-Uriel IA',
-            modelUsed,
-            documentAttachment: formattedAttachment
-        });
+        const persistPromise = Promise.allSettled([
+            ...preDbPromises,
+            guardarMensajeHistorialBD(dialPhone, 'assistant', finalReply, sedeId, {
+                senderName: 'Metal-Uriel IA',
+                modelUsed,
+                documentAttachment: formattedAttachment
+            })
+        ]);
+        if (!meta.deferPersist) await persistPromise;
 
         return {
             reply: finalReply,
@@ -3198,16 +3376,22 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
             partialFields: validatedJson,
             insertId,
             modelUsed,
-            documentAttachment: formattedAttachment
+            latencyMs,
+            documentAttachment: formattedAttachment,
+            persistPromise
         };
     }
 
     const replyToSend = cleanReply || llmReply;
-    await guardarMensajeHistorialBD(dialPhone, 'assistant', replyToSend, sedeId, {
-        senderName: 'Metal-Uriel IA',
-        modelUsed,
-        documentAttachment: formattedAttachment
-    });
+    const persistPromise = Promise.allSettled([
+        ...preDbPromises,
+        guardarMensajeHistorialBD(dialPhone, 'assistant', replyToSend, sedeId, {
+            senderName: 'Metal-Uriel IA',
+            modelUsed,
+            documentAttachment: formattedAttachment
+        })
+    ]);
+    if (!meta.deferPersist) await persistPromise;
 
     return {
         reply: replyToSend,
@@ -3216,7 +3400,9 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
         leadData: null,
         partialFields: partialFields,
         modelUsed,
-        documentAttachment: formattedAttachment
+        latencyMs,
+        documentAttachment: formattedAttachment,
+        persistPromise
     };
 }
 
@@ -3286,8 +3472,56 @@ async function resolveAttachmentBinary(documentAttachment) {
     };
 }
 
-async function uploadMediaToWhatsAppCloud(buffer, mimeType, fileName) {
-    const mediaUrl = `https://graph.facebook.com/v20.0/${WHATSAPP_PHONE_NUMBER_ID}/media`;
+const MEDIA_CACHE_TTL_MS = 20 * 24 * 60 * 60 * 1000; // Meta retiene media_id ~30 días; caché seguro de 20 días
+
+async function sendWhatsAppReadAndTyping(messageId) {
+    if (!messageId || !WHATSAPP_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) return false;
+    const url = `https://graph.facebook.com/${META_GRAPH_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
+    try {
+        await axios.post(
+            url,
+            {
+                messaging_product: 'whatsapp',
+                status: 'read',
+                message_id: messageId,
+                typing_indicator: { type: 'text' }
+            },
+            {
+                headers: {
+                    'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
+                    'Content-Type': 'application/json'
+                },
+                timeout: 5000
+            }
+        );
+        return true;
+    } catch (err) {
+        // Fallback silencioso a solo "read" si una cuenta antigua no admite typing_indicator
+        try {
+            await axios.post(
+                url,
+                { messaging_product: 'whatsapp', status: 'read', message_id: messageId },
+                { headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' }, timeout: 4000 }
+            );
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+}
+
+async function uploadMediaToWhatsAppCloud(buffer, mimeType, fileName, { forceRefresh = false } = {}) {
+    const hashPrefix = crypto.createHash('sha256').update(buffer).digest('hex').slice(0, 16);
+    const cacheKey = `${WHATSAPP_PHONE_NUMBER_ID}:${fileName}:${buffer.length}:${hashPrefix}`;
+    if (!forceRefresh) {
+        const cached = metaMediaIdCache.get(cacheKey);
+        if (cached && cached.expiresAt > Date.now()) {
+            console.log(`⚡ [META MEDIA CACHE HIT] Reutilizando media_id ${cached.mediaId} para "${fileName}" (0 ms upload)`);
+            return cached.mediaId;
+        }
+    }
+
+    const mediaUrl = `https://graph.facebook.com/${META_GRAPH_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/media`;
     const formData = new FormData();
     formData.append('messaging_product', 'whatsapp');
     formData.append('type', mimeType);
@@ -3298,57 +3532,83 @@ async function uploadMediaToWhatsAppCloud(buffer, mimeType, fileName) {
         headers: {
             'Authorization': `Bearer ${WHATSAPP_TOKEN}`
         },
-        body: formData
+        body: formData,
+        signal: AbortSignal.timeout(15000)
     });
 
     const data = await response.json();
     if (!response.ok || !data.id) {
         throw new Error(data.error?.message || `Error subiendo media a Meta (${response.status})`);
     }
+    metaMediaIdCache.set(cacheKey, { mediaId: data.id, expiresAt: Date.now() + MEDIA_CACHE_TTL_MS });
     return data.id;
 }
 
-async function sendWhatsAppMessage(to, messageText, documentAttachment = null) {
+async function sendWhatsAppMessage(to, messageText, documentAttachment = null, opts = {}) {
     if (!WHATSAPP_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) {
         console.log(`[SIMULACIÓN WHATSAPP] Enviando a ${to}: ${messageText}`);
-        return;
+        return { simulated: true, textMessageId: null, mediaMessageId: null };
     }
 
-    const url = `https://graph.facebook.com/v20.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
+    const url = `https://graph.facebook.com/${META_GRAPH_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
+    const headers = {
+        'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
+        'Content-Type': 'application/json'
+    };
+    const resultIds = { simulated: false, textMessageId: null, mediaMessageId: null };
 
     try {
-        // 1. Enviar mensaje de texto al usuario
+        // 1. Enviar mensaje de texto o botones interactivos Quick Reply (máx. 3) al usuario
         if (messageText && messageText.trim()) {
-            await axios.post(
-                url,
-                {
+            const quickReplies = Array.isArray(opts.quickReplies) ? opts.quickReplies.filter(Boolean).slice(0, 3) : [];
+            const payload = quickReplies.length > 0
+                ? {
+                    messaging_product: 'whatsapp',
+                    recipient_type: 'individual',
+                    to: to,
+                    type: 'interactive',
+                    interactive: {
+                        type: 'button',
+                        body: { text: messageText.trim().slice(0, 1024) },
+                        action: {
+                            buttons: quickReplies.map((btn, idx) => ({
+                                type: 'reply',
+                                reply: {
+                                    id: String(btn.id || `btn_${idx + 1}`).slice(0, 256),
+                                    title: String(btn.title || btn).slice(0, 20)
+                                }
+                            }))
+                        }
+                    }
+                }
+                : {
                     messaging_product: 'whatsapp',
                     recipient_type: 'individual',
                     to: to,
                     type: 'text',
-                    text: { body: messageText.trim() }
-                },
-                {
-                    headers: {
-                        'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
-                        'Content-Type': 'application/json'
-                    }
-                }
-            );
-            console.log(`💬 [WHATSAPP ENVIADO] Texto enviado con éxito a ${to}`);
+                    text: { preview_url: false, body: messageText.trim() }
+                };
+
+            const textResp = await axios.post(url, payload, { headers, timeout: 10000 });
+            resultIds.textMessageId = textResp.data?.messages?.[0]?.id || null;
+            if (resultIds.textMessageId) {
+                whatsappMessageStatuses.set(resultIds.textMessageId, {
+                    status: 'sent',
+                    timestamp: new Date().toISOString(),
+                    recipientId: to,
+                    error: null
+                });
+            }
+            console.log(`💬 [WHATSAPP ENVIADO] Texto enviado con éxito a ${to}${resultIds.textMessageId ? ` (${resultIds.textMessageId.slice(-10)})` : ''}`);
         }
 
-        // 2. Enviar documento PDF o Imagen adjunta subiendo el archivo binario directo a Meta Cloud API (/media)
+        // 2. Enviar documento PDF o Imagen adjunta reutilizando media_id cacheado en Meta Cloud API
         if (documentAttachment) {
             const { buffer, mimeType, fileName } = await resolveAttachmentBinary(documentAttachment);
-            console.log(`📤 [META MEDIA UPLOAD] Subiendo "${fileName}" (${Math.round(buffer.length / 1024)} KB, ${mimeType}) a Meta Cloud API...`);
-            const mediaId = await uploadMediaToWhatsAppCloud(buffer, mimeType, fileName);
-            console.log(`✅ [META MEDIA ID] Archivo registrado en Meta con ID: ${mediaId}`);
-
-            if (documentAttachment.tipo_archivo === 'imagen' && mimeType.startsWith('image/')) {
-                await axios.post(
-                    url,
-                    {
+            const sendMediaWithId = async (mediaId) => {
+                const isImage = documentAttachment.tipo_archivo === 'imagen' && mimeType.startsWith('image/');
+                const mediaPayload = isImage
+                    ? {
                         messaging_product: 'whatsapp',
                         recipient_type: 'individual',
                         to: to,
@@ -3357,19 +3617,8 @@ async function sendWhatsAppMessage(to, messageText, documentAttachment = null) {
                             id: mediaId,
                             caption: `🏛️ ${documentAttachment.title} (${documentAttachment.modalidad || 'UNID'})`
                         }
-                    },
-                    {
-                        headers: {
-                            'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
-                            'Content-Type': 'application/json'
-                        }
                     }
-                );
-                console.log(`✅ [IMAGEN ENVIADA] ${fileName} entregada exitosamente a WhatsApp ${to} (media_id: ${mediaId})`);
-            } else {
-                await axios.post(
-                    url,
-                    {
+                    : {
                         messaging_product: 'whatsapp',
                         recipient_type: 'individual',
                         to: to,
@@ -3379,20 +3628,29 @@ async function sendWhatsAppMessage(to, messageText, documentAttachment = null) {
                             filename: fileName,
                             caption: `📄 ${documentAttachment.title} (Validez Oficial SEP: ${documentAttachment.rvoe || 'Oficial UNID'})`
                         }
-                    },
-                    {
-                        headers: {
-                            'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
-                            'Content-Type': 'application/json'
-                        }
-                    }
-                );
-                console.log(`✅ [DOCUMENTO ENVIADO] ${fileName} entregado exitosamente a WhatsApp ${to} (media_id: ${mediaId})`);
+                    };
+                const resp = await axios.post(url, mediaPayload, { headers, timeout: 12000 });
+                return { resp, isImage };
+            };
+
+            let mediaId = await uploadMediaToWhatsAppCloud(buffer, mimeType, fileName);
+            try {
+                const { resp, isImage } = await sendMediaWithId(mediaId);
+                resultIds.mediaMessageId = resp.data?.messages?.[0]?.id || null;
+                console.log(`✅ [${isImage ? 'IMAGEN' : 'DOCUMENTO'} ENVIADO] ${fileName} entregado a WhatsApp ${to} (media_id: ${mediaId})`);
+            } catch (mediaErr) {
+                // Si el media_id cacheado expiró en Meta, refrescar y reintentar 1 vez
+                console.warn(`⚠️ [META MEDIA RETRY] Refrescando media_id para ${fileName}: ${mediaErr.message}`);
+                mediaId = await uploadMediaToWhatsAppCloud(buffer, mimeType, fileName, { forceRefresh: true });
+                const { resp, isImage } = await sendMediaWithId(mediaId);
+                resultIds.mediaMessageId = resp.data?.messages?.[0]?.id || null;
+                console.log(`✅ [${isImage ? 'IMAGEN' : 'DOCUMENTO'} ENVIADO] ${fileName} entregado tras refresh (media_id: ${mediaId})`);
             }
         }
     } catch (error) {
         console.error('❌ Error enviando mensaje/documento a WhatsApp API:', error.response?.data || error.message);
     }
+    return resultIds;
 }
 
 // ==========================================
@@ -3579,6 +3837,7 @@ app.post('/api/ciclos', authMiddleware, async (req, res) => {
         `, [sedeId, cleanCiclo, JSON.stringify(list), req.user?.correo_institucional || 'Admin']);
 
         activeSchoolCyclesMemory.set(sedeId, cleanCiclo);
+        activeSchoolCyclesFetchedAt.set(sedeId, Date.now());
         console.log(`📅 [CICLO ESCOLAR ACTIVO] Sede '${sedeId}' actualizada a ciclo: ${cleanCiclo}`);
 
         const formattedCiclos = list.map((c, idx) => ({
@@ -3877,6 +4136,7 @@ async function handleCreatePoolResource(req, res) {
             UNID_BROCHURES.push(newBrochureCompat);
         }
         saveBrochuresToDisk();
+        invalidatePoolCache();
 
         console.log(`➕ [POOL MULTIMEDIA CREADO] [${finalCategoria.toUpperCase()}] ${finalTitle} (${codigoRecurso})`);
         return res.status(201).json({ success: true, item: newBrochureCompat, brochure: newBrochureCompat });
@@ -3997,6 +4257,7 @@ async function handleUpdatePoolResource(req, res) {
             UNID_BROCHURES[bIndex] = { ...UNID_BROCHURES[bIndex], ...updatedObj };
             saveBrochuresToDisk();
         }
+        invalidatePoolCache();
 
         console.log(`✏️ [POOL MULTIMEDIA ACTUALIZADO] ${finalTitle} (${codigoRecurso})`);
         return res.json({ success: true, item: updatedObj, brochure: updatedObj });
@@ -4019,6 +4280,7 @@ async function handleDeletePoolResource(req, res) {
             UNID_BROCHURES.splice(index, 1);
             saveBrochuresToDisk();
         }
+        invalidatePoolCache();
         console.log(`🗑️ [POOL MULTIMEDIA ELIMINADO] Recurso (${id})`);
         return res.json({ success: true, message: 'Recurso eliminado exitosamente del Pool.' });
     } catch (err) {
@@ -5792,9 +6054,27 @@ app.post('/webhook', webhookLimiter, verifyMetaWebhookSignature, async (req, res
                     const value = change.value;
                     if (!value) continue;
 
-                    // Si es solo una actualización de entrega o lectura (statuses), ignorar
-                    if (value.statuses && (!value.messages || value.messages.length === 0)) {
-                        continue;
+                    // Registrar actualizaciones reales de entrega/lectura/error (sent, delivered, read, failed)
+                    if (Array.isArray(value.statuses) && value.statuses.length > 0) {
+                        for (const st of value.statuses) {
+                            if (!st?.id) continue;
+                            const firstErr = Array.isArray(st.errors) && st.errors[0]
+                                ? `${st.errors[0].code || ''} ${st.errors[0].title || st.errors[0].message || ''}`.trim()
+                                : null;
+                            whatsappMessageStatuses.set(st.id, {
+                                status: st.status || 'unknown',
+                                timestamp: st.timestamp ? new Date(Number(st.timestamp) * 1000).toISOString() : new Date().toISOString(),
+                                recipientId: st.recipient_id || null,
+                                error: firstErr
+                            });
+                            if (whatsappMessageStatuses.size > 3000) {
+                                whatsappMessageStatuses.delete(whatsappMessageStatuses.keys().next().value);
+                            }
+                            if (st.status === 'failed' && firstErr) {
+                                console.error(`❌ [WHATSAPP DELIVERY FAILED] Para ${st.recipient_id || '?'} (${st.id.slice(-10)}): ${firstErr}`);
+                            }
+                        }
+                        if (!value.messages || value.messages.length === 0) continue;
                     }
 
                     if (Array.isArray(value.messages)) {
@@ -5820,7 +6100,10 @@ app.post('/webhook', webhookLimiter, verifyMetaWebhookSignature, async (req, res
                             } else if (messageObj.type === 'button' && messageObj.button?.text) {
                                 messageText = messageObj.button.text.trim();
                             } else if (messageObj.type === 'interactive') {
-                                messageText = messageObj.interactive?.button_reply?.title || messageObj.interactive?.list_reply?.title || '';
+                                messageText = messageObj.interactive?.button_reply?.title
+                                    || messageObj.interactive?.list_reply?.title
+                                    || messageObj.interactive?.nfm_reply?.response_json
+                                    || '';
                             }
 
                             if (!messageText) {
@@ -5832,32 +6115,55 @@ app.post('/webhook', webhookLimiter, verifyMetaWebhookSignature, async (req, res
                             const canonical = normalizePhoneCanonical(senderPhone) || senderPhone;
                             console.log(`📩 [WHATSAPP MENSAJE] De [${senderPhone}]: "${messageText}"`);
 
-                            // Verificar si la IA está pausada por un asesor humano (Human Handover)
-                            const session = userSessionState.get(canonical) || userSessionState.get(senderPhone);
-                            if (session && session.isPaused) {
-                                console.log(`⏸️ [CONTROL HUMANO] Mensaje recibido de [${senderPhone}]: "${messageText}". Metal-Uriel está en pausa.`);
-                                if (!conversationMemory.has(canonical)) {
-                                    conversationMemory.set(canonical, []);
-                                }
-                                conversationMemory.get(canonical).push({
-                                    role: 'user',
-                                    content: messageText,
-                                    whatsappMessageId: messageId || null,
-                                    timestamp: new Date()
-                                });
-                                touchUserSession(canonical);
-                                // Resguardar PERMANENTEMENTE en MariaDB incluso durante Control Humano
-                                await guardarMensajeHistorialBD(senderPhone, 'user', messageText, session.leadData?.sede_id || 'campeche', {
-                                    senderName: session.leadData?.nombre_completo || 'Aspirante',
-                                    whatsappMessageId: messageId || null
-                                });
-                                continue;
+                            // Marcar como leído (✓✓ azules) + indicador nativo "escribiendo..." al instante (no bloqueante)
+                            if (messageId) {
+                                sendWhatsAppReadAndTyping(messageId).catch(() => {});
                             }
 
-                            const result = await processChatMessage(senderPhone, messageText, null, 'campeche', {
-                                whatsappMessageId: messageId || null
+                            // Procesar concurrentemente entre usuarios distintos y en orden estricto por teléfono
+                            enqueuePhoneTask(canonical, async () => {
+                                const tWebhookStart = Date.now();
+                                const session = userSessionState.get(canonical) || userSessionState.get(senderPhone);
+                                if (session && session.isPaused) {
+                                    console.log(`⏸️ [CONTROL HUMANO] Mensaje recibido de [${senderPhone}]: "${messageText}". Metal-Uriel está en pausa.`);
+                                    if (!conversationMemory.has(canonical)) {
+                                        conversationMemory.set(canonical, []);
+                                    }
+                                    conversationMemory.get(canonical).push({
+                                        role: 'user',
+                                        content: messageText,
+                                        whatsappMessageId: messageId || null,
+                                        timestamp: new Date()
+                                    });
+                                    touchUserSession(canonical);
+                                    await guardarMensajeHistorialBD(senderPhone, 'user', messageText, session.leadData?.sede_id || 'campeche', {
+                                        senderName: session.leadData?.nombre_completo || 'Aspirante',
+                                        whatsappMessageId: messageId || null
+                                    });
+                                    return;
+                                }
+
+                                const result = await processChatMessage(senderPhone, messageText, null, 'campeche', {
+                                    whatsappMessageId: messageId || null,
+                                    deferPersist: true
+                                });
+
+                                // Enviar respuesta a WhatsApp EN PARALELO con el guardado final en MariaDB (cero latencia extra)
+                                const [waSendRes] = await Promise.allSettled([
+                                    sendWhatsAppMessage(senderPhone, result.reply, result.documentAttachment),
+                                    result.persistPromise
+                                ]);
+                                const waIds = waSendRes.status === 'fulfilled' ? waSendRes.value : null;
+                                if (waIds?.textMessageId) {
+                                    const memHist = conversationMemory.get(canonical);
+                                    if (memHist && memHist.length > 0 && memHist[memHist.length - 1].role === 'assistant') {
+                                        memHist[memHist.length - 1].whatsappMessageId = waIds.textMessageId;
+                                    }
+                                }
+                                console.log(`⚡ [WEBHOOK TURN TOTAL] [${senderPhone}] respondido en ${Date.now() - tWebhookStart} ms (IA: ${result.latencyMs || '?'} ms, modelo: ${result.modelUsed})`);
+                            }).catch((taskErr) => {
+                                console.error(`❌ Error en cola de procesamiento [${senderPhone}]:`, taskErr);
                             });
-                            await sendWhatsAppMessage(senderPhone, result.reply, result.documentAttachment);
                         }
                     }
                 }
@@ -5897,6 +6203,8 @@ function formatAuditedMessage(m, idx, aspiranteNombre) {
     const audit = formatSenderAudit(rol, remitenteNombre, modeloIa, aspiranteNombre);
     const ts = m.timestamp ? new Date(m.timestamp) : new Date();
     const validTs = isNaN(ts.getTime()) ? new Date() : ts;
+    const wamid = m.whatsapp_message_id || m.whatsappMessageId || null;
+    const statusMeta = wamid ? (whatsappMessageStatuses.get(wamid) || null) : null;
     return {
         id: m.id || `mem_${idx + 1}`,
         seq: idx + 1,
@@ -5906,7 +6214,9 @@ function formatAuditedMessage(m, idx, aspiranteNombre) {
         senderName: audit.displayAuthor,
         displayAuthor: audit.displayAuthor,
         modelUsed: modeloIa,
-        whatsappMessageId: m.whatsapp_message_id || m.whatsappMessageId || null,
+        whatsappMessageId: wamid,
+        deliveryStatus: statusMeta ? statusMeta.status : null,
+        deliveryError: statusMeta ? statusMeta.error : null,
         text: String(m.mensaje ?? m.content ?? m.text ?? ''),
         time: validTs.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         fullDateTime: formatFullDateTimeEsMx(validTs),
@@ -6467,8 +6777,6 @@ app.post('/api/conversations/send-message', authMiddleware, async (req, res) => 
         const msgObj = { role: 'human_advisor', senderName: advisorName, content: message.trim(), timestamp: new Date() };
         conversationMemory.get(canonical).push(msgObj);
         const targetSede = (req.user.rol !== 'desarrollador' && req.user.sede_id) ? req.user.sede_id : 'campeche';
-        await guardarMensajeHistorialBD(dialPhone, 'human_advisor', message.trim(), targetSede, { senderName: advisorName });
-
         if (!userSessionState.has(canonical)) {
             userSessionState.set(canonical, { isRegistered: false, isPaused: false, lastActivityAt: Date.now() });
         } else {
@@ -6476,8 +6784,15 @@ app.post('/api/conversations/send-message', authMiddleware, async (req, res) => 
         }
         if (pauseAi !== undefined) userSessionState.get(canonical).isPaused = Boolean(pauseAi);
 
-        await sendWhatsAppMessage(dialPhone, message.trim());
-        res.json({ success: true, message: msgObj, isPaused: userSessionState.get(canonical).isPaused, canonicalPhone: canonical });
+        // Enviar a WhatsApp y guardar en MariaDB EN PARALELO para respuesta instantánea al asesor
+        const [waRes] = await Promise.all([
+            sendWhatsAppMessage(dialPhone, message.trim()),
+            guardarMensajeHistorialBD(dialPhone, 'human_advisor', message.trim(), targetSede, { senderName: advisorName }).catch(() => {})
+        ]);
+        if (waRes?.textMessageId) {
+            msgObj.whatsappMessageId = waRes.textMessageId;
+        }
+        res.json({ success: true, message: msgObj, isPaused: userSessionState.get(canonical).isPaused, canonicalPhone: canonical, whatsappMessageId: waRes?.textMessageId || null });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -6799,12 +7114,36 @@ app.post('/api/setup/test-ai', setupAccessGuard, async (req, res) => {
         const t0 = Date.now();
         if (provider === 'google') {
             const client = new GoogleGenAI({ apiKey: effectiveKey });
-            const resp = await client.models.generateContent({
-                model: 'gemini-3.8-flash',
-                contents: 'Responde solo OK'
-            });
-            if (!resp.text) throw new Error('Sin texto devuelto por Gemini.');
-            return res.json({ ok: true, latencyMs: Date.now() - t0, message: `Google Gemini 3.8 Flash verificado (${Date.now() - t0} ms).` });
+            const testCandidates = [
+                { model: 'gemini-3.5-flash-lite', thinkingLevel: 'minimal' },
+                { model: 'gemini-4-hydrogen', thinkingLevel: 'low' }
+            ];
+            let verifiedModel = null;
+            let lastTestErr = null;
+            for (const c of testCandidates) {
+                try {
+                    const resp = await withTimeout(
+                        client.models.generateContent({
+                            model: c.model,
+                            contents: 'Responde solo OK',
+                            config: {
+                                maxOutputTokens: c.thinkingLevel === 'minimal' ? 32 : 512,
+                                thinkingConfig: { thinkingLevel: c.thinkingLevel }
+                            }
+                        }),
+                        8000,
+                        `Test Gemini (${c.model})`
+                    );
+                    if (resp.text) {
+                        verifiedModel = c.model;
+                        break;
+                    }
+                } catch (gErr) {
+                    lastTestErr = gErr;
+                }
+            }
+            if (!verifiedModel) throw lastTestErr || new Error('Sin respuesta de Google Gemini.');
+            return res.json({ ok: true, latencyMs: Date.now() - t0, message: `Google Gemini (${verifiedModel}) verificado en ${Date.now() - t0} ms.` });
         } else if (provider === 'openai') {
             const client = new OpenAI({ apiKey: effectiveKey });
             await client.models.list();
@@ -6847,7 +7186,7 @@ app.post('/api/setup/test-whatsapp', setupAccessGuard, async (req, res) => {
 
     try {
         const r = await axios.get(
-            `https://graph.facebook.com/v20.0/${phoneId}?fields=display_phone_number,verified_name,quality_rating`,
+            `https://graph.facebook.com/${META_GRAPH_VERSION}/${phoneId}?fields=display_phone_number,verified_name,quality_rating`,
             { headers: { Authorization: `Bearer ${token}` }, timeout: 8000 }
         );
         res.json({
@@ -7139,6 +7478,13 @@ module.exports = {
     setProviderCooldown,
     isProviderInCooldown,
     getProviderCooldownRemaining,
+    setModelCooldown,
+    isModelInCooldown,
+    withTimeout,
+    enqueuePhoneTask,
+    metaMediaIdCache,
+    whatsappMessageStatuses,
+    getMetaGraphVersion: () => META_GRAPH_VERSION,
     verifyMetaWebhookSignature,
     runMemoryCleanup,
     closePool: () => dbPool.end()
