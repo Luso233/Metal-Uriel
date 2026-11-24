@@ -1,4 +1,5 @@
-require('dotenv').config();
+const dotenv = require('dotenv');
+dotenv.config();
 const express = require('express');
 const mysql = require('mysql2/promise');
 const { GoogleGenAI } = require('@google/genai');
@@ -10,12 +11,13 @@ const fs = require('fs');
 const nodemailer = require('nodemailer');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+const setupUtils = require('./lib/setup-utils');
 
 // ==========================================
 // Módulo Criptográfico AES-256-GCM para Secretos Multi-Tenant (SaaS)
 // ==========================================
-const ENCRYPTION_MASTER_KEY = process.env.ENCRYPTION_MASTER_KEY || process.env.JWT_SECRET || 'unid_metal_uriel_saas_encryption_key_2026';
-const CRYPTO_KEY = crypto.createHash('sha256').update(ENCRYPTION_MASTER_KEY).digest();
+let ENCRYPTION_MASTER_KEY = process.env.ENCRYPTION_MASTER_KEY || process.env.JWT_SECRET || 'unid_metal_uriel_saas_encryption_key_2026';
+let CRYPTO_KEY = crypto.createHash('sha256').update(ENCRYPTION_MASTER_KEY).digest();
 
 function encryptSecret(plainText) {
     if (!plainText || typeof plainText !== 'string' || !plainText.trim()) return null;
@@ -88,6 +90,9 @@ function verifyPassword(plainPassword, storedHash) {
 
 process.on('uncaughtException', (err) => {
     console.error('🔥 Error no capturado (uncaughtException):', err);
+    if (typeof enviarAlertaSistema === 'function') {
+        enviarAlertaSistema('UNCAUGHT_EXCEPTION', 'Excepción no capturada en Metal-Uriel', err?.stack || err?.message || String(err)).catch(() => {});
+    }
 });
 
 process.on('unhandledRejection', (reason, promise) => {
@@ -103,10 +108,11 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 }
 app.use(express.static(path.join(__dirname, 'public')));
 
-const PORT = process.env.PORT || 3000;
-const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || 'mi_token_secreto_123';
-const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
-const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
+const HOST = process.env.HOST || '0.0.0.0';
+const PORT = Number(process.env.PORT) || 3000;
+let VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || 'mi_token_secreto_123';
+let WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || '';
+let WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || '';
 
 // ==========================================
 // Catálogo de Sedes Oficiales UNID (Nacional)
@@ -137,31 +143,74 @@ const UNID_CAMPUSES = [
     { id: 'online_nacional', name: 'UNID Online (Nacional 100% Virtual)', estado: 'Nacional', region: 'Virtual' }
 ];
 
-// Configuración de Autenticación JWT
-const JWT_SECRET = process.env.JWT_SECRET || 'unid_metal_uriel_jwt_secret_key_2026';
-const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'unid2026';
+// Configuración de Autenticación JWT (hot-reloadable tras Setup Wizard)
+let JWT_SECRET = process.env.JWT_SECRET || 'unid_metal_uriel_jwt_secret_key_2026';
+let ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+let ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'unid2026';
+
+function isProductionHardened() {
+    return process.env.SETUP_COMPLETED === 'true' || process.env.NODE_ENV === 'production';
+}
 
 // ==========================================
-// 1. Configuración del Pool de MariaDB (mysql2/promise)
+// 1. Configuración del Pool de MariaDB (mysql2/promise) + Bootstrap Plug & Play
 // ==========================================
-const dbPool = mysql.createPool({
-    host: process.env.DB_HOST || 'localhost',
-    port: Number(process.env.DB_PORT) || 3306,
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'unid_admisiones',
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0
-});
+function createMariaPool() {
+    return mysql.createPool({
+        host: process.env.DB_HOST || 'localhost',
+        port: Number(process.env.DB_PORT) || 3306,
+        user: process.env.DB_USER || 'root',
+        password: process.env.DB_PASSWORD || '',
+        database: process.env.DB_NAME || 'unid_admisiones',
+        waitForConnections: true,
+        connectionLimit: 10,
+        queueLimit: 0
+    });
+}
 
-// Auto-migraciones para columnas avanzadas (Kanban, Sedes SaaS Multi-Tenant y Cifrado)
-(async () => {
+let dbPool = createMariaPool();
+let isDatabaseReady = false;
+
+async function initializeDatabase(options = {}) {
+    const dbHost = process.env.DB_HOST || 'localhost';
+    const dbPort = Number(process.env.DB_PORT) || 3306;
+    const dbUser = process.env.DB_USER || 'root';
+    const dbPassword = process.env.DB_PASSWORD || '';
+    const dbName = (process.env.DB_NAME || 'unid_admisiones').replace(/[^a-zA-Z0-9_]/g, '') || 'unid_admisiones';
+    const primaryCampus = options.primaryCampus || process.env.PRIMARY_CAMPUS || 'campeche';
+
+    // Paso 0: Crear base de datos automáticamente si aún no existe (Plug & Play sobre MariaDB virgen)
+    let bootstrapConn = null;
     try {
-        const connection = await dbPool.getConnection();
-        console.log('✅ Conexión exitosa al pool de MariaDB');
-        
+        bootstrapConn = await mysql.createConnection({
+            host: dbHost,
+            port: dbPort,
+            user: dbUser,
+            password: dbPassword,
+            connectTimeout: 8000
+        });
+        await bootstrapConn.query(`CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
+        await bootstrapConn.end();
+        bootstrapConn = null;
+    } catch (bootErr) {
+        if (bootstrapConn) { try { await bootstrapConn.end(); } catch (_) {} }
+        isDatabaseReady = false;
+        console.warn('⚠️ No se pudo conectar/crear la base de datos en MariaDB:', bootErr.message);
+        if (options.throwOnError) throw bootErr;
+        return { ok: false, error: bootErr.message };
+    }
+
+    // Reconstruir pool si se solicitó (por ejemplo, tras Setup Wizard)
+    if (options.rebuildPool) {
+        try { await dbPool.end(); } catch (_) {}
+        dbPool = createMariaPool();
+    }
+
+    let connection = null;
+    try {
+        connection = await dbPool.getConnection();
+        console.log(`✅ Conexión exitosa al pool de MariaDB (${dbHost}:${dbPort}/${dbName})`);
+
         // 1. Crear tabla sedes si no existe
         await connection.query(`
             CREATE TABLE IF NOT EXISTS sedes (
@@ -185,28 +234,44 @@ const dbPool = mysql.createPool({
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         `);
 
-        // 2. Poblar sedes base si la tabla está vacía
+        // 2. Poblar sedes base si la tabla está vacía (o actualizar credenciales de sede principal tras wizard)
         try {
             const [sedesCount] = await connection.query('SELECT COUNT(*) as count FROM sedes');
             if (sedesCount[0].count === 0) {
                 console.log('🏛️ Inicializando catálogo base de Sedes UNID en MariaDB...');
                 for (const campus of UNID_CAMPUSES) {
-                    const isCampeche = campus.id === 'campeche';
-                    const encryptedWaToken = isCampeche && WHATSAPP_TOKEN ? encryptSecret(WHATSAPP_TOKEN) : null;
-                    const phoneId = isCampeche ? (WHATSAPP_PHONE_NUMBER_ID || null) : null;
-                    const email = isCampeche ? (process.env.ADMISSIONS_NOTIFICATION_EMAIL || 'admisiones.campeche@unid.mx') : null;
+                    const isPrimary = campus.id === primaryCampus;
+                    const encryptedWaToken = isPrimary && WHATSAPP_TOKEN ? encryptSecret(WHATSAPP_TOKEN) : null;
+                    const phoneId = isPrimary ? (WHATSAPP_PHONE_NUMBER_ID || null) : null;
+                    const email = isPrimary ? (process.env.ADMISSIONS_NOTIFICATION_EMAIL || `admisiones.${campus.id}@unid.mx`) : null;
 
                     await connection.execute(`
-                        INSERT INTO sedes (slug, nombre, estado, region, whatsapp_phone_number_id, whatsapp_token_encrypted, email_notificaciones, activa)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-                    `, [campus.id, campus.name, campus.estado, campus.region, phoneId, encryptedWaToken, email]);
+                        INSERT INTO sedes (slug, nombre, estado, region, whatsapp_phone_number_id, whatsapp_token_encrypted, meta_verify_token, email_notificaciones, activa)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    `, [campus.id, campus.name, campus.estado, campus.region, phoneId, encryptedWaToken, VERIFY_TOKEN, email]);
                 }
+            } else if (options.syncPrimaryCampusCreds) {
+                const encryptedWaToken = WHATSAPP_TOKEN ? encryptSecret(WHATSAPP_TOKEN) : null;
+                await connection.execute(`
+                    UPDATE sedes
+                    SET whatsapp_phone_number_id = COALESCE(?, whatsapp_phone_number_id),
+                        whatsapp_token_encrypted = COALESCE(?, whatsapp_token_encrypted),
+                        meta_verify_token = ?,
+                        email_notificaciones = COALESCE(?, email_notificaciones)
+                    WHERE slug = ?
+                `, [
+                    WHATSAPP_PHONE_NUMBER_ID || null,
+                    encryptedWaToken,
+                    VERIFY_TOKEN,
+                    process.env.ADMISSIONS_NOTIFICATION_EMAIL || null,
+                    primaryCampus
+                ]);
             }
         } catch (seedErr) {
-            console.warn('⚠️ Error poblando sedes iniciales:', seedErr.message);
+            console.warn('⚠️ Error poblando/actualizando sedes iniciales:', seedErr.message);
         }
 
-        // 3. Crear tabla de usuarios RBAC si no existe y sembrar los 3 niveles base
+        // 3. Crear tabla de usuarios RBAC si no existe
         await connection.query(`
             CREATE TABLE IF NOT EXISTS usuarios (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -227,47 +292,131 @@ const dbPool = mysql.createPool({
         `);
 
         try {
-            const [usersCount] = await connection.query('SELECT COUNT(*) as count FROM usuarios');
-            if (usersCount[0].count === 0) {
-                console.log('🔐 Inicializando cuentas RBAC base (Desarrollador, Administrador, Usuario)...');
-                const initialUsers = [
-                    {
-                        correo: '00774343@red.unid.mx',
-                        nombre: 'Luis Felipe Quintero (Desarrollador / Superadmin)',
-                        matricula: '00774343',
-                        pass: hashPassword('admin'),
-                        rol: 'desarrollador',
-                        sede: null
-                    },
-                    {
-                        correo: 'admin.campeche@red.unid.mx',
-                        nombre: 'Dir. Admisiones Campeche (Administrador Sede)',
-                        matricula: '00881122',
-                        pass: hashPassword('admin2026'),
-                        rol: 'administrador',
-                        sede: 'campeche'
-                    },
-                    {
-                        correo: '67676767@red.unid.mx',
-                        nombre: 'Lic. Asesor de Admisiones (Operativo)',
-                        matricula: '67676767',
-                        pass: hashPassword('user'),
-                        rol: 'usuario',
-                        sede: 'campeche'
+            if (options.customDevUser && options.customDevUser.correo_institucional) {
+                const dev = options.customDevUser;
+                const devMat = dev.matricula || dev.correo_institucional.split('@')[0];
+                const [existingDev] = await connection.query('SELECT id FROM usuarios WHERE correo_institucional = ? LIMIT 1', [dev.correo_institucional]);
+                if (existingDev.length > 0) {
+                    if (dev.password) {
+                        await connection.execute(
+                            'UPDATE usuarios SET nombre_completo = ?, password = ?, rol = "desarrollador", sede_id = NULL, activo = 1 WHERE id = ?',
+                            [dev.nombre_completo, hashPassword(dev.password), existingDev[0].id]
+                        );
                     }
-                ];
-                for (const u of initialUsers) {
+                } else {
+                    await connection.execute(
+                        'INSERT INTO usuarios (correo_institucional, nombre_completo, matricula, password, rol, sede_id, activo) VALUES (?, ?, ?, ?, "desarrollador", NULL, 1)',
+                        [dev.correo_institucional, dev.nombre_completo, devMat, hashPassword(dev.password)]
+                    );
+                }
+                if (options.customAdminUser && options.customAdminUser.correo_institucional && options.customAdminUser.password) {
+                    const adm = options.customAdminUser;
+                    const admMat = adm.matricula || adm.correo_institucional.split('@')[0];
                     await connection.execute(`
                         INSERT INTO usuarios (correo_institucional, nombre_completo, matricula, password, rol, sede_id, activo)
-                        VALUES (?, ?, ?, ?, ?, ?, 1)
-                    `, [u.correo, u.nombre, u.matricula, u.pass, u.rol, u.sede]);
+                        VALUES (?, ?, ?, ?, 'administrador', ?, 1)
+                        ON DUPLICATE KEY UPDATE nombre_completo = VALUES(nombre_completo), password = VALUES(password), sede_id = VALUES(sede_id), activo = 1
+                    `, [adm.correo_institucional, adm.nombre_completo || 'Administrador de Sede UNID', admMat, hashPassword(adm.password), primaryCampus]);
+                }
+            } else {
+                const [usersCount] = await connection.query('SELECT COUNT(*) as count FROM usuarios');
+                if (usersCount[0].count === 0 && !isProductionHardened()) {
+                    console.log('🔐 Inicializando cuentas RBAC base de desarrollo (Desarrollador, Administrador, Usuario)...');
+                    const initialUsers = [
+                        {
+                            correo: '00774343@red.unid.mx',
+                            nombre: 'Luis Felipe Quintero (Desarrollador / Superadmin)',
+                            matricula: '00774343',
+                            pass: hashPassword('admin'),
+                            rol: 'desarrollador',
+                            sede: null
+                        },
+                        {
+                            correo: 'admin.campeche@red.unid.mx',
+                            nombre: 'Dir. Admisiones Campeche (Administrador Sede)',
+                            matricula: '00881122',
+                            pass: hashPassword('admin2026'),
+                            rol: 'administrador',
+                            sede: 'campeche'
+                        },
+                        {
+                            correo: '67676767@red.unid.mx',
+                            nombre: 'Lic. Asesor de Admisiones (Operativo)',
+                            matricula: '67676767',
+                            pass: hashPassword('user'),
+                            rol: 'usuario',
+                            sede: 'campeche'
+                        }
+                    ];
+                    for (const u of initialUsers) {
+                        await connection.execute(`
+                            INSERT INTO usuarios (correo_institucional, nombre_completo, matricula, password, rol, sede_id, activo)
+                            VALUES (?, ?, ?, ?, ?, ?, 1)
+                        `, [u.correo, u.nombre, u.matricula, u.pass, u.rol, u.sede]);
+                    }
                 }
             }
         } catch (userSeedErr) {
             console.warn('⚠️ Error poblando usuarios RBAC iniciales:', userSeedErr.message);
         }
 
-        // 4. Migraciones de la tabla aspirantes, historial, ciclos escolares y pool multimedia
+        // 4. Crear tabla aspirantes y bitacora_notificaciones_correo si no existen (100% Plug & Play sin importar schema.sql a mano!)
+        await connection.query(`
+            CREATE TABLE IF NOT EXISTS aspirantes (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                sede_id VARCHAR(50) NULL DEFAULT 'campeche',
+                nombre_completo VARCHAR(255) NOT NULL,
+                fecha_nacimiento DATE NULL,
+                sexo VARCHAR(30) NULL,
+                estado_nacimiento VARCHAR(100) NULL,
+                curp VARCHAR(18) NULL,
+                telefono_celular VARCHAR(30) NOT NULL,
+                correo_electronico VARCHAR(255) NULL,
+                bachillerato_procedencia VARCHAR(255) NULL,
+                carrera_interes VARCHAR(255) NOT NULL,
+                direccion TEXT NULL,
+                codigo_postal VARCHAR(10) NULL,
+                campus_interes VARCHAR(100) NOT NULL,
+                modalidad_estudios VARCHAR(100) NOT NULL,
+                ciclo_escolar VARCHAR(60) DEFAULT '2026-3 Septiembre',
+                es_foraneo BOOLEAN DEFAULT FALSE,
+                aviso_privacidad_aceptado TINYINT(1) DEFAULT 1,
+                estado_prospecto VARCHAR(50) DEFAULT 'nuevo',
+                nivel_interes VARCHAR(20) DEFAULT 'Alto',
+                resumen_ia TEXT NULL,
+                archivado TINYINT(1) DEFAULT 0,
+                ultimo_mensaje_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                latitud DECIMAL(10, 8) NULL DEFAULT NULL,
+                longitud DECIMAL(11, 8) NULL DEFAULT NULL,
+                raw_json_data JSON NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_sede_id (sede_id),
+                INDEX idx_telefono (telefono_celular),
+                INDEX idx_carrera (carrera_interes),
+                INDEX idx_campus (campus_interes),
+                INDEX idx_ciclo (ciclo_escolar),
+                INDEX idx_estado (estado_prospecto),
+                INDEX idx_archivado (archivado)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `);
+
+        await connection.query(`
+            CREATE TABLE IF NOT EXISTS bitacora_notificaciones_correo (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                evento_tipo VARCHAR(60) NOT NULL,
+                destinatario VARCHAR(255) NOT NULL,
+                asunto VARCHAR(255) NOT NULL,
+                estado VARCHAR(80) NOT NULL DEFAULT 'enviado',
+                transporte VARCHAR(60) NULL,
+                detalle TEXT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_correo_evento (evento_tipo),
+                INDEX idx_correo_fecha (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `);
+
+        // 4.5. Migraciones incrementales de las 8 tablas
         const migrations = [
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS curp VARCHAR(18) NULL`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS aviso_privacidad_aceptado TINYINT(1) DEFAULT 1`,
@@ -406,11 +555,20 @@ const dbPool = mysql.createPool({
             console.warn('⚠️ Error poblando pool_recursos_multimedia:', poolErr.message);
         }
 
+        isDatabaseReady = true;
         connection.release();
+        return { ok: true };
     } catch (err) {
+        if (connection) { try { connection.release(); } catch (_) {} }
+        isDatabaseReady = false;
         console.warn('⚠️ No se pudo conectar a MariaDB (asegúrate de que el servicio esté corriendo):', err.message);
+        if (options.throwOnError) throw err;
+        return { ok: false, error: err.message };
     }
-})();
+}
+
+// Ejecutar auto-inicialización al arranque sin tumbar Express si MariaDB aún no está configurado
+initializeDatabase();
 
 // ==========================================
 // 1.5. Algoritmo Oficial de Generación de CURP (RENAPO)
@@ -1022,44 +1180,90 @@ async function seedDemoLeads(connection) {
 
 // Validación de API Keys configuradas (no vacías y no placeholders)
 function isValidApiKey(key) {
-    return Boolean(key && key.trim().length > 8 && !key.includes('placeholder') && !key.includes('tu_api_key'));
+    return Boolean(key && key.trim().length > 8 && !setupUtils.isPlaceholderValue(key));
 }
 
-// Clientes de IA
+function isOllamaConfigured() {
+    return (
+        String(process.env.OLLAMA_ENABLED || '').toLowerCase() === 'true' &&
+        Boolean(process.env.OLLAMA_BASE_URL && process.env.OLLAMA_BASE_URL.trim().startsWith('http')) &&
+        Boolean(process.env.OLLAMA_MODEL && process.env.OLLAMA_MODEL.trim().length >= 2)
+    );
+}
+
+// Clientes de IA (hot-reloadables tras Setup Wizard)
 let geminiClient = null;
-if (isValidApiKey(process.env.GEMINI_API_KEY)) {
-    geminiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-    console.log('✨ [AI PROVIDER] Google Gemini activado.');
-}
-
 let anthropicClient = null;
-if (isValidApiKey(process.env.ANTHROPIC_API_KEY)) {
-    anthropicClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    console.log('🔮 [AI PROVIDER] Anthropic Claude activado.');
-}
-
 let openaiClient = null;
-if (isValidApiKey(process.env.OPENAI_API_KEY)) {
-    openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    console.log('🤖 [AI PROVIDER] OpenAI activado.');
-}
-
 let deepseekClient = null;
-if (isValidApiKey(process.env.DEEPSEEK_API_KEY)) {
-    deepseekClient = new OpenAI({
-        apiKey: process.env.DEEPSEEK_API_KEY,
-        baseURL: 'https://api.deepseek.com'
-    });
-    console.log('🐳 [AI PROVIDER] DeepSeek activado.');
+let groqClient = null;
+
+function initAiClients() {
+    geminiClient = null;
+    anthropicClient = null;
+    openaiClient = null;
+    deepseekClient = null;
+    groqClient = null;
+
+    if (isValidApiKey(process.env.GEMINI_API_KEY)) {
+        geminiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY.trim() });
+        console.log('✨ [AI PROVIDER] Google Gemini activado.');
+    }
+    if (isValidApiKey(process.env.ANTHROPIC_API_KEY)) {
+        anthropicClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY.trim() });
+        console.log('🔮 [AI PROVIDER] Anthropic Claude activado.');
+    }
+    if (isValidApiKey(process.env.OPENAI_API_KEY)) {
+        openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY.trim() });
+        console.log('🤖 [AI PROVIDER] OpenAI activado.');
+    }
+    if (isValidApiKey(process.env.DEEPSEEK_API_KEY)) {
+        deepseekClient = new OpenAI({
+            apiKey: process.env.DEEPSEEK_API_KEY.trim(),
+            baseURL: 'https://api.deepseek.com'
+        });
+        console.log('🐳 [AI PROVIDER] DeepSeek activado.');
+    }
+    if (isValidApiKey(process.env.GROQ_API_KEY)) {
+        groqClient = new OpenAI({
+            apiKey: process.env.GROQ_API_KEY.trim(),
+            baseURL: 'https://api.groq.com/openai/v1'
+        });
+        console.log('⚡ [AI PROVIDER] Groq Llama activado.');
+    }
+    if (isOllamaConfigured()) {
+        console.log(`🦙 [AI PROVIDER] Ollama Local habilitado como último recurso (${process.env.OLLAMA_BASE_URL} | modelo: ${process.env.OLLAMA_MODEL}).`);
+    }
 }
 
-let groqClient = null;
-if (isValidApiKey(process.env.GROQ_API_KEY)) {
-    groqClient = new OpenAI({
-        apiKey: process.env.GROQ_API_KEY,
-        baseURL: 'https://api.groq.com/openai/v1'
-    });
-    console.log('⚡ [AI PROVIDER] Groq Llama activado.');
+initAiClients();
+
+function reloadRuntimeConfig() {
+    const envPath = path.join(__dirname, '.env');
+    if (fs.existsSync(envPath)) {
+        const parsed = dotenv.parse(fs.readFileSync(envPath, 'utf8'));
+        for (const [k, v] of Object.entries(parsed)) {
+            process.env[k] = v;
+        }
+    }
+    ENCRYPTION_MASTER_KEY = process.env.ENCRYPTION_MASTER_KEY || process.env.JWT_SECRET || 'unid_metal_uriel_saas_encryption_key_2026';
+    CRYPTO_KEY = crypto.createHash('sha256').update(ENCRYPTION_MASTER_KEY).digest();
+    JWT_SECRET = process.env.JWT_SECRET || 'unid_metal_uriel_jwt_secret_key_2026';
+    VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || 'mi_token_secreto_123';
+    WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || '';
+    WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || '';
+    ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+    ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'unid2026';
+    globalActiveModelId = process.env.DEFAULT_AI_MODEL || 'auto-fallback';
+    providerCooldowns.clear();
+    initAiClients();
+    // Actualizar nombre dinámico del modelo Ollama en catálogo
+    const ollamaEntry = ALL_SUPPORTED_MODELS.find(m => m.provider === 'ollama');
+    if (ollamaEntry) {
+        const oModel = (process.env.OLLAMA_MODEL || 'qwen2.5:3b').trim();
+        ollamaEntry.name = `Ollama Local (${oModel})`;
+        ollamaEntry.isConfigured = isOllamaConfigured();
+    }
 }
 
 // Catálogo Completo de Modelos Soportados
@@ -1168,6 +1372,17 @@ const ALL_SUPPORTED_MODELS = [
         badge: 'Ultra Rápido',
         description: 'Inferencia a velocidad ultra rápida en chips LPU.',
         isConfigured: isValidApiKey(process.env.GROQ_API_KEY)
+    },
+    // Ollama Local (Último Recurso Opcional)
+    {
+        id: 'ollama-local',
+        name: `Ollama Local (${(process.env.OLLAMA_MODEL || 'qwen2.5:3b').trim()})`,
+        provider: 'ollama',
+        providerName: 'Ollama Local',
+        icon: '🦙',
+        badge: 'Contingencia Local',
+        description: 'Último eslabón local opcional sin consumo de tokens (requiere servicio Ollama activo y RAM libre suficiente).',
+        isConfigured: isOllamaConfigured()
     }
 ];
 
@@ -1669,17 +1884,57 @@ async function llamarAPI_Groq(modelId, prompt, history) {
     return { reply: replyText, modelUsed: targetModel, provider: 'Groq Cloud' };
 }
 
+// Adaptador 6: Ollama Local (Último Recurso Opcional con Timeout Estricto)
+async function llamarAPI_Ollama(modelId, prompt, history) {
+    if (!isOllamaConfigured()) {
+        throw new Error('Ollama Local está deshabilitado o sin configurar.');
+    }
+
+    const baseUrl = String(process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').replace(/\/+$/, '');
+    const targetModel = (modelId && modelId !== 'ollama-local') ? modelId : String(process.env.OLLAMA_MODEL || 'qwen2.5:3b').trim();
+    const timeoutMs = Math.min(60000, Math.max(5000, Number(process.env.OLLAMA_TIMEOUT_MS) || 15000));
+
+    const headers = { 'Content-Type': 'application/json' };
+    if (process.env.OLLAMA_API_KEY && process.env.OLLAMA_API_KEY.trim()) {
+        headers['Authorization'] = `Bearer ${process.env.OLLAMA_API_KEY.trim()}`;
+    }
+
+    const messages = [
+        { role: 'system', content: prompt },
+        ...history.slice(-10).map(h => ({ role: h.role === 'assistant' ? 'assistant' : 'user', content: h.content }))
+    ];
+
+    const response = await axios.post(
+        `${baseUrl}/api/chat`,
+        {
+            model: targetModel,
+            messages,
+            stream: false,
+            options: {
+                temperature: 0.7,
+                num_predict: 500
+            }
+        },
+        { headers, timeout: timeoutMs }
+    );
+
+    const replyText = response.data?.message?.content?.trim() || '';
+    if (!replyText) throw new Error('Respuesta vacía de Ollama Local.');
+    return { reply: replyText, modelUsed: targetModel, provider: 'Ollama Local' };
+}
+
 // ==========================================
 // 8. Motor de Inferencia en Cascada con Fallback Inteligente y Cooldown
 // ==========================================
 
-// Jerarquía de Fallback Predeterminada
+// Jerarquía de Fallback Predeterminada (Nube primero -> Ollama Local opcional como último eslabón)
 const FALLBACK_PROVIDER_PIPELINE = [
     { provider: 'google', fn: llamarAPI_Gemini, defaultModel: 'gemini-3.8-flash', check: () => isValidApiKey(process.env.GEMINI_API_KEY) },
     { provider: 'anthropic', fn: llamarAPI_Claude, defaultModel: 'claude-3-5-haiku-20241022', check: () => isValidApiKey(process.env.ANTHROPIC_API_KEY) },
     { provider: 'openai', fn: llamarAPI_OpenAI, defaultModel: 'gpt-4o-mini', check: () => isValidApiKey(process.env.OPENAI_API_KEY) },
     { provider: 'deepseek', fn: llamarAPI_DeepSeek, defaultModel: 'deepseek-chat', check: () => isValidApiKey(process.env.DEEPSEEK_API_KEY) },
-    { provider: 'groq', fn: llamarAPI_Groq, defaultModel: 'llama-3.3-70b-versatile', check: () => isValidApiKey(process.env.GROQ_API_KEY) }
+    { provider: 'groq', fn: llamarAPI_Groq, defaultModel: 'llama-3.3-70b-versatile', check: () => isValidApiKey(process.env.GROQ_API_KEY) },
+    { provider: 'ollama', fn: llamarAPI_Ollama, defaultModel: 'ollama-local', check: () => isOllamaConfigured() }
 ];
 
 async function callMetalUrielLLM(senderPhone, userMessage, requestedModelId = null, sedeId = 'campeche') {
@@ -1830,6 +2085,13 @@ INSTRUCCIONES CLAVE DE ATENCIÓN:
 
     // Si todos los proveedores de la jerarquía fallaron
     console.error('🔥 [ERROR TOTAL] Todos los proveedores de IA en la cascada fallaron:', lastError?.message);
+    if (typeof enviarAlertaSistema === 'function') {
+        enviarAlertaSistema(
+            'AI_TOTAL_FAILURE',
+            'Todos los proveedores de IA en la cascada fallaron',
+            `Último error registrado: ${lastError?.message || 'Sin detalle'}\nProspecto afectado: ${senderPhone}\nSede: ${sedeId}`
+        ).catch(() => {});
+    }
     return {
         reply: '¡Bip-bop! 🤖 En este momento mis circuitos están experimentando una alta demanda de aspirantes. Un asesor humano del equipo de Admisiones UNID te atenderá a la brevedad.',
         modelUsed: 'fallback-offline',
@@ -1998,17 +2260,17 @@ async function guardarAspiranteEnBD(datos, senderPhone = null) {
 }
 
 // ==========================================
-// 10. Sistema de Notificaciones por Correo Electrónico (Nodemailer - 3 Eventos Clave)
+// 10. Sistema de Notificaciones por Correo Electrónico (Nodemailer - 3 Eventos + Alertas Life Support)
 // ==========================================
-const TESTING_NOTIFICATION_EMAIL = 'Luisquintero2001@gmail.com';
 const emailNotificationHistory = []; // Bitácora en memoria para auditoría en el Centro de Mando
+const systemAlertCooldowns = new Map(); // alertKey -> timestamp último envío (evita spam de alertas)
 
 async function getMailTransporter() {
     const smtpHost = process.env.SMTP_HOST;
     const smtpUser = process.env.SMTP_USER;
     const smtpPass = process.env.SMTP_PASS;
 
-    if (smtpHost && smtpUser && smtpPass && !smtpPass.includes('tu_app_password')) {
+    if (smtpHost && smtpUser && smtpPass && !setupUtils.isPlaceholderValue(smtpPass)) {
         return {
             transporter: nodemailer.createTransport({
                 host: smtpHost,
@@ -2040,8 +2302,14 @@ async function getMailTransporter() {
 }
 
 async function dispararNotificacionCorreo(eventoTipo, payload = {}) {
-    // Por requerimiento estricto de testing actual: enviar EXCLUSIVAMENTE a Luisquintero2001@gmail.com
-    const destinatario = TESTING_NOTIFICATION_EMAIL;
+    const isSystemAlert = eventoTipo === 'ALERTA_SISTEMA';
+    const destinatario = (
+        payload.to ||
+        (isSystemAlert
+            ? (process.env.ALERT_ADMIN_EMAIL || process.env.ADMISSIONS_NOTIFICATION_EMAIL)
+            : (process.env.ADMISSIONS_NOTIFICATION_EMAIL || process.env.ALERT_ADMIN_EMAIL)) ||
+        'admisiones.campeche@unid.mx'
+    ).trim();
     let subject = '';
     let htmlContent = '';
 
@@ -2142,6 +2410,27 @@ async function dispararNotificacionCorreo(eventoTipo, payload = {}) {
                 </div>
             </div>
         </div>`;
+    } else if (eventoTipo === 'ALERTA_SISTEMA') {
+        const titulo = payload.titulo || 'Incidente Crítico en Servidor Metal-Uriel';
+        const detalle = String(payload.detalle || 'Sin detalle técnico.').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const hw = setupUtils.getSystemHardwareReport(PORT);
+        subject = `🚨 [ALERTA SERVIDOR METAL-URIEL] ${titulo}`;
+        htmlContent = `
+        <div style="font-family: 'Segoe UI', Arial, sans-serif; background: #0B192C; padding: 24px; color: #f8fafc;">
+            <div style="max-width: 620px; margin: 0 auto; background: #1E293B; border-radius: 16px; overflow: hidden; border: 1px solid #7f1d1d; border-top: 6px solid #ef4444;">
+                <div style="padding: 20px 24px; background: #450a0a; border-bottom: 1px solid #7f1d1d;">
+                    <h2 style="margin: 0; font-size: 18px; color: #fecaca;">🚨 Alerta Crítica de Life Support — Metal-Uriel</h2>
+                    <p style="margin: 4px 0 0 0; font-size: 12px; color: #fca5a5;">Host: ${hw.hostname} • ${fechaHora}</p>
+                </div>
+                <div style="padding: 24px;">
+                    <h3 style="margin: 0 0 10px 0; font-size: 16px; color: #fbbf24;">${titulo}</h3>
+                    <pre style="background: #0F172A; border-radius: 10px; padding: 14px; border: 1px solid #334155; font-size: 12px; color: #f8fafc; white-space: pre-wrap; word-break: break-word;">${detalle}</pre>
+                    <p style="margin: 14px 0 0 0; font-size: 12px; color: #94a3b8;">
+                        💻 RAM Libre: ${hw.freeMemGB} GB / ${hw.totalMemGB} GB • URLs LAN: ${hw.lanUrls.join(', ') || 'localhost'}
+                    </p>
+                </div>
+            </div>
+        </div>`;
     }
 
     const nowIso = new Date().toISOString();
@@ -2186,6 +2475,14 @@ async function dispararNotificacionCorreo(eventoTipo, payload = {}) {
         logItem.transport = mode === 'smtp_live' ? 'SMTP Live' : 'Ethereal Test';
         logItem.previewUrl = previewUrl || null;
 
+        // Registrar también en tabla SQL bitacora_notificaciones_correo si MariaDB está en línea
+        if (isDatabaseReady) {
+            dbPool.execute(
+                'INSERT INTO bitacora_notificaciones_correo (evento_tipo, destinatario, asunto, estado, transporte, detalle) VALUES (?, ?, ?, ?, ?, ?)',
+                [eventoTipo, destinatario, subject, logItem.estado, logItem.transport, previewUrl || null]
+            ).catch(() => {});
+        }
+
         console.log(`📧 [EMAIL ENVIADO - ${eventoTipo}] Destinatario: ${destinatario} | Asunto: "${subject}"`);
         if (previewUrl) {
             console.log(`🔗 [VISTA PREVIA DEL CORREO]: ${previewUrl}`);
@@ -2194,9 +2491,28 @@ async function dispararNotificacionCorreo(eventoTipo, payload = {}) {
     } catch (err) {
         logItem.estado = 'error: ' + err.message;
         logItem.status = 'ERROR';
+        if (isDatabaseReady) {
+            dbPool.execute(
+                'INSERT INTO bitacora_notificaciones_correo (evento_tipo, destinatario, asunto, estado, transporte, detalle) VALUES (?, ?, ?, ?, ?, ?)',
+                [eventoTipo, destinatario, subject, 'ERROR', 'SMTP', err.message]
+            ).catch(() => {});
+        }
         console.error(`⚠️ Error enviando correo (${eventoTipo}) a ${destinatario}:`, err.message);
         return logItem;
     }
+}
+
+async function enviarAlertaSistema(alertKey, titulo, detalle, force = false) {
+    const adminEmail = (process.env.ALERT_ADMIN_EMAIL || process.env.ADMISSIONS_NOTIFICATION_EMAIL || '').trim();
+    if (!adminEmail || setupUtils.isPlaceholderValue(adminEmail)) return null;
+    const now = Date.now();
+    const lastSent = systemAlertCooldowns.get(alertKey) || 0;
+    const COOLDOWN_MS = 15 * 60 * 1000; // 15 min anti-spam por tipo de incidente
+    if (!force && (now - lastSent) < COOLDOWN_MS) {
+        return null;
+    }
+    systemAlertCooldowns.set(alertKey, now);
+    return dispararNotificacionCorreo('ALERTA_SISTEMA', { to: adminEmail, titulo, detalle });
 }
 
 async function notificarEquipoAdmisiones(datos, insertId) {
@@ -3464,8 +3780,15 @@ async function handleUserAuth(identifier, password, customName = null) {
         console.warn('⚠️ MariaDB no disponible durante login, aplicando fallback RBAC en memoria:', dbErr.message);
     }
 
-    // 2. Fallback en memoria para las 3 cuentas de los niveles RBAC
-    // Rol 1: Desarrollador (Superadmin)
+    // 2. Fallback en memoria SOLO permitido en modo desarrollo local (DESACTIVADO en producción tras Setup Wizard)
+    if (isProductionHardened()) {
+        return {
+            success: false,
+            error: 'Credenciales institucionales inválidas. Verifica tu correo/matrícula y contraseña.'
+        };
+    }
+
+    // Rol 1: Desarrollador (Superadmin - solo modo demo desarrollo)
     const isDevId = cleanId === '00774343@red.unid.mx' || cleanId === '00774343' || cleanId === 'dev' || cleanId === 'superadmin' || cleanId === ADMIN_USERNAME.toLowerCase();
     const isDevPass = cleanPass === 'admin' || cleanPass === 'unid2026' || cleanPass === ADMIN_PASSWORD;
 
@@ -3881,6 +4204,10 @@ app.get('/api/models', (req, res) => {
             isReady = isValidApiKey(process.env.GROQ_API_KEY);
             inCooldown = isProviderInCooldown('groq');
             cooldownSec = getProviderCooldownRemaining('groq');
+        } else if (m.provider === 'ollama') {
+            isReady = isOllamaConfigured();
+            inCooldown = isProviderInCooldown('ollama');
+            cooldownSec = getProviderCooldownRemaining('ollama');
         }
 
         return {
@@ -3899,7 +4226,8 @@ app.get('/api/models', (req, res) => {
             anthropic: { configured: isValidApiKey(process.env.ANTHROPIC_API_KEY), inCooldown: isProviderInCooldown('anthropic'), cooldownSec: getProviderCooldownRemaining('anthropic') },
             openai: { configured: isValidApiKey(process.env.OPENAI_API_KEY), inCooldown: isProviderInCooldown('openai'), cooldownSec: getProviderCooldownRemaining('openai') },
             deepseek: { configured: isValidApiKey(process.env.DEEPSEEK_API_KEY), inCooldown: isProviderInCooldown('deepseek'), cooldownSec: getProviderCooldownRemaining('deepseek') },
-            groq: { configured: isValidApiKey(process.env.GROQ_API_KEY), inCooldown: isProviderInCooldown('groq'), cooldownSec: getProviderCooldownRemaining('groq') }
+            groq: { configured: isValidApiKey(process.env.GROQ_API_KEY), inCooldown: isProviderInCooldown('groq'), cooldownSec: getProviderCooldownRemaining('groq') },
+            ollama: { configured: isOllamaConfigured(), model: process.env.OLLAMA_MODEL || '', inCooldown: isProviderInCooldown('ollama'), cooldownSec: getProviderCooldownRemaining('ollama') }
         }
     });
 });
@@ -4420,19 +4748,21 @@ app.get('/api/health/full', async (req, res) => {
         dbLatencyMs = Date.now() - t0;
     }
 
-    const hasMeta = Boolean(WHATSAPP_TOKEN && WHATSAPP_PHONE_NUMBER_ID);
+    const hasMeta = Boolean(WHATSAPP_TOKEN && WHATSAPP_PHONE_NUMBER_ID && !setupUtils.isPlaceholderValue(WHATSAPP_TOKEN));
     const hasGemini = isValidApiKey(process.env.GEMINI_API_KEY);
     const hasClaude = isValidApiKey(process.env.ANTHROPIC_API_KEY);
     const hasOpenAi = isValidApiKey(process.env.OPENAI_API_KEY);
     const hasDeepSeek = isValidApiKey(process.env.DEEPSEEK_API_KEY);
     const hasGroq = isValidApiKey(process.env.GROQ_API_KEY);
-    const hasSmtp = Boolean(process.env.ADMISSIONS_NOTIFICATION_EMAIL && process.env.SMTP_HOST);
+    const hasOllama = isOllamaConfigured();
+    const hasSmtp = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS && !setupUtils.isPlaceholderValue(process.env.SMTP_PASS));
 
-    const atLeastOneAI = hasGemini || hasClaude || hasOpenAi || hasDeepSeek || hasGroq;
+    const atLeastOneAI = hasGemini || hasClaude || hasOpenAi || hasDeepSeek || hasGroq || hasOllama;
 
     res.json({
         timestamp: new Date().toISOString(),
         overall: (dbStatus && atLeastOneAI) ? 'healthy' : 'warning',
+        hardware: setupUtils.getSystemHardwareReport(PORT),
         circuitBreaker: {
             cooldownsActive: providerCooldowns.size > 0,
             activeCooldownProviders: Array.from(providerCooldowns.entries()).map(([k, v]) => ({
@@ -4469,18 +4799,24 @@ app.get('/api/health/full', async (req, res) => {
                 groq: {
                     status: hasGroq ? (isProviderInCooldown('groq') ? 'cooldown' : 'online') : 'not_configured',
                     cooldownSec: getProviderCooldownRemaining('groq')
+                },
+                ollama: {
+                    status: hasOllama ? (isProviderInCooldown('ollama') ? 'cooldown' : 'online') : 'disabled',
+                    model: process.env.OLLAMA_MODEL || '',
+                    cooldownSec: getProviderCooldownRemaining('ollama')
                 }
             },
             metaWhatsApp: {
                 status: hasMeta ? 'configured' : 'sandbox_local',
-                tokenPresent: Boolean(WHATSAPP_TOKEN),
-                phoneNumberIdPresent: Boolean(WHATSAPP_PHONE_NUMBER_ID),
+                tokenPresent: Boolean(WHATSAPP_TOKEN && !setupUtils.isPlaceholderValue(WHATSAPP_TOKEN)),
+                phoneNumberIdPresent: Boolean(WHATSAPP_PHONE_NUMBER_ID && !setupUtils.isPlaceholderValue(WHATSAPP_PHONE_NUMBER_ID)),
                 verifyTokenPresent: Boolean(VERIFY_TOKEN)
             },
             notifications: {
                 status: hasSmtp ? 'configured' : 'simulated_console',
                 smtpHost: process.env.SMTP_HOST || 'No configurado',
-                destination: process.env.ADMISSIONS_NOTIFICATION_EMAIL || 'Consola local'
+                destination: process.env.ADMISSIONS_NOTIFICATION_EMAIL || 'Consola local',
+                alertAdminEmail: process.env.ALERT_ADMIN_EMAIL || process.env.ADMISSIONS_NOTIFICATION_EMAIL || 'No configurado'
             }
         }
     });
@@ -4506,8 +4842,9 @@ app.get('/api/health', async (req, res) => {
         hasOpenAiKey: isValidApiKey(process.env.OPENAI_API_KEY),
         hasDeepSeekKey: isValidApiKey(process.env.DEEPSEEK_API_KEY),
         hasGroqKey: isValidApiKey(process.env.GROQ_API_KEY),
+        ollamaEnabled: isOllamaConfigured(),
         activeModel: globalActiveModelId,
-        hasSmtpConfigured: Boolean(process.env.ADMISSIONS_NOTIFICATION_EMAIL && process.env.SMTP_HOST),
+        hasSmtpConfigured: Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS && !setupUtils.isPlaceholderValue(process.env.SMTP_PASS)),
         dbConnected: dbStatus,
         dbError: dbError,
         activeSessions: conversationMemory.size
@@ -4940,17 +5277,529 @@ app.post('/api/conversations/send-brochure', async (req, res) => {
 });
 
 // ==========================================
-// 16. Inicialización del Servidor
+// 15.5. Plug & Play: Asistente de Primera Configuración (First-Run Setup & Live Validators)
 // ==========================================
-const server = app.listen(PORT, () => {
+async function computeSetupStatus() {
+    const envPath = path.join(__dirname, '.env');
+    const hasEnvFile = fs.existsSync(envPath);
+
+    let dbConnected = false;
+    let dbError = null;
+    try {
+        const conn = await dbPool.getConnection();
+        await conn.query('SELECT 1');
+        conn.release();
+        dbConnected = true;
+        isDatabaseReady = true;
+    } catch (e) {
+        dbError = e.message;
+        isDatabaseReady = false;
+    }
+
+    const hasCloudAi =
+        isValidApiKey(process.env.GEMINI_API_KEY) ||
+        isValidApiKey(process.env.ANTHROPIC_API_KEY) ||
+        isValidApiKey(process.env.OPENAI_API_KEY) ||
+        isValidApiKey(process.env.DEEPSEEK_API_KEY) ||
+        isValidApiKey(process.env.GROQ_API_KEY);
+    const hasOllama = isOllamaConfigured();
+    const hasAnyAi = hasCloudAi || hasOllama;
+    const hasWhatsApp = Boolean(
+        WHATSAPP_PHONE_NUMBER_ID &&
+        WHATSAPP_TOKEN &&
+        !setupUtils.isPlaceholderValue(WHATSAPP_PHONE_NUMBER_ID) &&
+        !setupUtils.isPlaceholderValue(WHATSAPP_TOKEN)
+    );
+    const hasSmtp = Boolean(
+        process.env.SMTP_HOST &&
+        process.env.SMTP_USER &&
+        process.env.SMTP_PASS &&
+        !setupUtils.isPlaceholderValue(process.env.SMTP_PASS)
+    );
+
+    const reasons = [];
+    if (!hasEnvFile) reasons.push('No existe el archivo .env en el servidor.');
+    if (String(process.env.SETUP_COMPLETED || '').toLowerCase() === 'false') {
+        reasons.push('Instalación virgen detectada (SETUP_COMPLETED=false).');
+    }
+    if (!dbConnected) reasons.push(`Sin conexión a MariaDB (${dbError || 'verifica credenciales'}).`);
+    if (!hasAnyAi) reasons.push('No hay ningún motor de Inteligencia Artificial configurado.');
+
+    const explicitVirgin = String(process.env.SETUP_COMPLETED || '').toLowerCase() === 'false';
+    const explicitDone = String(process.env.SETUP_COMPLETED || '').toLowerCase() === 'true';
+    const needsSetup = !hasEnvFile || explicitVirgin || (!explicitDone && (!dbConnected || !hasAnyAi));
+
+    return {
+        needsSetup,
+        reasons,
+        hasEnvFile,
+        setupCompleted: explicitDone,
+        dbConnected,
+        dbError,
+        hasAnyAi,
+        hasCloudAi,
+        ollamaEnabled: hasOllama,
+        ollamaModel: process.env.OLLAMA_MODEL || 'qwen2.5:3b',
+        hasWhatsApp,
+        hasSmtp,
+        primaryCampus: process.env.PRIMARY_CAMPUS || 'campeche',
+        port: PORT,
+        isDemoMode: !isProductionHardened(),
+        hardware: setupUtils.getSystemHardwareReport(PORT)
+    };
+}
+
+async function setupAccessGuard(req, res, next) {
+    const status = await computeSetupStatus();
+    req.setupStatus = status;
+    if (status.needsSetup) {
+        return next();
+    }
+    // Ya configurado: solo un Desarrollador autenticado puede usar /api/setup/*
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(403).json({ error: 'Metal-Uriel ya está configurado. Inicia sesión como Desarrollador para modificar parámetros del servidor.' });
+    }
+    try {
+        const decoded = jwt.verify(authHeader.split(' ')[1], JWT_SECRET);
+        if (normalizeRole(decoded.rol || decoded.role) !== 'desarrollador') {
+            return res.status(403).json({ error: 'Solo el rol Desarrollador puede reconfigurar el servidor.' });
+        }
+        req.user = decoded;
+        return next();
+    } catch (err) {
+        return res.status(401).json({ error: 'Token inválido o expirado para reconfiguración.' });
+    }
+}
+
+// Estado público del asistente (NUNCA expone secretos)
+app.get('/api/setup/status', async (req, res) => {
+    try {
+        const status = await computeSetupStatus();
+        res.json(status);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Obtener configuración actual (sin secretos en texto plano) para reconfigurar desde Desarrollador
+app.get('/api/setup/current-config', setupAccessGuard, (req, res) => {
+    const safeVal = (v, def = '') => (!v || setupUtils.isPlaceholderValue(v)) ? def : v;
+    res.json({
+        PORT: String(PORT),
+        PRIMARY_CAMPUS: safeVal(process.env.PRIMARY_CAMPUS, 'campeche'),
+        DB_HOST: safeVal(process.env.DB_HOST, 'localhost'),
+        DB_PORT: safeVal(process.env.DB_PORT, '3306'),
+        DB_USER: safeVal(process.env.DB_USER, 'root'),
+        hasDbPassword: Boolean(process.env.DB_PASSWORD && !setupUtils.isPlaceholderValue(process.env.DB_PASSWORD)),
+        DB_NAME: safeVal(process.env.DB_NAME, 'unid_admisiones'),
+        hasGeminiKey: isValidApiKey(process.env.GEMINI_API_KEY),
+        maskedGeminiKey: isValidApiKey(process.env.GEMINI_API_KEY) ? maskSecret(process.env.GEMINI_API_KEY) : '',
+        hasAnthropicKey: isValidApiKey(process.env.ANTHROPIC_API_KEY),
+        hasOpenAiKey: isValidApiKey(process.env.OPENAI_API_KEY),
+        hasDeepSeekKey: isValidApiKey(process.env.DEEPSEEK_API_KEY),
+        hasGroqKey: isValidApiKey(process.env.GROQ_API_KEY),
+        OLLAMA_ENABLED: isOllamaConfigured(),
+        OLLAMA_BASE_URL: safeVal(process.env.OLLAMA_BASE_URL, 'http://127.0.0.1:11434'),
+        OLLAMA_MODEL: safeVal(process.env.OLLAMA_MODEL, 'qwen2.5:3b'),
+        OLLAMA_TIMEOUT_MS: safeVal(process.env.OLLAMA_TIMEOUT_MS, '15000'),
+        WHATSAPP_PHONE_NUMBER_ID: safeVal(process.env.WHATSAPP_PHONE_NUMBER_ID, ''),
+        hasWhatsAppToken: Boolean(WHATSAPP_TOKEN && !setupUtils.isPlaceholderValue(WHATSAPP_TOKEN)),
+        maskedWhatsAppToken: (WHATSAPP_TOKEN && !setupUtils.isPlaceholderValue(WHATSAPP_TOKEN)) ? maskSecret(WHATSAPP_TOKEN) : '',
+        META_VERIFY_TOKEN: safeVal(process.env.META_VERIFY_TOKEN, ''),
+        hasJwtSecret: Boolean(process.env.JWT_SECRET && process.env.JWT_SECRET.length >= 32 && !setupUtils.isPlaceholderValue(process.env.JWT_SECRET)),
+        hasEncryptionKey: Boolean(process.env.ENCRYPTION_MASTER_KEY && process.env.ENCRYPTION_MASTER_KEY.length >= 32 && !setupUtils.isPlaceholderValue(process.env.ENCRYPTION_MASTER_KEY)),
+        ADMISSIONS_NOTIFICATION_EMAIL: safeVal(process.env.ADMISSIONS_NOTIFICATION_EMAIL, ''),
+        ALERT_ADMIN_EMAIL: safeVal(process.env.ALERT_ADMIN_EMAIL, ''),
+        SMTP_HOST: safeVal(process.env.SMTP_HOST, 'smtp.gmail.com'),
+        SMTP_PORT: safeVal(process.env.SMTP_PORT, '587'),
+        SMTP_USER: safeVal(process.env.SMTP_USER, ''),
+        hasSmtpPass: Boolean(process.env.SMTP_PASS && !setupUtils.isPlaceholderValue(process.env.SMTP_PASS))
+    });
+});
+
+// Generador seguro CSPRNG para el wizard
+app.get('/api/setup/generate-secrets', setupAccessGuard, (req, res) => {
+    res.json({
+        JWT_SECRET: setupUtils.generateStrongHex(32),
+        ENCRYPTION_MASTER_KEY: setupUtils.generateStrongHex(32),
+        META_VERIFY_TOKEN: 'unid_meta_' + setupUtils.generateStrongHex(12),
+        RANDOM_PASSWORD: setupUtils.generateStrongPassword(20)
+    });
+});
+
+// Validación estricta server-side
+app.post('/api/setup/validate', setupAccessGuard, (req, res) => {
+    const result = setupUtils.validateSetupPayload(req.body || {});
+    res.status(result.valid ? 200 : 400).json(result);
+});
+
+// Test en vivo de MariaDB (sin requerir que la BD exista previamente)
+app.post('/api/setup/test-db', setupAccessGuard, async (req, res) => {
+    const { DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME } = req.body || {};
+    const hostErr = setupUtils.validateField('DB_HOST', DB_HOST, { forceRequired: true });
+    const portErr = setupUtils.validateField('DB_PORT', DB_PORT, { forceRequired: true });
+    const userErr = setupUtils.validateField('DB_USER', DB_USER, { forceRequired: true });
+    const nameErr = setupUtils.validateField('DB_NAME', DB_NAME, { forceRequired: true });
+    if (hostErr || portErr || userErr || nameErr) {
+        return res.status(400).json({ ok: false, error: hostErr || portErr || userErr || nameErr });
+    }
+
+    const effectivePassword = (DB_PASSWORD === '__KEEP_EXISTING__' && !req.setupStatus?.needsSetup)
+        ? (process.env.DB_PASSWORD || '')
+        : (DB_PASSWORD || '');
+
+    let conn = null;
+    try {
+        const t0 = Date.now();
+        conn = await mysql.createConnection({
+            host: String(DB_HOST).trim(),
+            port: Number(DB_PORT) || 3306,
+            user: String(DB_USER).trim(),
+            password: effectivePassword,
+            connectTimeout: 7000
+        });
+        const [verRows] = await conn.query('SELECT VERSION() AS version');
+        const [dbs] = await conn.query('SHOW DATABASES LIKE ?', [String(DB_NAME).trim()]);
+        await conn.end();
+        res.json({
+            ok: true,
+            latencyMs: Date.now() - t0,
+            version: verRows[0]?.version || 'MariaDB/MySQL',
+            databaseExists: dbs.length > 0,
+            message: dbs.length > 0
+                ? `Conexión exitosa (${verRows[0]?.version}). La base "${DB_NAME}" ya existe y está lista.`
+                : `Conexión exitosa (${verRows[0]?.version}). La base "${DB_NAME}" se creará automáticamente al finalizar.`
+        });
+    } catch (err) {
+        if (conn) { try { await conn.end(); } catch (_) {} }
+        res.status(400).json({ ok: false, error: `No se pudo conectar a MariaDB: ${err.message}` });
+    }
+});
+
+// Test en vivo de Proveedor IA (Gemini, OpenAI, Anthropic, DeepSeek, Groq u Ollama)
+app.post('/api/setup/test-ai', setupAccessGuard, async (req, res) => {
+    const { provider, apiKey, ollamaUrl, ollamaModel, ollamaApiKey } = req.body || {};
+
+    try {
+        if (provider === 'ollama') {
+            const urlErr = setupUtils.validateField('OLLAMA_BASE_URL', ollamaUrl, { forceRequired: true });
+            if (urlErr) return res.status(400).json({ ok: false, error: urlErr });
+            const cleanUrl = String(ollamaUrl).trim().replace(/\/+$/, '');
+            const headers = {};
+            if (ollamaApiKey && String(ollamaApiKey).trim()) {
+                headers['Authorization'] = `Bearer ${String(ollamaApiKey).trim()}`;
+            }
+            const t0 = Date.now();
+            const r = await axios.get(`${cleanUrl}/api/tags`, { headers, timeout: 6000 });
+            const models = (r.data?.models || []).map(m => m.name);
+            const target = String(ollamaModel || '').trim();
+            const modelFound = !target || models.some(m => m === target || m.startsWith(target + ':'));
+            return res.json({
+                ok: true,
+                latencyMs: Date.now() - t0,
+                installedModels: models,
+                modelFound,
+                message: models.length === 0
+                    ? `Ollama responde en ${cleanUrl}, pero no tiene modelos descargados aún (ejecuta: ollama pull ${target || 'qwen2.5:3b'}).`
+                    : modelFound
+                        ? `Ollama activo (${models.length} modelos). "${target || models[0]}" listo en ${Date.now() - t0}ms.`
+                        : `Ollama activo, pero "${target}" no está descargado. Disponibles: ${models.slice(0, 5).join(', ')}`
+            });
+        }
+
+        const keyFieldMap = {
+            google: 'GEMINI_API_KEY',
+            anthropic: 'ANTHROPIC_API_KEY',
+            openai: 'OPENAI_API_KEY',
+            deepseek: 'DEEPSEEK_API_KEY',
+            groq: 'GROQ_API_KEY'
+        };
+        const fieldName = keyFieldMap[provider];
+        if (!fieldName) return res.status(400).json({ ok: false, error: 'Proveedor de IA no reconocido.' });
+
+        const effectiveKey = (apiKey === '__KEEP_EXISTING__' && !req.setupStatus?.needsSetup)
+            ? (process.env[fieldName] || '')
+            : String(apiKey || '').trim();
+
+        const keyErr = setupUtils.validateField(fieldName, effectiveKey, { forceRequired: true });
+        if (keyErr) return res.status(400).json({ ok: false, error: keyErr });
+
+        const t0 = Date.now();
+        if (provider === 'google') {
+            const client = new GoogleGenAI({ apiKey: effectiveKey });
+            const resp = await client.models.generateContent({
+                model: 'gemini-3.8-flash',
+                contents: 'Responde solo OK'
+            });
+            if (!resp.text) throw new Error('Sin texto devuelto por Gemini.');
+            return res.json({ ok: true, latencyMs: Date.now() - t0, message: `Google Gemini 3.8 Flash verificado (${Date.now() - t0} ms).` });
+        } else if (provider === 'openai') {
+            const client = new OpenAI({ apiKey: effectiveKey });
+            await client.models.list();
+            return res.json({ ok: true, latencyMs: Date.now() - t0, message: `OpenAI API Key verificada (${Date.now() - t0} ms).` });
+        } else if (provider === 'deepseek') {
+            const client = new OpenAI({ apiKey: effectiveKey, baseURL: 'https://api.deepseek.com' });
+            await client.models.list();
+            return res.json({ ok: true, latencyMs: Date.now() - t0, message: `DeepSeek API Key verificada (${Date.now() - t0} ms).` });
+        } else if (provider === 'groq') {
+            const client = new OpenAI({ apiKey: effectiveKey, baseURL: 'https://api.groq.com/openai/v1' });
+            await client.models.list();
+            return res.json({ ok: true, latencyMs: Date.now() - t0, message: `Groq Cloud API Key verificada (${Date.now() - t0} ms).` });
+        } else if (provider === 'anthropic') {
+            const client = new Anthropic({ apiKey: effectiveKey });
+            await client.messages.create({
+                model: 'claude-3-5-haiku-20241022',
+                max_tokens: 8,
+                messages: [{ role: 'user', content: 'OK' }]
+            });
+            return res.json({ ok: true, latencyMs: Date.now() - t0, message: `Anthropic Claude API Key verificada (${Date.now() - t0} ms).` });
+        }
+    } catch (err) {
+        const msg = err.response?.data?.error?.message || err.message || 'Error desconocido';
+        res.status(400).json({ ok: false, error: `Falló verificación de ${provider}: ${msg}` });
+    }
+});
+
+// Test en vivo de Meta WhatsApp Cloud API
+app.post('/api/setup/test-whatsapp', setupAccessGuard, async (req, res) => {
+    const { WHATSAPP_PHONE_NUMBER_ID: phoneIdRaw, WHATSAPP_TOKEN: tokenRaw } = req.body || {};
+    const phoneId = String(phoneIdRaw || '').trim();
+    const token = (tokenRaw === '__KEEP_EXISTING__' && !req.setupStatus?.needsSetup)
+        ? WHATSAPP_TOKEN
+        : String(tokenRaw || '').trim();
+
+    const phoneErr = setupUtils.validateField('WHATSAPP_PHONE_NUMBER_ID', phoneId, { forceRequired: true });
+    if (phoneErr) return res.status(400).json({ ok: false, error: phoneErr });
+    const tokenErr = setupUtils.validateField('WHATSAPP_TOKEN', token, { forceRequired: true });
+    if (tokenErr) return res.status(400).json({ ok: false, error: tokenErr });
+
+    try {
+        const r = await axios.get(
+            `https://graph.facebook.com/v20.0/${phoneId}?fields=display_phone_number,verified_name,quality_rating`,
+            { headers: { Authorization: `Bearer ${token}` }, timeout: 8000 }
+        );
+        res.json({
+            ok: true,
+            displayPhone: r.data?.display_phone_number || phoneId,
+            verifiedName: r.data?.verified_name || 'WhatsApp Business',
+            qualityRating: r.data?.quality_rating || 'GREEN',
+            message: `Conectado a "${r.data?.verified_name || 'Meta Business'}" (${r.data?.display_phone_number || phoneId}).`
+        });
+    } catch (err) {
+        const metaMsg = err.response?.data?.error?.message || err.message;
+        res.status(400).json({ ok: false, error: `Meta Graph API rechazó las credenciales: ${metaMsg}` });
+    }
+});
+
+// Test en vivo de SMTP y correo de alerta Life Support
+app.post('/api/setup/test-smtp', setupAccessGuard, async (req, res) => {
+    const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, testDestination } = req.body || {};
+    const effectivePass = (SMTP_PASS === '__KEEP_EXISTING__' && !req.setupStatus?.needsSetup)
+        ? (process.env.SMTP_PASS || '')
+        : String(SMTP_PASS || '').trim();
+
+    const hErr = setupUtils.validateField('SMTP_HOST', SMTP_HOST, { forceRequired: true });
+    const pErr = setupUtils.validateField('SMTP_PORT', SMTP_PORT, { forceRequired: true });
+    const uErr = setupUtils.validateField('SMTP_USER', SMTP_USER, { forceRequired: true });
+    const pwErr = setupUtils.validateField('SMTP_PASS', effectivePass, { forceRequired: true });
+    if (hErr || pErr || uErr || pwErr) {
+        return res.status(400).json({ ok: false, error: hErr || pErr || uErr || pwErr });
+    }
+
+    try {
+        const portNum = Number(SMTP_PORT) || 587;
+        const transporter = nodemailer.createTransport({
+            host: String(SMTP_HOST).trim(),
+            port: portNum,
+            secure: portNum === 465,
+            auth: { user: String(SMTP_USER).trim(), pass: effectivePass },
+            connectionTimeout: 8000
+        });
+        await transporter.verify();
+
+        const dest = String(testDestination || SMTP_USER).trim();
+        await transporter.sendMail({
+            from: `"UNID Admisiones • Metal-Uriel" <${String(SMTP_USER).trim()}>`,
+            to: dest,
+            subject: '✅ Prueba exitosa de Alertas y Correo — Metal-Uriel',
+            html: `<div style="font-family:Segoe UI,Arial,sans-serif;padding:20px;background:#0B192C;color:#f8fafc;border-radius:12px;">
+                <h2 style="color:#FFC72C;margin-top:0;">🐺 Metal-Uriel conectado correctamente</h2>
+                <p>El servidor SMTP <strong>${SMTP_HOST}:${portNum}</strong> fue verificado desde el Asistente de Instalación Plug & Play.</p>
+                <p style="font-size:12px;color:#94a3b8;">Recibirás aquí las notificaciones de admisiones y alertas críticas de Life Support.</p>
+            </div>`
+        });
+
+        res.json({ ok: true, message: `SMTP verificado y correo de prueba enviado a ${dest}.` });
+    } catch (err) {
+        res.status(400).json({ ok: false, error: `Error SMTP: ${err.message}` });
+    }
+});
+
+// Guardar configuración final, crear .env, inicializar MariaDB y crear cuentas RBAC cifradas
+app.post('/api/setup/complete', setupAccessGuard, async (req, res) => {
+    try {
+        const isReconfigure = !req.setupStatus?.needsSetup;
+        const raw = { ...(req.body || {}), IS_RECONFIGURE: isReconfigure };
+
+        // En reconfiguración, permitir conservar secretos existentes con el marcador __KEEP_EXISTING__
+        if (isReconfigure) {
+            const preserveKeys = [
+                'DB_PASSWORD', 'GEMINI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY',
+                'DEEPSEEK_API_KEY', 'GROQ_API_KEY', 'WHATSAPP_TOKEN', 'OLLAMA_API_KEY',
+                'JWT_SECRET', 'ENCRYPTION_MASTER_KEY', 'SMTP_PASS'
+            ];
+            for (const k of preserveKeys) {
+                if (raw[k] === '__KEEP_EXISTING__' || (!raw[k] && (k === 'JWT_SECRET' || k === 'ENCRYPTION_MASTER_KEY'))) {
+                    raw[k] = process.env[k] || '';
+                }
+            }
+        }
+
+        // Validación estricta server-side
+        const validation = setupUtils.validateSetupPayload(raw);
+        if (!validation.valid) {
+            return res.status(400).json({
+                ok: false,
+                error: 'Hay errores de validación en los campos del formulario. Revisa los formatos requeridos.',
+                errors: validation.errors
+            });
+        }
+
+        // Probar conexión a MariaDB ANTES de escribir .env
+        let testConn = null;
+        try {
+            testConn = await mysql.createConnection({
+                host: String(raw.DB_HOST).trim(),
+                port: Number(raw.DB_PORT) || 3306,
+                user: String(raw.DB_USER).trim(),
+                password: raw.DB_PASSWORD || '',
+                connectTimeout: 8000
+            });
+            await testConn.end();
+        } catch (dbErr) {
+            if (testConn) { try { await testConn.end(); } catch (_) {} }
+            return res.status(400).json({
+                ok: false,
+                error: `No se pudo conectar a MariaDB antes de guardar: ${dbErr.message}`,
+                errors: { DB_HOST: `Error de conexión MariaDB: ${dbErr.message}` }
+            });
+        }
+
+        // Escribir archivo .env seguro en disco
+        const envContent = setupUtils.buildEnvFileContent({
+            ...raw,
+            WHATSAPP_PHONE_NUMBER_ID: raw.SKIP_WHATSAPP ? '' : raw.WHATSAPP_PHONE_NUMBER_ID,
+            WHATSAPP_TOKEN: raw.SKIP_WHATSAPP ? '' : raw.WHATSAPP_TOKEN
+        });
+        const envPath = path.join(__dirname, '.env');
+        fs.writeFileSync(envPath, envContent, { encoding: 'utf8', mode: 0o600 });
+
+        // Recargar configuración en caliente sin reiniciar el proceso
+        reloadRuntimeConfig();
+
+        // Inicializar MariaDB (crear BD + 8 tablas + cuentas RBAC con scrypt + cifrar WhatsApp en sedes)
+        const primaryCampus = raw.PRIMARY_CAMPUS || 'campeche';
+        const customDevUser = (!isReconfigure || (raw.DEV_EMAIL && raw.DEV_PASSWORD)) ? {
+            correo_institucional: String(raw.DEV_EMAIL || req.user?.correo_institucional || '').trim().toLowerCase(),
+            nombre_completo: String(raw.DEV_NAME || req.user?.displayName || 'Desarrollador Metal-Uriel').trim(),
+            matricula: String(raw.DEV_EMAIL || '').split('@')[0],
+            password: raw.DEV_PASSWORD || ''
+        } : null;
+
+        const customAdminUser = (raw.ADMIN_SEDE_EMAIL && raw.ADMIN_SEDE_PASSWORD) ? {
+            correo_institucional: String(raw.ADMIN_SEDE_EMAIL).trim().toLowerCase(),
+            nombre_completo: String(raw.ADMIN_SEDE_NAME || 'Jefatura de Admisiones UNID').trim(),
+            matricula: String(raw.ADMIN_SEDE_EMAIL).split('@')[0],
+            password: raw.ADMIN_SEDE_PASSWORD
+        } : null;
+
+        await initializeDatabase({
+            rebuildPool: true,
+            throwOnError: true,
+            primaryCampus,
+            syncPrimaryCampusCreds: true,
+            customDevUser,
+            customAdminUser
+        });
+
+        // Emitir JWT listo para iniciar sesión automáticamente como el Desarrollador recién configurado
+        let sessionToken = null;
+        let sessionUser = null;
+        const devEmail = customDevUser?.correo_institucional || req.user?.correo_institucional;
+        if (devEmail) {
+            const [uRows] = await dbPool.query('SELECT * FROM usuarios WHERE correo_institucional = ? LIMIT 1', [devEmail]);
+            if (uRows.length > 0) {
+                const dbU = uRows[0];
+                sessionUser = {
+                    id: dbU.id,
+                    correo_institucional: dbU.correo_institucional,
+                    username: dbU.correo_institucional,
+                    displayName: dbU.nombre_completo,
+                    matricula: dbU.matricula || dbU.correo_institucional.split('@')[0],
+                    rol: 'desarrollador',
+                    role: 'desarrollador',
+                    roleTitle: getRoleTitle('desarrollador'),
+                    sede_id: null,
+                    tenant: 'Global (Todas las Sedes UNID)',
+                    isInstitutional: true
+                };
+                sessionToken = jwt.sign(sessionUser, JWT_SECRET, { expiresIn: '7d' });
+            }
+        }
+
+        const newStatus = await computeSetupStatus();
+        console.log(`🎉 [PLUG & PLAY SETUP] Configuración completada y guardada en .env | Sede principal: ${primaryCampus}`);
+        res.json({
+            ok: true,
+            message: 'Metal-Uriel configurado e inicializado correctamente en caliente.',
+            token: sessionToken,
+            user: sessionUser,
+            status: newStatus
+        });
+    } catch (err) {
+        console.error('❌ Error en /api/setup/complete:', err);
+        res.status(500).json({ ok: false, error: `Error aplicando configuración: ${err.message}` });
+    }
+});
+
+// Disparar alerta de prueba Life Support (solo Desarrollador)
+app.post('/api/system/test-alert', authMiddleware, authorizeRoles('desarrollador'), async (req, res) => {
+    try {
+        const result = await enviarAlertaSistema(
+            'MANUAL_TEST',
+            'Prueba Manual de Monitoreo Life Support',
+            `Disparada por ${req.user.displayName} (${req.user.correo_institucional}). El canal de alertas críticas responde correctamente.`,
+            true
+        );
+        if (!result) {
+            return res.status(400).json({ error: 'Configura ALERT_ADMIN_EMAIL o ADMISSIONS_NOTIFICATION_EMAIL en .env primero.' });
+        }
+        res.json({ ok: true, log: result });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ==========================================
+// 16. Inicialización del Servidor (0.0.0.0 para Red Local + Plug & Play)
+// ==========================================
+const server = app.listen(PORT, HOST, async () => {
+    const hw = setupUtils.getSystemHardwareReport(PORT);
+    const setupInfo = await computeSetupStatus().catch(() => ({ needsSetup: false }));
     console.log(`====================================================`);
-    console.log(`🐺 :UNID Centro de Mando • Metal-Uriel en Puerto ${PORT}`);
-    console.log(`🛡️ Modo de Inferencia: ${globalActiveModelId}`);
-    console.log(`🌐 Dashboard Ejecutivo: http://localhost:${PORT}`);
-    console.log(`📊 Analytics: http://localhost:${PORT}/api/analytics`);
+    console.log(`🐺 :UNID Centro de Mando • Metal-Uriel v2.0 (Plug & Play)`);
+    console.log(`💻 Hardware: ${hw.cpuCores} núcleos | RAM: ${hw.freeMemGB}/${hw.totalMemGB} GB libre`);
+    console.log(`🛡️ Modo de Inferencia: ${globalActiveModelId} ${isOllamaConfigured() ? '(+ Ollama Local último recurso)' : ''}`);
+    console.log(`🌐 Acceso Local: http://localhost:${PORT}`);
+    if (hw.lanUrls.length > 0) {
+        hw.lanUrls.forEach(u => console.log(`🏢 Acceso Red Local (LAN Admisiones): ${u}`));
+    }
     console.log(`🚦 Health Monitor: http://localhost:${PORT}/api/health/full`);
     console.log(`🔗 Webhook de WhatsApp: http://localhost:${PORT}/webhook`);
-    console.log(`🔑 Token de Verificación: ${VERIFY_TOKEN}`);
+    if (setupInfo.needsSetup) {
+        console.log(`🧩 PRIMER USO DETECTADO: Abre http://localhost:${PORT} en tu navegador para completar el Asistente de Instalación.`);
+    }
     console.log(`====================================================`);
 });
 

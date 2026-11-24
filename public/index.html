@@ -105,12 +105,49 @@
     .eq-bar-2 { animation: eq-bounce-2 0.5s ease-in-out infinite 0.15s; }
     .eq-bar-3 { animation: eq-bounce-3 0.8s ease-in-out infinite 0.3s; }
     .eq-bar-4 { animation: eq-bounce-4 0.6s ease-in-out infinite 0.1s; }
+
+    /* Setup Wizard: Validación accesible post-interacción (:user-invalid / :user-valid + fallback) */
+    .visually-hidden:where(:not(:focus-within, :active)) {
+      position: absolute !important;
+      clip-path: inset(50%) !important;
+      overflow: hidden !important;
+      width: 1px !important;
+      height: 1px !important;
+      margin: -1px !important;
+      padding: 0 !important;
+      border: 0 !important;
+      white-space: nowrap !important;
+    }
+
+    .wizard-input {
+      font: inherit;
+      font-size: max(1rem, 1em);
+      min-height: 48px;
+      box-sizing: border-box;
+      accent-color: #FFC72C;
+    }
+
+    .wizard-input:focus-visible,
+    .wizard-btn:focus-visible {
+      outline: 3px solid #FFC72C;
+      outline-offset: 2px;
+    }
+
+    :is(.wizard-input:user-invalid, .wizard-input.user-invalid-fallback) {
+      border-color: #ef4444 !important;
+      background-color: rgba(127, 29, 29, 0.25) !important;
+    }
+
+    :is(.wizard-input:user-valid, .wizard-input.user-valid-fallback) {
+      border-color: #10b981 !important;
+    }
   </style>
 </head>
 <body class="h-full antialiased selection:bg-[#FFC72C] selection:text-slate-950 overflow-hidden bg-[#0A192F]">
   <div id="root" class="h-full w-full"></div>
 
-  <!-- Load React Application -->
+  <!-- Load Plug & Play Setup Wizard & Main React Application -->
+  <script type="text/babel" src="setup-wizard.jsx"></script>
   <script type="text/babel" src="app.jsx"></script>
 </body>
 </html>

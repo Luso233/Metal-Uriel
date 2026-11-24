@@ -270,6 +270,12 @@ function App() {
   const [healthFull, setHealthFull] = useState(null);
   const [showHealthModal, setShowHealthModal] = useState(false);
 
+  // Estados de Plug & Play First-Run Setup Wizard
+  const [setupStatus, setSetupStatus] = useState(null);
+  const [showSetupWizard, setShowSetupWizard] = useState(false);
+  const [userPassVisible, setUserPassVisible] = useState(false);
+  const [userPassCopied, setUserPassCopied] = useState(false);
+
   // Estados de Autenticación JWT y Office 365
   const [authToken, setAuthToken] = useState(() => localStorage.getItem('metal_uriel_jwt') || null);
   const [authUser, setAuthUser] = useState(() => {
@@ -278,9 +284,24 @@ function App() {
   });
   const [showLoginModal, setShowLoginModal] = useState(() => !localStorage.getItem('metal_uriel_jwt'));
   const [authTab, setAuthTab] = useState('o365');
-  const [o365Email, setO365Email] = useState('00774343@red.unid.mx');
-  const [o365Name, setO365Name] = useState('Luis Felipe Pérez (Admin Sistemas)');
-  const [loginForm, setLoginForm] = useState({ username: '00774343@red.unid.mx', password: 'admin', error: '', loading: false });
+  const [o365Email, setO365Email] = useState('');
+  const [o365Name, setO365Name] = useState('');
+  const [loginForm, setLoginForm] = useState({ username: '', password: '', error: '', loading: false });
+
+  // Detectar al arranque si el servidor está virgen (Plug & Play First-Run Setup)
+  useEffect(() => {
+    fetch('/api/setup/status')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data) return;
+        setSetupStatus(data);
+        if (data.needsSetup) {
+          setShowSetupWizard(true);
+          setShowLoginModal(false);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Banda Sonora Cibernética de Metal Sonic
   const [isPlayingBgm, setIsPlayingBgm] = useState(false);
@@ -2073,10 +2094,20 @@ function App() {
               </a>
             )}
 
-            {/* Botones de Testing para Desarrollador: Vaciar DB + Caché y Poblar DB (Demo) */}
+            {/* Botones de Desarrollador: Setup/.env, Vaciar DB + Caché y Poblar DB */}
             {isDesarrollador && (
               <>
                 <button
+                  type="button"
+                  onClick={() => setShowSetupWizard(true)}
+                  className="px-2.5 py-1 rounded-lg bg-indigo-950/70 hover:bg-indigo-900 text-indigo-200 border border-indigo-500/40 text-xs font-bold flex items-center gap-1 transition"
+                  title="Abrir Asistente de Configuración (.env, API Keys, Ollama y SMTP)"
+                >
+                  <span>⚙️</span>
+                  <span className="hidden xl:inline">Setup / .env</span>
+                </button>
+                <button
+                  type="button"
                   onClick={handleTruncateDb}
                   className="px-2.5 py-1 rounded-lg bg-red-950/70 hover:bg-red-900 text-red-300 border border-red-500/40 text-xs font-bold flex items-center gap-1 transition"
                   title="Vaciar Base de Datos y Memoria Caché al 100%"
@@ -2085,6 +2116,7 @@ function App() {
                   <span className="hidden xl:inline">Vaciar DB + Caché</span>
                 </button>
                 <button
+                  type="button"
                   onClick={handleSeedDemo}
                   className="px-2.5 py-1 rounded-lg bg-amber-950/60 hover:bg-amber-900/80 text-amber-300 border border-amber-500/40 text-xs font-bold flex items-center gap-1 transition"
                   title="Poblar Base de Datos con 5 prospectos institucionales demo"
@@ -4098,17 +4130,57 @@ function App() {
                   </div>
 
                   <div className="space-y-1">
-                    <label className="text-[11px] font-bold text-slate-300">
-                      {editingUserId ? 'Nueva Contraseña (dejar en blanco para conservar)' : 'Contraseña de Acceso'}
-                    </label>
-                    <input
-                      type="password"
-                      required={!editingUserId}
-                      value={userForm.password}
-                      onChange={(e) => setUserForm({ ...userForm, password: e.target.value })}
-                      placeholder={editingUserId ? '•••••••• (Sin cambios)' : 'Contraseña segura'}
-                      className="w-full bg-[#1E293B] text-xs text-slate-100 rounded-xl px-3 py-2 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400"
-                    />
+                    <div className="flex flex-wrap items-center justify-between gap-1.5">
+                      <label htmlFor="rbac-user-password" className="text-[11px] font-bold text-slate-300">
+                        {editingUserId ? 'Nueva Contraseña (dejar en blanco para conservar)' : 'Contraseña de Acceso (cifrada con scrypt)'}
+                      </label>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const gen = window.MetalUrielRandomPassword ? window.MetalUrielRandomPassword(20) : Math.random().toString(36).slice(-12);
+                            setUserForm({ ...userForm, password: gen });
+                            setUserPassVisible(true);
+                          }}
+                          className="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/35 border border-amber-400/40 text-[10px] font-bold text-amber-200 transition"
+                        >
+                          🎲 Generar Segura (20 chars)
+                        </button>
+                        {userForm.password && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard?.writeText(userForm.password);
+                              setUserPassCopied(true);
+                              setTimeout(() => setUserPassCopied(false), 2000);
+                            }}
+                            className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-600 text-[10px] font-bold text-slate-200 transition"
+                          >
+                            {userPassCopied ? '✅ Copiada' : '📋 Copiar'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        id="rbac-user-password"
+                        type={userPassVisible ? 'text' : 'password'}
+                        required={!editingUserId}
+                        value={userForm.password}
+                        onChange={(e) => setUserForm({ ...userForm, password: e.target.value })}
+                        placeholder={editingUserId ? '•••••••• (Sin cambios)' : 'Usa el generador aleatorio o escribe >= 12 chars'}
+                        autoComplete="new-password"
+                        className="w-full bg-[#1E293B] text-xs font-mono text-slate-100 rounded-xl px-3 py-2 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setUserPassVisible(v => !v)}
+                        aria-pressed={userPassVisible ? 'true' : 'false'}
+                        className="px-2.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[11px] font-bold text-slate-300 shrink-0"
+                      >
+                        {userPassVisible ? '🙈' : '👁️'}
+                      </button>
+                    </div>
                   </div>
 
                   <div className="flex items-center justify-between pt-1">
@@ -4522,8 +4594,36 @@ function App() {
         </div>
       )}
 
+      {/* ================= ASISTENTE PLUG & PLAY DE PRIMERA CONFIGURACIÓN ================= */}
+      {showSetupWizard && window.MetalUrielSetupWizard && (
+        <window.MetalUrielSetupWizard
+          setupStatus={setupStatus}
+          campusesList={campusesList}
+          authToken={authToken}
+          isReconfigure={Boolean(setupStatus && !setupStatus.needsSetup)}
+          onCancel={() => setShowSetupWizard(false)}
+          onComplete={(data) => {
+            if (data.status) setSetupStatus(data.status);
+            if (data.token && data.user) {
+              localStorage.setItem('metal_uriel_jwt', data.token);
+              localStorage.setItem('metal_uriel_user', JSON.stringify(data.user));
+              setAuthToken(data.token);
+              setAuthUser(data.user);
+              setShowLoginModal(false);
+            } else if (!authToken) {
+              setShowLoginModal(true);
+            }
+            setShowSetupWizard(false);
+            if (typeof fetchModels === 'function') fetchModels();
+            if (typeof fetchHealthFull === 'function') fetchHealthFull();
+            if (typeof fetchAspirantes === 'function') fetchAspirantes();
+            if (typeof fetchConversations === 'function') fetchConversations();
+          }}
+        />
+      )}
+
       {/* ================= MODAL: INICIO DE SESIÓN INSTITUCIONAL ================= */}
-      {showLoginModal && (
+      {showLoginModal && !showSetupWizard && (
         <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-50 flex items-center justify-center p-4">
           <div className="bg-[#0F172A] border border-amber-500/40 rounded-3xl w-full max-w-md shadow-2xl p-6 space-y-4">
             
@@ -4561,23 +4661,27 @@ function App() {
               {authTab === 'o365' ? (
                 <>
                   <div className="space-y-1">
-                    <label className="text-xs font-bold text-slate-300">Correo Institucional (@red.unid.mx)</label>
+                    <label htmlFor="login-o365-email" className="text-xs font-bold text-slate-300">Correo Institucional (@red.unid.mx)</label>
                     <input
+                      id="login-o365-email"
                       type="email"
+                      autoComplete="username"
                       value={o365Email}
                       onChange={(e) => setO365Email(e.target.value)}
-                      placeholder="00774343@red.unid.mx"
+                      placeholder="matricula@red.unid.mx"
                       required
                       className="w-full bg-[#1E293B] text-xs text-slate-100 rounded-xl px-3 py-2 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400 font-mono"
                     />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-xs font-bold text-slate-300">Contraseña Institucional</label>
+                    <label htmlFor="login-o365-pass" className="text-xs font-bold text-slate-300">Contraseña Institucional</label>
                     <input
+                      id="login-o365-pass"
                       type="password"
+                      autoComplete="current-password"
                       value={loginForm.password}
                       onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
-                      placeholder="admin, admin2026 o user"
+                      placeholder="••••••••••••"
                       required
                       className="w-full bg-[#1E293B] text-xs text-slate-100 rounded-xl px-3 py-2 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400"
                     />
@@ -4586,23 +4690,27 @@ function App() {
               ) : (
                 <>
                   <div className="space-y-1">
-                    <label className="text-xs font-bold text-slate-300">Usuario o Matrícula</label>
+                    <label htmlFor="login-local-user" className="text-xs font-bold text-slate-300">Usuario o Matrícula</label>
                     <input
+                      id="login-local-user"
                       type="text"
+                      autoComplete="username"
                       value={loginForm.username}
                       onChange={(e) => setLoginForm({ ...loginForm, username: e.target.value })}
-                      placeholder="00774343"
+                      placeholder="Matrícula o correo"
                       required
                       className="w-full bg-[#1E293B] text-xs text-slate-100 rounded-xl px-3 py-2 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400"
                     />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-xs font-bold text-slate-300">Contraseña</label>
+                    <label htmlFor="login-local-pass" className="text-xs font-bold text-slate-300">Contraseña</label>
                     <input
+                      id="login-local-pass"
                       type="password"
+                      autoComplete="current-password"
                       value={loginForm.password}
                       onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
-                      placeholder="••••••••"
+                      placeholder="••••••••••••"
                       required
                       className="w-full bg-[#1E293B] text-xs text-slate-100 rounded-xl px-3 py-2 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400"
                     />
@@ -4611,7 +4719,7 @@ function App() {
               )}
 
               {loginForm.error && (
-                <p className="text-xs text-red-400 font-bold">{loginForm.error}</p>
+                <p role="alert" className="text-xs text-red-400 font-bold">{loginForm.error}</p>
               )}
 
               <button
@@ -4623,47 +4731,49 @@ function App() {
               </button>
             </form>
 
-            <div className="p-2.5 rounded-xl bg-[#1E293B]/60 border border-slate-800 text-[10px] text-slate-400 space-y-1.5 font-mono">
-              <span className="font-bold text-amber-300 block">Acceso Rápido RBAC (Testing 1-Click):</span>
-              <div className="grid grid-cols-1 gap-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAuthTab('o365');
-                    setO365Email('00774343@red.unid.mx');
-                    setLoginForm({ ...loginForm, username: '00774343', password: 'admin', error: '' });
-                  }}
-                  className="text-left px-2 py-1 rounded bg-purple-950/60 hover:bg-purple-900/80 border border-purple-500/30 text-purple-200 transition flex items-center justify-between"
-                >
-                  <span>🛠️ Rol 1 (Desarrollador Global)</span>
-                  <span>00774343@red.unid.mx / admin</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAuthTab('o365');
-                    setO365Email('admin.campeche@red.unid.mx');
-                    setLoginForm({ ...loginForm, username: '00881122', password: 'admin2026', error: '' });
-                  }}
-                  className="text-left px-2 py-1 rounded bg-amber-950/60 hover:bg-amber-900/80 border border-amber-500/30 text-amber-200 transition flex items-center justify-between"
-                >
-                  <span>🏛️ Rol 2 (Admin Sede Campeche)</span>
-                  <span>admin.campeche@... / admin2026</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAuthTab('o365');
-                    setO365Email('67676767@red.unid.mx');
-                    setLoginForm({ ...loginForm, username: '67676767', password: 'user', error: '' });
-                  }}
-                  className="text-left px-2 py-1 rounded bg-sky-950/60 hover:bg-sky-900/80 border border-sky-500/30 text-sky-200 transition flex items-center justify-between"
-                >
-                  <span>🎧 Rol 3 (Usuario Asesor)</span>
-                  <span>67676767@red.unid.mx / user</span>
-                </button>
+            {setupStatus?.isDemoMode && (
+              <div className="p-2.5 rounded-xl bg-[#1E293B]/60 border border-slate-800 text-[10px] text-slate-400 space-y-1.5 font-mono">
+                <span className="font-bold text-amber-300 block">Acceso Rápido RBAC (Solo Modo Desarrollo):</span>
+                <div className="grid grid-cols-1 gap-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthTab('o365');
+                      setO365Email('00774343@red.unid.mx');
+                      setLoginForm({ ...loginForm, username: '00774343', password: 'admin', error: '' });
+                    }}
+                    className="text-left px-2 py-1 rounded bg-purple-950/60 hover:bg-purple-900/80 border border-purple-500/30 text-purple-200 transition flex items-center justify-between"
+                  >
+                    <span>🛠️ Rol 1 (Desarrollador Global)</span>
+                    <span>00774343@red.unid.mx</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthTab('o365');
+                      setO365Email('admin.campeche@red.unid.mx');
+                      setLoginForm({ ...loginForm, username: '00881122', password: 'admin2026', error: '' });
+                    }}
+                    className="text-left px-2 py-1 rounded bg-amber-950/60 hover:bg-amber-900/80 border border-amber-500/30 text-amber-200 transition flex items-center justify-between"
+                  >
+                    <span>🏛️ Rol 2 (Admin Sede Campeche)</span>
+                    <span>admin.campeche@...</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthTab('o365');
+                      setO365Email('67676767@red.unid.mx');
+                      setLoginForm({ ...loginForm, username: '67676767', password: 'user', error: '' });
+                    }}
+                    className="text-left px-2 py-1 rounded bg-sky-950/60 hover:bg-sky-900/80 border border-sky-500/30 text-sky-200 transition flex items-center justify-between"
+                  >
+                    <span>🎧 Rol 3 (Usuario Asesor)</span>
+                    <span>67676767@red.unid.mx</span>
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
       )}

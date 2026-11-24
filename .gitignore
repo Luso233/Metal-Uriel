@@ -5,6 +5,14 @@
 .env.local
 .env.*.local
 *.env
+!.env.example
+
+# ==========================================
+# Documentos de Tesis / Informes Locales (No código)
+# ==========================================
+Informe_Estadia_*.docx
+Informe_Estadia_*.pdf
+*.docx
 
 # ==========================================
 # Dependencias de Node.js

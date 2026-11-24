@@ -1,69 +1,259 @@
-# 🐺 Metal-Uriel • Centro de Mando & Asistente Inteligente de Admisiones UNID
+# 🐺 Metal-Uriel v2.0 • Centro de Mando & Asistente Inteligente de Admisiones UNID (Plug & Play)
 
 <div align="center">
 
 ![UNID Banner](https://img.shields.io/badge/:UNID-Universidad_Interamericana_para_el_Desarrollo-0A192F?style=for-the-badge&logoColor=FFC72C)
+![Release](https://img.shields.io/badge/Build-Plug_%26_Play_v2.0-10B981?style=for-the-badge)
 ![Node.js](https://img.shields.io/badge/Node.js-v20+-339933?style=for-the-badge&logo=node.js&logoColor=white)
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
-![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-3.4-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white)
 ![Google Gemini](https://img.shields.io/badge/Google_Gemini-3.8_Flash-4285F4?style=for-the-badge&logo=google&logoColor=white)
+![Ollama](https://img.shields.io/badge/Ollama-Respaldo_Local_Opcional-111827?style=for-the-badge&logo=ollama&logoColor=white)
 ![MariaDB](https://img.shields.io/badge/MariaDB-11.x-003545?style=for-the-badge&logo=mariadb&logoColor=white)
 ![Meta WhatsApp](https://img.shields.io/badge/Meta-WhatsApp_Cloud_API-25D366?style=for-the-badge&logo=whatsapp&logoColor=white)
 
-**Plataforma conversacional de admisiones universitarias impulsada por Inteligencia Artificial generativa multi-proveedor, gestión de prospectos tipo Kanban, despacho automático de planes de estudio en PDF y analíticas en tiempo real para todas las sedes de la UNID.**
+**Plataforma conversacional SaaS Multi-Tenant de admisiones universitarias impulsada por IA generativa multi-proveedor (`Google Gemini 3.8 Flash` + cascada cloud + `Ollama` local opcional), Asistente de Instalación Plug & Play en el navegador, tablero Kanban, Pool Multimedia CRUD con envío binario real a WhatsApp, cumplimiento LFPDPPP, RBAC de 3 roles y monitoreo de alertas críticas ("Life Support").**
 
-[Características](#-características-principales) • [Arquitectura](#-arquitectura-del-sistema) • [Inicio Rápido](#-instalación-y-puesta-en-marcha) • [Variables de Entorno](#-variables-de-entorno-env) • [Endpoints de la API](#-referencia-de-la-api) • [Producción](#-despliegue-en-producción)
+[Instalación Plug & Play](#-guía-de-instalación-plug--play-desde-cero) • [Software de Terceros](#-1-instalación-de-software-de-terceros) • [Asistente Web y Reglas de API Keys](#-3-asistente-de-primera-configuración-setup-wizard) • [Servidor 24/7 (PM2 + LAN + HTTPS)](#-4-puesta-en-producción-247-en-la-pc-dedicada) • [Ollama Local (Opcional)](#-5-ollama-local-en-cascada-opcional-y-recomendaciones-de-hardware) • [Soporte Remoto y Life Support](#-6-soporte-remoto-y-alertas-críticas-life-support) • [Arquitectura](#-arquitectura-del-sistema)
 
 </div>
 
 ---
 
-## 📌 Visión General
+## ⚡ ¿Qué trae la Build Plug & Play v2.0?
 
-**Metal-Uriel** es una solución integral de software diseñada para transformar la experiencia de captación, atención y seguimiento de prospectos en la **Universidad Interamericana para el Desarrollo (UNID)**. 
+Diseñada específicamente para **clonar desde GitHub en un equipo recién formateado y ponerla a operar en caliente**:
 
-Personificado como el embajador cibernético del lobo rojo institucional (*Metal-Uriel 🐺🤖*), el sistema opera a través de **WhatsApp Cloud API** y una aplicación web interactiva (**Centro de Mando**), guiando de forma empática y ágil a los aspirantes a lo largo del proceso de admisión, recopilando **11 campos obligatorios**, aplicando **reglas geográficas inteligentes** (Presencial vs. Licenciaturas Online) y persistiendo cada expediente en una base de datos relacional **MariaDB**.
+1. **Asistente de Primera Configuración en el Navegador (`Setup Wizard`):**
+   - Al arrancar sin `.env` o con un `.env` virgen (`SETUP_COMPLETED=false`), el servidor inicia limpio en el puerto `3000` y abre un asistente guiado de 5 pasos en `http://localhost:3000`.
+   - **Validación estricta en vivo por tipo y longitud de credencial** (ej. `WHATSAPP_PHONE_NUMBER_ID` solo 10–20 dígitos, `WHATSAPP_TOKEN` prefijo `EAA...`, `GEMINI_API_KEY` prefijo `AIza...`, contraseñas fuertes con generador criptográfico CSPRNG de 20 caracteres).
+   - **Botones de prueba real en cada paso:** verifica conexión a MariaDB, ping en vivo a Gemini 3.8 Flash / OpenAI / Groq / Ollama, consulta real a Meta Graph API y envío de correo SMTP de prueba **antes** de guardar.
+2. **Auto-Creación de MariaDB (Zero SQL Manual):**
+   - Ya no necesitas importar `schema.sql` a mano: el servidor crea automáticamente la base `unid_admisiones` y sus **8 tablas**, siembra las 23 sedes UNID, las 5 categorías del Pool Multimedia, el ciclo escolar activo y los PDFs oficiales.
+3. **Blindaje Automático de Producción:**
+   - Genera llaves únicas de 256 bits para `JWT_SECRET` y `ENCRYPTION_MASTER_KEY` (AES-256-GCM).
+   - Crea tus cuentas institucionales RBAC con hash `scrypt + salt` aleatorio, **desactiva cuentas demo por defecto** y bloquea `/api/setup/*` salvo para sesiones autenticadas con rol `desarrollador`.
+4. **Ollama Local Opcional (Último Recurso):**
+   - Integrado al final de la cascada (`Gemini → Claude → OpenAI → DeepSeek → Groq → Ollama Local`) con **timeout estricto** (`15000 ms`) y **auditoría automática de RAM/CPU** dentro del asistente.
+5. **Alertas Críticas "Life Support" por Correo (Nodemailer):**
+   - Avisa automáticamente a `ALERT_ADMIN_EMAIL` (con anti-spam de 15 min) si todos los proveedores de IA fallan o ocurre una excepción crítica, además de los 3 avisos de Admisiones (*Nuevo Contacto*, *Ficha de 11 Datos* e *Inscrito*).
 
 ---
 
-## ✨ Características Principales
+## 🚀 Guía de Instalación Plug & Play (Desde Cero)
 
-### 🧠 1. Motor de Inferencia en Cascada Multi-Proveedor & Circuit Breaker
-- **Alta Disponibilidad 24/7:** Inferencia tolerante a fallos con soporte unificado para:
-  - **Google Gemini** (`gemini-3.8-flash`, `gemini-3.5-flash-lite`, `gemini-4-argon`)
-  - **Anthropic Claude** (`claude-3-5-haiku`, `claude-3-5-sonnet`)
-  - **OpenAI** (`gpt-4o-mini`, `gpt-4o`)
-  - **DeepSeek** (`deepseek-chat`)
-  - **Groq Cloud** (`llama-3.3-70b-versatile`)
-- **Circuit Breaker con Cooldown:** Si un proveedor alcanza límites de tasa (HTTP 429) o agota su cuota, el sistema lo pone en enfriamiento de 10 minutos y conmuta inmediatamente al siguiente motor.
-- **Zero-Brain-Damage Context Preservation:** Si ocurre un cambio de modelo a mitad de una plática, el 100% del historial se transfiere intacto con salvaguardas para no repetir preguntas ya respondidas.
+> 💡 **Recomendación de Sistema Operativo para una PC dedicada con ~8 GB RAM:**
+> - **Opción A (Recomendada por eficiencia): Ubuntu Server 24.04 LTS** (consume ~450 MB de RAM en reposo, dejando ~7.5 GB libres para MariaDB, Node.js y opcionalmente Ollama).
+> - **Opción B (Más familiar): Windows 10 / 11 Pro (64-bit)** (consume ~2.5–3.5 GB de RAM; perfecto para Metal-Uriel + MariaDB + RustDesk + Cloudflare Tunnel; en este caso dejar Ollama apagado salvo comprobar ≥ 4 GB RAM libres).
 
-### 🌐 2. Escalabilidad Multi-Campus Nacional
-- **Selector de Sede Integrado:** Adaptable para el campus San Francisco de Campeche, Cancún, Mérida, Tijuana, Guadalajara, Toluca o cobertura nacional 100% virtual (**UNID Online**).
-- **Filtrado Dinámico:** El personal de admisiones puede alternar entre sedes y consultar prospectos y métricas específicas por campus o a nivel global.
+---
 
-### 📋 3. Tablero Kanban con Gestión de Ciclo de Vida
-- Flujo de seguimiento visual de 5 etapas: `Nuevos Prospectos` ➔ `Contactados` ➔ `En Proceso / Cita` ➔ `Inscritos 🎉` ➔ `No Interesado`.
-- **Archivar / Desarchivar:** Permite archivar alumnos inscritos o concluidos para mantener el tablero operativo despejado, con switch para consultar el historial archivado.
-- **Timestamps de Última Interacción:** Indicador relativo de última actividad (*«Hace 5 min»*, *«Ayer 14:30»*) para priorizar respuestas inmediatas.
-- **Lead Scoring & Resumen IA:** Calificación de probabilidad de inscripción (`Alto 🔥`, `Medio ⚡`, `Bajo ❄️`) y síntesis ejecutiva de 2 líneas para atender llamadas en segundos.
+### 📦 1. Instalación de Software de Terceros
 
-### 📄 4. Despacho Automatizado de Planes de Estudio (PDF)
-- Detección contextual de solicitudes de planes de estudio, costos o becas.
-- Envío directo de folletos y mapas curriculares oficiales alojados en la CDN de Talisis (`digitalmedia.talisis.com`) o generación de plantilla membretada con validez oficial ante la **SEP (RVOE)**.
+#### Opción A — Windows 10 / 11 (Comandos `winget` en PowerShell como Administrador)
 
-### 🛡️ 5. Catálogo Oficial & Regla Estricta Anti-Alucinaciones
-- El bot cuenta con la lista exhaustiva de carreras autorizadas (Presenciales, Ejecutivas, Plan Dual y Online Nacional).
-- Si un aspirante solicita una carrera no disponible (ej. *Medicina*, *Gastronomía*, *Veterinaria*), la IA aclara con cortesía la oferta oficial y sugiere programas afines.
+Abre **PowerShell como Administrador** y ejecuta:
 
-### 🧪 6. Laboratorio de Pruebas Flotante (`Test Suite`)
-- Menú modal flotante accesible desde cualquier pantalla con decenas de casos de prueba estructurados en 6 categorías (Presenciales, Foráneos, Ejecutivas, PDFs, Casos Borde y Anti-Alucinaciones) ejecutables con un solo clic.
+```powershell
+# 1. Git (para clonar y actualizar desde GitHub)
+winget install --id Git.Git -e --source winget
 
-### 🔐 7. Acceso Seguro con Microsoft Office 365 (Azure Entra ID)
-- Inicio de sesión con cuentas institucionales `@red.unid.mx` / `@unid.mx` con validación de dominio educativo, o acceso administrativo local con tokens firmados **JWT**.
+# 2. Node.js v22 LTS (runtime del servidor Metal-Uriel)
+winget install --id OpenJS.NodeJS.LTS -e --source winget
 
-### 🎧 8. Cyber HUD & Banda Sonora de Metal Sonic
-- Widget interactivo en la barra superior conectado a la banda sonora oficial cibernética de Metal Sonic en YouTube (a partir del minuto 25:15) con ecualizador animado.
+# 3. MariaDB 11.x (motor de base de datos relacional)
+winget install --id MariaDB.Server -e --source winget
+
+# 4. Cloudflare Tunnel (HTTPS público gratis para Webhook de Meta sin abrir puertos)
+winget install --id Cloudflare.cloudflared -e --source winget
+
+# 5. RustDesk (acceso remoto desatendido desde tu casa)
+winget install --id RustDesk.RustDesk -e --source winget
+```
+
+> **Durante el instalador de MariaDB en Windows:**
+> - Asigna una **contraseña fuerte al usuario `root`** y guárdala (la usarás en el Paso 1 del Asistente Web).
+> - Deja marcada la casilla **"Install as service"** (`MariaDB`, puerto `3306`) y **UTF-8** como charset predeterminado.
+> - *Cierra y vuelve a abrir PowerShell* tras instalar para que `git`, `node` y `npm` queden en el `PATH`.
+
+Verifica instalación:
+```powershell
+git --version
+node -v
+npm -v
+```
+
+---
+
+#### Opción B — Ubuntu Server / Linux (24.04 LTS)
+
+```bash
+# Actualizar sistema e instalar herramientas base
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y git curl build-essential mariadb-server ufw
+
+# Instalar Node.js v22 LTS (NodeSource)
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# Habilitar MariaDB al arranque y crear usuario dedicado (RECOMENDADO)
+sudo systemctl enable --now mariadb
+sudo mysql -e "CREATE USER IF NOT EXISTS 'metal_uriel'@'localhost' IDENTIFIED BY 'CAMBIA_ESTA_CLAVE_FUERTE_2026!';"
+sudo mysql -e "GRANT ALL PRIVILEGES ON *.* TO 'metal_uriel'@'localhost' WITH GRANT OPTION; FLUSH PRIVILEGES;"
+
+# Instalar PM2 global (gestor de procesos 24/7)
+sudo npm install -g pm2
+
+# Instalar Cloudflare Tunnel (cloudflared)
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
+sudo dpkg -i cloudflared.deb && rm cloudflared.deb
+```
+
+---
+
+### ⬇️ 2. Clonar y Arrancar en Caliente
+
+```bash
+git clone https://github.com/Luso233/Metal-Uriel.git
+cd Metal-Uriel
+```
+
+- **En Windows (1 doble clic):** ejecuta **`iniciar-metal-uriel.bat`**
+  *(Automáticamente instala `node_modules`, copia `.env.example` → `.env` virgen, levanta Metal-Uriel y abre `http://localhost:3000`).*
+- **En Linux / terminal manual:**
+  ```bash
+  chmod +x iniciar-metal-uriel.sh
+  ./iniciar-metal-uriel.sh
+  ```
+  *(O manualmente: `npm install --omit=dev && cp .env.example .env && npm start`)*
+
+Al arrancar, la consola imprimirá automáticamente la **IP de Red Local (LAN)** del servidor para que todo el Departamento de Admisiones pueda conectarse:
+```text
+🐺 :UNID Centro de Mando • Metal-Uriel v2.0 (Plug & Play)
+💻 Hardware: 4 núcleos | RAM: 4.82/8.00 GB libre
+🌐 Acceso Local: http://localhost:3000
+🏢 Acceso Red Local (LAN Admisiones): http://192.168.1.50:3000
+🧩 PRIMER USO DETECTADO: Abre http://localhost:3000 en tu navegador para completar el Asistente de Instalación.
+```
+
+---
+
+### 🧩 3. Asistente de Primera Configuración (Setup Wizard) y Reglas de Validación
+
+Al abrir `http://localhost:3000` por primera vez aparecerá el **Asistente Plug & Play de 5 pasos**. Cada credencial es validada tanto en el navegador como en el servidor con reglas estrictas de longitud y formato:
+
+| Variable | Regla de Formato Validada | Longitud | Notas |
+| :--- | :--- | :--- | :--- |
+| `DB_HOST` / `DB_PORT` | Hostname/IP válida + puerto solo dígitos (`3306`) | 1–253 / 2–5 | Botón **"Probar Conexión con MariaDB"** en vivo |
+| `GEMINI_API_KEY` | Prefijo **`AIza`**, alfanumérico/`_`/`-`, sin espacios | **35–55 chars** (estándar 39) | Motor principal **`gemini-3.8-flash`** (Google AI Studio) |
+| `OPENAI_API_KEY` | Prefijo **`sk-`** o **`sk-proj-`**, sin espacios | **32–220 chars** | Respaldo automático en cascada |
+| `ANTHROPIC_API_KEY` | Prefijo **`sk-ant-`**, sin espacios | **40–180 chars** | Respaldo automático en cascada |
+| `GROQ_API_KEY` | Prefijo **`gsk_`**, sin espacios | **40–120 chars** | Tier gratuito ultra rápido en LPU |
+| `DEEPSEEK_API_KEY` | Prefijo **`sk-`**, sin espacios | **24–120 chars** | Respaldo económico |
+| `WHATSAPP_PHONE_NUMBER_ID` | **EXACTAMENTE solo números** (`/^\d{10,20}$/`) | **10–20 dígitos** | ID de Meta Developers (NO tu número `+52...`) |
+| `WHATSAPP_TOKEN` | Prefijo **`EAA`**, solo letras/números/`_`/`-` | **80–500 chars** | Token Permanente de *System User* en Meta Business |
+| `META_VERIFY_TOKEN` | Letras, números, `_` y `-` (sin espacios) | **8–128 chars** | Incluye botón generador automático |
+| `JWT_SECRET` / `ENCRYPTION_MASTER_KEY` | Secreto aleatorio sin espacios | **32–128 chars** | Botón **"Generar Llaves 256-bit"** incluido |
+| `DEV_PASSWORD` / `ADMIN_SEDE_PASSWORD` | ≥1 mayúscula, ≥1 minúscula, ≥1 dígito, ≥1 símbolo | **12–128 chars** | Botón **"Generar 20 chars"** + copiar; cifrado `scrypt` |
+| `SMTP_PORT` / `SMTP_PASS` | Puerto `587`/`465`/`2525`/`25` + App Password | **8–128 chars** | Botón **"Probar SMTP"** envía correo real |
+
+> 🔐 **Seguridad post-instalación:** Una vez guardado el `.env`, el Asistente queda bloqueado para el público. Solo tú (iniciando sesión como **Desarrollador**) podrás volver a abrirlo desde el botón **`⚙️ Setup / .env`** en la barra superior. Además, en **Gestión de Usuarios** tienes el botón **`🎲 Generar Segura (20 chars)`** para crear las cuentas institucionales (`@red.unid.mx`) del equipo de admisiones con contraseñas fuertes cifradas con `scrypt`.
+
+---
+
+### 🏢 4. Puesta en Producción 24/7 en la PC Dedicada
+
+#### 4.1 Desactivar suspensión y fijar red local (Windows)
+Ejecuta en **PowerShell como Administrador**:
+```powershell
+# Evitar que la PC se suspenda o hiberne nunca
+powercfg /change standby-timeout-ac 0
+powercfg /change hibernate-timeout-ac 0
+powercfg /hibernate off
+
+# Permitir acceso del Departamento de Admisiones al puerto 3000 SOLO en la red privada LAN
+New-NetFirewallRule -DisplayName "Metal-Uriel UNID LAN (3000)" -Direction Inbound -Protocol TCP -LocalPort 3000 -Profile Private -Action Allow
+```
+> En **Linux (`ufw`)**: `sudo ufw allow from 192.168.0.0/16 to any port 3000 proto tcp && sudo ufw enable`
+> *(Pide a Sistemas que reserve una **IP estática / reserva DHCP** para la MAC de esta PC, por ejemplo `192.168.1.50`, para que los asesores siempre entren a `http://192.168.1.50:3000`).*
+
+#### 4.2 Dejar Metal-Uriel corriendo 24/7 con auto-reinicio (PM2)
+```bash
+# Instalar PM2 global
+npm install -g pm2
+
+# Arrancar usando la configuración optimizada (límite 450 MB RAM, auto-restart)
+npm run prod
+pm2 save
+```
+- **Para que reviva solo si se va la luz en Windows:**
+  ```powershell
+  npm install -g pm2-windows-startup
+  pm2-startup install
+  pm2 save
+  ```
+- **Para que reviva solo en Linux (systemd):**
+  ```bash
+  pm2 startup systemd
+  # Ejecuta el comando que PM2 imprime en pantalla y luego:
+  pm2 save
+  ```
+Comandos diarios útiles: `npm run prod:logs`, `npm run prod:restart`, `pm2 monit`.
+
+#### 4.3 Exponer Webhook HTTPS seguro para Meta sin abrir puertos (Cloudflare Tunnel)
+Meta exige una URL **HTTPS pública** para `https://tu-dominio/webhook`. Con **Cloudflare Tunnel (`cloudflared`)** NO necesitas abrir puertos en el router de la UNID:
+
+- **Prueba rápida inmediata (túnel temporal sin dominio propio):**
+  ```bash
+  cloudflared tunnel --url http://localhost:3000
+  ```
+  Copia la URL `https://xxxx.trycloudflare.com/webhook` en **Meta Developers → WhatsApp → Configuración → Webhook** junto con tu `META_VERIFY_TOKEN`.
+- **Producción fija permanente (recomendado):** Crea un túnel nombrado gratuito en [Cloudflare Zero Trust Dashboard](https://one.dash.cloudflare.com/) → *Networks → Tunnels* apuntando `admisiones-bot.tudominio.com` → `http://localhost:3000`, e instálalo como servicio de Windows/Linux con el comando `cloudflared service install <TOKEN>` que te da Cloudflare.
+
+---
+
+### 🦙 5. Ollama Local en Cascada (Opcional y Recomendaciones de Hardware)
+
+Metal-Uriel incluye soporte nativo para **Ollama** estrictamente como **último eslabón opcional** (`OLLAMA_ENABLED=false` por defecto):
+
+```text
+Google Gemini 3.8 Flash → Claude / OpenAI / DeepSeek / Groq → [Ollama Local (solo si está activo, timeout 15s)]
+```
+
+| RAM Total del Equipo | Recomendación | Modelo Sugerido |
+| :--- | :--- | :--- |
+| **< 8 GB RAM** | ❌ **NO activar Ollama.** Usa Gemini 3.8 Flash + Groq/OpenAI de respaldo. | Ninguno |
+| **8 GB RAM (CPU)** | ⚠️ **Solo pruebas / último recurso** (preferiblemente en Linux). Medir RAM libre primero. | `qwen2.5:3b` (~2.0 GB) o `llama3.2:3b` (~2.0 GB) |
+| **16+ GB RAM o GPU** | ✅ **Viable como respaldo local sólido.** | `qwen2.5:3b` o `llama3.1:8b` |
+
+Si decides probarlo tras verificar memoria libre:
+```bash
+# 1. Instalar Ollama: https://ollama.com/download (Windows) o curl -fsSL https://ollama.com/install.sh | sh (Linux)
+# 2. Descargar modelo ligero en español:
+ollama pull qwen2.5:3b
+
+# 3. Activar en el botón "⚙️ Setup / .env" → Paso 2 → Marcar Ollama Local y pulsar "Detectar Ollama"
+```
+
+---
+
+### 🛡️ 6. Soporte Remoto y Alertas Críticas ("Life Support")
+
+1. **Alertas por Correo Integradas (Sin software extra):**
+   - Configura `ALERT_ADMIN_EMAIL` + `SMTP_*` en el Paso 5 del Asistente. Si en cualquier momento fallan todos los LLMs o ocurre una excepción no controlada, recibirás un correo de alerta con el error, uso de RAM e IP del servidor.
+   - Puedes probarlo en cualquier momento desde `POST /api/system/test-alert` (rol Desarrollador).
+2. **Mantenimiento Remoto Seguro (Desde tu casa):**
+   - **RustDesk:** Instala RustDesk en la PC del campus, configura una **contraseña permanente larga** en *Seguridad → Acceso desatendido*, y desactiva la pantalla de bloqueo que corte la red.
+   - **Tailscale (Altamente recomendado — ~25 MB RAM):** Instala [Tailscale](https://tailscale.com/download) en la PC del campus y en tu laptop personal para tener VPN privada cifrada (WireGuard) hacia el panel y SSH sin exponer nada a internet.
+   - **Nota sobre agentes autónomos locales (ej. OpenClaw):** Por cumplimiento **LFPDPPP** (la base de datos almacena datos personales y CURP de aspirantes) y presupuesto de RAM en un equipo de 8 GB, **no se recomienda instalar agentes con acceso a shell en el mismo servidor productivo de Admisiones**. Mantén la administración remota restringida a **RustDesk / Tailscale + alertas SMTP + PM2**.
+3. **Respaldos Diarios de MariaDB (`mysqldump`):**
+   - **Windows (Programador de Tareas diario 02:00 AM):**
+     ```cmd
+     "C:\Program Files\MariaDB 11.x\bin\mysqldump.exe" -u root -pTU_PASS unid_admisiones > C:\Backups\unid_admisiones_%date:~-4,4%-%date:~-7,2%-%date:~-10,2%.sql
+     ```
+   - **Linux (`crontab -e`):**
+     ```cron
+     0 2 * * * mysqldump -u metal_uriel -p'TU_PASS' unid_admisiones | gzip > /var/backups/unid_admisiones_$(date +\%F).sql.gz
+     ```
 
 ---
 
@@ -73,7 +263,7 @@ Personificado como el embajador cibernético del lobo rojo institucional (*Metal
 flowchart TD
     subgraph Canales ["📱 Canales de Entrada & Interacción"]
         WA["WhatsApp Cloud API (Meta Graph v20.0)"]
-        WEB["Centro de Mando Web (React 18 • Live Inbox & Kanban)"]
+        WEB["Centro de Mando Web (React 18 • Setup Wizard, Live Inbox & Kanban)"]
     end
 
     subgraph Seguridad ["🔐 Seguridad, Gobernanza & Cumplimiento Legal"]
@@ -83,222 +273,64 @@ flowchart TD
         LFPDPPP["Guardrail Legal LFPDPPP (Aviso de Privacidad UNID & Consentimiento)"]
     end
 
-    subgraph Backend ["⚡ Servidor Node.js + Express (Puerto 3000)"]
+    subgraph Backend ["⚡ Servidor Node.js + Express (0.0.0.0:3000 • PM2)"]
+        SETUP["Plug & Play Setup Wizard + Validador Estricto .env"]
         MEM["Memoria Contextual Híbrida (Zero-Brain-Damage + Historial SQL)"]
         CASCADE["Orquestador Multi-LLM en Cascada & Circuit Breaker"]
         GEO["Motor de Reglas Geográficas, Anti-Alucinación & Cálculo CURP"]
         POOL_MGR["Gestor Pool Multimedia & Categorías CRUD (Upload Binario a Meta)"]
-        MAIL["Servicio de Alertas SMTP (Nodemailer • 3 Eventos Clave)"]
+        MAIL["Servicio SMTP (Nodemailer • 3 Eventos Admisiones + Alertas Life Support)"]
     end
 
     subgraph AI_Providers ["🤖 Proveedores de IA (Inferencia Resiliente)"]
-        GEMINI["Google Gemini 3.8 Flash (Principal)"]
-        CLAUDE["Anthropic Claude 3.5 Haiku/Sonnet"]
-        OPENAI["OpenAI GPT-4o-mini / GPT-4o"]
-        GROQ["DeepSeek V3 / Groq Llama 3.3"]
+        GEMINI["1. Google Gemini 3.8 Flash (Principal)"]
+        CLAUDE["2. Anthropic Claude 3.5"]
+        OPENAI["3. OpenAI GPT-4o-mini"]
+        GROQ["4. DeepSeek V3 / Groq Llama 3.3"]
+        OLLAMA["5. Ollama Local (Opcional • Timeout 15s)"]
     end
 
     subgraph Storage ["💾 Capa de Persistencia Híbrida"]
         MARIADB[("MariaDB (unid_admisiones • 8 Tablas:\naspirantes, sedes, usuarios, historial,\nciclos, pool_recursos, pool_categorias, correos)")]
-        FILES["Repositorio Físico (/uploads/recursos/ PDF/IMG,\nbrochures.json & system_prompt.txt)"]
+        FILES["Repositorio Físico (/public/uploads/recursos/,\nbrochures.json, system_prompt.txt & .env)"]
     end
 
     WA <-->|Webhook POST /webhook & Media Upload| TENANT
     WEB <-->|REST API + Bearer JWT| AUTH
+    WEB <-->|Primer Uso /api/setup/*| SETUP
     AUTH --> RBAC
     RBAC --> Backend
     TENANT --> LFPDPPP
     LFPDPPP --> MEM
     MEM --> CASCADE
 
-    CASCADE -->|1. Principal| GEMINI
-    CASCADE -->|2. Respaldo| CLAUDE
-    CASCADE -->|3. Respaldo| OPENAI
-    CASCADE -->|4. Respaldo| GROQ
+    CASCADE -->|Principal| GEMINI
+    CASCADE -->|Respaldo| CLAUDE
+    CASCADE -->|Respaldo| OPENAI
+    CASCADE -->|Respaldo| GROQ
+    CASCADE -.->|Último recurso opcional| OLLAMA
 
     CASCADE --> GEO
-    GEO -->|Solicitud de Plan / Horario / Beca| POOL_MGR
+    GEO -->|Solicitud Recurso| POOL_MGR
     POOL_MGR <--> FILES
     POOL_MGR <--> MARIADB
-    GEO -->|Ficha 11 Datos + CURP + Consentimiento LFPDPPP| MARIADB
-    GEO -->|Triggers: Nuevo / Ficha / Inscrito| MAIL
+    GEO -->|Ficha 11 Datos + CURP + LFPDPPP| MARIADB
+    GEO -->|Eventos Admisiones / Fallo Crítico| MAIL
+    MAIL --> MARIADB
 ```
 
 ---
 
-## 🛠️ Stack Tecnológico
+## 📡 Referencia Rápida de Endpoints Principales
 
-| Capa | Tecnologías |
-| :--- | :--- |
-| **Backend** | Node.js (v20+), Express.js, MySQL2 (Pool de conexiones con auto-reconexión) |
-| **Inteligencia Artificial** | `@google/genai`, `@anthropic-ai/sdk`, `openai`, SDKs oficiales compatibles con DeepSeek y Groq |
-| **Frontend** | React 18 (Standalone), Tailwind CSS 3.4, Chart.js, Lucide Icons |
-| **Base de Datos** | MariaDB 11.x / MySQL 8.x con índices optimizados y almacenamiento de JSON |
-| **Mensajería & Notificaciones** | Meta WhatsApp Cloud API (Graph API v21.0), Nodemailer (SMTP) |
-| **Seguridad** | JSON Web Tokens (`jsonwebtoken`), Azure Entra ID / Microsoft 365 SSO |
-
----
-
-## 🚀 Instalación y Puesta en Marcha
-
-### Prerrequisitos
-1. **Node.js (v20 o superior)** y **npm** instalados.
-2. **MariaDB Server** o **MySQL Server** en ejecución.
-3. Al menos una API Key de Inteligencia Artificial (**Google Gemini**, **OpenAI**, **Claude**, etc.).
-
-### Paso 1: Clonar el repositorio
-```bash
-git clone https://github.com/tu-usuario/metal-uriel-bot.git
-cd metal-uriel-bot
-```
-
-### Paso 2: Instalar dependencias
-```bash
-npm install
-```
-
-### Paso 3: Configurar variables de entorno
-Copia la plantilla de ejemplo y configura tus claves:
-```bash
-cp .env.example .env
-```
-Edita `.env` con tus credenciales (consulta la sección [Variables de Entorno](#-variables-de-entorno-env)).
-
-### Paso 4: Inicializar la base de datos MariaDB
-Ejecuta el script SQL en tu cliente MariaDB:
-```bash
-mysql -u root -p < schema.sql
-```
-*(Nota: El servidor cuenta con migraciones automáticas que crearán o actualizarán las tablas al arrancar si la base de datos `unid_admisiones` existe).*
-
-### Paso 5: Iniciar el servidor
-```bash
-# Modo producción
-npm start
-
-# Modo desarrollo con recarga en vivo
-npm run dev
-```
-
-Abre tu navegador en:
-👉 **`http://localhost:3000`**
-
----
-
-## 🔑 Variables de Entorno (`.env`)
-
-```env
-# ==========================================
-# Servidor
-# ==========================================
-PORT=3000
-
-# ==========================================
-# Meta WhatsApp Cloud API
-# ==========================================
-META_VERIFY_TOKEN=token_secreto_personalizado_unid_2026
-WHATSAPP_TOKEN=EAA...token_de_meta_cloud_api
-WHATSAPP_PHONE_NUMBER_ID=ID_del_telefono_de_admisiones
-
-# ==========================================
-# Proveedores de Inteligencia Artificial
-# ==========================================
-GEMINI_API_KEY=AIzaSy...tu_clave_gemini
-ANTHROPIC_API_KEY=sk-ant-...tu_clave_claude
-OPENAI_API_KEY=sk-...tu_clave_openai
-DEEPSEEK_API_KEY=sk-...tu_clave_deepseek
-GROQ_API_KEY=gsk_...tu_clave_groq
-DEFAULT_AI_MODEL=auto-fallback
-
-# ==========================================
-# Base de Datos MariaDB Local
-# ==========================================
-DB_HOST=localhost
-DB_PORT=3306
-DB_USER=root
-DB_PASSWORD=tu_password_seguro
-DB_NAME=unid_admisiones
-
-# ==========================================
-# Autenticación y Seguridad
-# ==========================================
-JWT_SECRET=tu_clave_secreta_jwt_para_firmar_sesiones
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=unid2026
-
-# ==========================================
-# Notificaciones por Email (Opcional)
-# ==========================================
-ADMISSIONS_NOTIFICATION_EMAIL=admisiones.campeche@unid.mx
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=notificaciones.unid@gmail.com
-SMTP_PASS=tu_app_password
-```
-
----
-
-## 📡 Referencia de la API
-
-### 💬 Conversación e Inferencia
-- `POST /api/chat`: Enviar mensaje al bot a través del simulador web.
-- `POST /api/session/reset`: Reiniciar memoria contextual del número telefónico.
-- `GET /webhook`: Validación criptográfica del handshake con Meta WhatsApp.
-- `POST /webhook`: Recepción de eventos de mensajes entrantes desde WhatsApp Cloud API.
-
-### 📋 Gestión de Prospectos (Admisiones)
-- `GET /api/aspirantes`: Obtener lista de prospectos con soporte de filtrado por campus.
-- `PATCH /api/aspirantes/:id/status`: Actualizar etapa del ciclo en el tablero Kanban.
-- `PATCH /api/aspirantes/:id/archive`: Archivar o desarchivar un prospecto.
-- `DELETE /api/aspirantes/:id`: Eliminar un registro de la base de datos.
-- `GET /api/aspirantes/export`: Descargar base de datos oficial en formato **CSV UTF-8 (Excel)**.
-- `POST /api/aspirantes/seed`: Sembrar datos de demostración para presentaciones ejecutivas.
-
-### 📊 Diagnóstico y Métricas
-- `GET /api/analytics`: Métricas del embudo, efectividad de conversión y carreras oficiales.
-- `GET /api/health/full`: Diagnóstico de conectividad en tiempo real (MariaDB, LLMs, Circuit Breaker).
-- `GET /api/campuses`: Catálogo de sedes oficiales de la UNID.
-- `GET /api/brochures`: Catálogo de planes de estudio y folletos oficiales en PDF.
-- `GET /api/brochures/:id/download`: Descarga directa del PDF oficial de la carrera.
-
-### ⚙️ Configuración y Personalidad
-- `GET /api/models`: Lista de modelos de IA con detección de claves activas y cooldown.
-- `POST /api/models/active`: Cambiar el modelo de inferencia en caliente.
-- `GET /api/prompt`: Obtener el System Prompt activo y presets.
-- `POST /api/prompt`: Actualizar las directrices del bot en vivo sin reiniciar el servidor.
-
----
-
-## 🏢 Despliegue en Producción
-
-Para instalar **Metal-Uriel** en el servidor local/físico de la institución:
-
-1. **Gestor de Procesos con Uptime 24/7 (PM2):**
-   ```bash
-   npm install -g pm2
-   pm2 start index.js --name "metal-uriel-bot"
-   pm2 startup
-   pm2 save
-   ```
-2. **Exposición Segura con HTTPS para Meta Webhooks:**
-   - Se recomienda configurar un proxy reverso con **Nginx** y certificado **Let's Encrypt** apuntando al subdominio de admisiones:
-     ```nginx
-     location / {
-         proxy_pass http://localhost:3000;
-         proxy_http_version 1.1;
-         proxy_set_header Upgrade $http_upgrade;
-         proxy_set_header Connection 'upgrade';
-         proxy_set_header Host $host;
-         proxy_cache_bypass $http_upgrade;
-     }
-     ```
-   - Alternativamente, se puede utilizar **Cloudflare Tunnel (`cloudflared`)** para exponer el puerto 3000 con SSL automático sin abrir puertos en el firewall institucional.
-
-3. **Token Permanente de Meta (System User):**
-   - En el **Meta Business Manager** institucional, crear un *Usuario del Sistema (System User)* con rol de Administrador y permisos `whatsapp_business_management` y `whatsapp_business_messaging` para generar un token de acceso permanente que no caduque a las 24 horas.
+- **Instalación Plug & Play:** `GET /api/setup/status`, `POST /api/setup/validate`, `POST /api/setup/test-db`, `POST /api/setup/test-ai`, `POST /api/setup/test-whatsapp`, `POST /api/setup/test-smtp`, `POST /api/setup/complete`, `POST /api/system/test-alert`.
+- **Conversación & Webhook:** `GET/POST /webhook`, `POST /api/chat`, `POST /api/conversations/advisor-reply`, `POST /api/conversations/toggle-bot`.
+- **Prospectos, Kanban & Analítica:** `GET /api/aspirantes`, `PATCH /api/aspirantes/:id/status`, `GET /api/aspirantes/export`, `GET /api/analytics`, `GET /api/health/full`.
+- **Pool Multimedia & Categorías CRUD:** `GET/POST/PUT/DELETE /api/pool/categories`, `GET/POST/PUT/DELETE /api/pool/resources`, `POST /api/pool/upload`.
+- **RBAC, Sedes & IA:** `POST /api/auth/login`, `GET/POST/PUT/DELETE /api/users`, `GET/PUT /api/tenants/:slug`, `GET /api/models`, `POST /api/models/active`, `GET/POST /api/prompt`.
 
 ---
 
 ## 📄 Licencia
 
-Este proyecto está licenciado bajo los términos de la licencia **ISC**. Desarrollado con orgullo para la **Universidad Interamericana para el Desarrollo (UNID)**.
+Licencia **ISC**. Desarrollado por **Luis Felipe Quintero Cervera** para la **Universidad Interamericana para el Desarrollo (UNID) — Campus San Francisco de Campeche**.

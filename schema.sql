@@ -34,11 +34,12 @@ CREATE TABLE IF NOT EXISTS `sedes` (
 -- Tabla principal de registro de aspirantes / prospectos (Segmentada por Sede)
 CREATE TABLE IF NOT EXISTS `aspirantes` (
     `id` INT AUTO_INCREMENT PRIMARY KEY,
-    `sede_id` INT NULL,
+    `sede_id` VARCHAR(50) NULL DEFAULT 'campeche',
     `nombre_completo` VARCHAR(255) NOT NULL,
     `fecha_nacimiento` DATE NULL,
     `sexo` VARCHAR(30) NULL,
     `estado_nacimiento` VARCHAR(100) NULL,
+    `curp` VARCHAR(18) NULL,
     `telefono_celular` VARCHAR(30) NOT NULL,
     `correo_electronico` VARCHAR(255) NULL,
     `bachillerato_procedencia` VARCHAR(255) NULL,
@@ -150,6 +151,20 @@ CREATE TABLE IF NOT EXISTS `ciclos_escolares_sede` (
     `ciclos_disponibles` TEXT NULL COMMENT 'JSON array de ciclos disponibles',
     `updated_by` VARCHAR(150) NULL,
     `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Tabla 8: Bitácora Auditable de Notificaciones por Correo (Admisiones + Alertas Críticas Life Support)
+CREATE TABLE IF NOT EXISTS `bitacora_notificaciones_correo` (
+    `id` BIGINT AUTO_INCREMENT PRIMARY KEY,
+    `evento_tipo` VARCHAR(60) NOT NULL,
+    `destinatario` VARCHAR(255) NOT NULL,
+    `asunto` VARCHAR(255) NOT NULL,
+    `estado` VARCHAR(80) NOT NULL DEFAULT 'enviado',
+    `transporte` VARCHAR(60) NULL,
+    `detalle` TEXT NULL,
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX `idx_correo_evento` (`evento_tipo`),
+    INDEX `idx_correo_fecha` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
