@@ -9,9 +9,14 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-android-apk:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout del repositorio
         uses: actions/checkout@v4
@@ -75,20 +80,23 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="apk-latest"
-          NOTES="📱 **Metal-Uriel UNID v3.0 — APK Android (Capacitor + Headless API Ready)**
+          cat <<'EOF' > release-notes.md
+          📱 **Metal-Uriel UNID v3.0 — APK Android (Capacitor + Headless API Ready)**
 
           - Conéctate a tu servidor Headless (`npm run start:headless`) o servidor LAN/Túnel Cloudflare al abrir la app.
           - Incluye soporte para LAN HTTP local (`http://192.168.x.x:3000`) y HTTPS (`https://...`), Live Inbox, Kanban, Pool Multimedia, Analítica y Setup Wizard.
-          - Commit compilado: \`${{ github.sha }}\` (rama \`${{ github.ref_name }}\`).
 
-          **Instalación en Android:** Descarga \`Metal-Uriel-UNID-v3.apk\`, ábrelo en tu teléfono y permite *Instalar apps desconocidas*."
+          **Instalación en Android:** Descarga `Metal-Uriel-UNID-v3.apk`, ábrelo en tu teléfono y permite *Instalar apps desconocidas*.
+          EOF
+          echo "" >> release-notes.md
+          echo "- Commit compilado: \`${GITHUB_SHA}\` (rama \`${GITHUB_REF_NAME}\`)." >> release-notes.md
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist-apk/Metal-Uriel-UNID-v3.apk --clobber
-            gh release edit "$TAG" --notes "$NOTES" --target "${{ github.sha }}"
+            gh release edit "$TAG" --notes-file release-notes.md --target "$GITHUB_SHA"
           else
             gh release create "$TAG" dist-apk/Metal-Uriel-UNID-v3.apk \
               --title "Metal-Uriel UNID v3 — Android APK (Latest)" \
-              --notes "$NOTES" \
-              --target "${{ github.sha }}"
+              --notes-file release-notes.md \
+              --target "$GITHUB_SHA"
           fi
