@@ -2,8 +2,9 @@ const express = require('express');
 const { config } = require('../config/env');
 const { conversationMemory, userSessionState, processedMessageIds, touchUserSession } = require('../state/memory');
 const { webhookLimiter, verifyMetaWebhookSignature } = require('../middlewares/auth');
-const { processChatMessage } = require('../services/admissions.service');
+const { processChatMessage, guardarMensajeHistorialBD, registrarLeadInicialEnBD } = require('../services/admissions.service');
 const { sendWhatsAppMessage } = require('../services/whatsapp.service');
+const { normalizePhoneCanonical, pickBestDialPhone } = require('../../lib/chat-audit-utils');
 
 const router = express.Router();
 
@@ -51,15 +52,31 @@ router.post('/webhook', webhookLimiter, verifyMetaWebhookSignature, async (req, 
                         if (!messageText) continue;
 
                         const senderPhone = messageObj.from;
-                        const session = userSessionState.get(senderPhone);
+                        const canonical = normalizePhoneCanonical(senderPhone);
+                        const session = userSessionState.get(canonical) || userSessionState.get(senderPhone);
+
                         if (session?.isPaused) {
-                            if (!conversationMemory.has(senderPhone)) conversationMemory.set(senderPhone, []);
-                            conversationMemory.get(senderPhone).push({ role: 'user', content: messageText, timestamp: new Date() });
-                            touchUserSession(senderPhone);
+                            // CRÍTICO: Aunque la IA esté pausada por un asesor humano, persistir SIEMPRE el mensaje en MariaDB
+                            if (!conversationMemory.has(canonical)) conversationMemory.set(canonical, []);
+                            conversationMemory.get(canonical).push({
+                                role: 'user',
+                                content: messageText,
+                                timestamp: new Date(),
+                                whatsappMessageId: messageId || null
+                            });
+                            session.dialPhone = pickBestDialPhone([session.dialPhone, senderPhone]);
+                            userSessionState.set(canonical, session);
+                            touchUserSession(canonical);
+                            await registrarLeadInicialEnBD(senderPhone, messageText, 'campeche');
+                            await guardarMensajeHistorialBD(senderPhone, 'user', messageText, 'campeche', {
+                                whatsappMessageId: messageId || null
+                            });
                             continue;
                         }
 
-                        const result = await processChatMessage(senderPhone, messageText);
+                        const result = await processChatMessage(senderPhone, messageText, null, 'campeche', {
+                            whatsappMessageId: messageId || null
+                        });
                         await sendWhatsAppMessage(senderPhone, result.reply, result.documentAttachment);
                     }
                 }

@@ -221,6 +221,19 @@ async function initializeDatabase(options = {}) {
                 INDEX idx_historial_telefono (telefono_celular, timestamp),
                 INDEX idx_historial_sede (sede_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+            `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS telefono_canonico VARCHAR(20) NULL`,
+            `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS conversacion_destacada TINYINT(1) DEFAULT 0`,
+            `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS fecha_inscripcion TIMESTAMP NULL DEFAULT NULL`,
+            `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS cerrado_manualmente TINYINT(1) DEFAULT 0`,
+            `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS cerrado_por VARCHAR(150) NULL`,
+            `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS notas_asesor TEXT NULL`,
+            `ALTER TABLE historial_conversaciones ADD COLUMN IF NOT EXISTS telefono_canonico VARCHAR(20) NULL`,
+            `ALTER TABLE historial_conversaciones ADD COLUMN IF NOT EXISTS remitente_nombre VARCHAR(150) NULL`,
+            `ALTER TABLE historial_conversaciones ADD COLUMN IF NOT EXISTS modelo_ia VARCHAR(80) NULL`,
+            `ALTER TABLE historial_conversaciones ADD COLUMN IF NOT EXISTS whatsapp_message_id VARCHAR(120) NULL`,
+            `ALTER TABLE historial_conversaciones ADD COLUMN IF NOT EXISTS adjunto_json TEXT NULL`,
+            `CREATE INDEX idx_asp_canonico ON aspirantes (telefono_canonico)`,
+            `CREATE INDEX idx_hist_canonico ON historial_conversaciones (telefono_canonico, timestamp)`,
             `CREATE TABLE IF NOT EXISTS ciclos_escolares_sede (
                 sede_id VARCHAR(50) PRIMARY KEY,
                 ciclo_activo VARCHAR(60) NOT NULL DEFAULT '2026-3 Septiembre',
@@ -269,6 +282,22 @@ async function initializeDatabase(options = {}) {
         for (const sql of migrations) {
             try { await connection.query(sql); } catch (_) {}
         }
+
+        // Backfill automático de telefono_canonico para registros legacy (elimina chats duplicados)
+        try {
+            const { normalizePhoneCanonical } = require('../../lib/chat-audit-utils');
+            const [aspLegacy] = await connection.query('SELECT id, telefono_celular FROM aspirantes WHERE telefono_canonico IS NULL AND telefono_celular IS NOT NULL LIMIT 500');
+            for (const row of aspLegacy) {
+                const canon = normalizePhoneCanonical(row.telefono_celular);
+                if (canon) await connection.execute('UPDATE aspirantes SET telefono_canonico = ? WHERE id = ?', [canon, row.id]);
+            }
+            const [histLegacy] = await connection.query('SELECT id, telefono_celular FROM historial_conversaciones WHERE telefono_canonico IS NULL AND telefono_celular IS NOT NULL LIMIT 2000');
+            for (const row of histLegacy) {
+                const canon = normalizePhoneCanonical(row.telefono_celular);
+                if (canon) await connection.execute('UPDATE historial_conversaciones SET telefono_canonico = ? WHERE id = ?', [canon, row.id]);
+            }
+            await connection.query("UPDATE aspirantes SET conversacion_destacada = 1 WHERE estado_prospecto = 'inscrito' AND COALESCE(conversacion_destacada, 0) = 0");
+        } catch (_) {}
 
         try {
             const [catCount] = await connection.query('SELECT COUNT(*) as count FROM pool_categorias');

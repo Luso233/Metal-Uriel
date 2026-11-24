@@ -124,7 +124,26 @@ router.patch('/api/aspirantes/:id/status', authMiddleware, async (req, res) => {
         if (prevLead && req.user.rol !== 'desarrollador' && req.user.sede_id && prevLead.sede_id && prevLead.sede_id !== req.user.sede_id) {
             return res.status(403).json({ error: 'No tienes permiso para modificar prospectos de otra sede.' });
         }
-        await getPool().execute('UPDATE aspirantes SET estado_prospecto = ? WHERE id = ?', [estado, id]);
+        await getPool().execute(
+            `UPDATE aspirantes
+             SET estado_prospecto = ?,
+                 conversacion_destacada = CASE WHEN ? = 'inscrito' THEN 1 ELSE conversacion_destacada END,
+                 fecha_inscripcion = CASE WHEN ? = 'inscrito' AND fecha_inscripcion IS NULL THEN CURRENT_TIMESTAMP ELSE fecha_inscripcion END
+             WHERE id = ?`,
+            [estado, estado, estado, id]
+        );
+        // Registrar evento auditable en la bóveda de conversación
+        if (prevLead?.telefono_celular) {
+            const { guardarMensajeHistorialBD } = require('../services/admissions.service');
+            const label = estado === 'inscrito' ? '🏆 INSCRITO (Caso de Éxito preservado para estudio)' : estado.toUpperCase();
+            guardarMensajeHistorialBD(
+                prevLead.telefono_celular,
+                'system',
+                `Estado de postulación actualizado a ${label} por ${req.user?.displayName || 'Asesor UNID'}.`,
+                prevLead.sede_id || 'campeche',
+                { senderName: req.user?.displayName || 'Sistema UNID' }
+            ).catch(() => {});
+        }
         let emailTriggered = false;
         if (estado === 'inscrito' && (!prevLead || prevLead.estado_prospecto !== 'inscrito')) {
             emailTriggered = true;

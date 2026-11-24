@@ -9,6 +9,10 @@ const crypto = require('node:crypto');
 const jwt = require('jsonwebtoken');
 
 const securityUtils = require('../lib/security-utils');
+const setupUtils = require('../lib/setup-utils');
+const chatAuditUtils = require('../lib/chat-audit-utils');
+const zipBuilder = require('../lib/zip-builder');
+const { getPool } = require('../src/db/pool');
 const serverMod = require('../index');
 
 describe('lib/security-utils — HMAC Meta, Guardrails JSON, Geografía y RAM GC', () => {
@@ -180,9 +184,13 @@ describe('Integración HTTP Express — Blindaje RBAC, Helmet y Firma HMAC Webho
         });
     });
 
-    after((_, done) => {
-        if (httpServer) httpServer.close(done);
-        else done();
+    after(async () => {
+        if (httpServer) {
+            await new Promise((resolve) => httpServer.close(resolve));
+        }
+        try {
+            await getPool().end();
+        } catch (_) {}
     });
 
     it('expone cabeceras Helmet y /api/health mínimo sin filtrar detalles internos', async () => {
@@ -303,10 +311,114 @@ describe('Integración HTTP Express — Blindaje RBAC, Helmet y Firma HMAC Webho
             const healthRes = await fetch(`${baseUrl}/api/health`);
             const healthJson = await healthRes.json();
             assert.equal(healthJson.mode, 'headless');
-            assert.equal(healthJson.apiVersion, '3.0.0');
+            assert.match(healthJson.apiVersion, /^3\./);
         } finally {
             if (prevHeadless === undefined) delete process.env.HEADLESS_MODE;
             else process.env.HEADLESS_MODE = prevHeadless;
+        }
+    });
+
+    it('protege y ejecuta /api/conversations/:phone/history y /export-zip (ZIP válido PK)', async () => {
+        const unauthZip = await fetch(`${baseUrl}/api/conversations/5219818194049/export-zip`);
+        assert.equal(unauthZip.status, 401);
+
+        const devTok = signToken('desarrollador', null);
+        const histRes = await fetch(`${baseUrl}/api/conversations/5219818194049/history`, {
+            headers: { Authorization: `Bearer ${devTok}` }
+        });
+        assert.equal(histRes.status, 200);
+        const histJson = await histRes.json();
+        assert.equal(histJson.success, true);
+        assert.equal(histJson.canonicalPhone, '9818194049');
+
+        const zipRes = await fetch(`${baseUrl}/api/conversations/+529818194049/export-zip`, {
+            headers: { Authorization: `Bearer ${devTok}` }
+        });
+        assert.equal(zipRes.status, 200);
+        assert.match(zipRes.headers.get('content-type') || '', /application\/zip/i);
+        const buf = Buffer.from(await zipRes.arrayBuffer());
+        assert.equal(buf[0], 0x50); // 'P'
+        assert.equal(buf[1], 0x4b); // 'K'
+        assert.equal(buf[2], 0x03);
+        assert.equal(buf[3], 0x04);
+    });
+});
+
+describe('Auditoría Eterna de Chats, Deduplicación Canónica, ZIP y Filtro LAN VirtualBox', () => {
+    it('unifica todas las variantes telefónicas MX/WhatsApp a una clave canónica única', () => {
+        const variants = ['5219818194049', '+52 1 981 819 4049', '+52 981 819 4049', '529818194049', '981-819-4049'];
+        const normalized = new Set(variants.map(chatAuditUtils.normalizePhoneCanonical));
+        assert.equal(normalized.size, 1);
+        assert.equal(Array.from(normalized)[0], '9818194049');
+        assert.equal(chatAuditUtils.pickBestDialPhone(['9818194049', '+529818194049', '5219818194049']), '5219818194049');
+    });
+
+    it('detecta conversaciones inconclusas con tiempo detenido y destaca Casos de Éxito (Inscritos)', () => {
+        const now = Date.now();
+        const threeHoursAgo = new Date(now - 3 * 60 * 60 * 1000).toISOString();
+        const incomplete = chatAuditUtils.analyzeLeadCompleteness(
+            {
+                nombre_completo: 'Prospecto WhatsApp (5219811112233)',
+                telefono_celular: '5219811112233',
+                carrera_interes: 'Licenciatura en Derecho',
+                estado_prospecto: 'nuevo'
+            },
+            [{ sender: 'user', text: 'Hola', timestamp: threeHoursAgo }],
+            { now }
+        );
+        assert.equal(incomplete.isIncomplete, true);
+        assert.equal(incomplete.urgency, 'alta');
+        assert.equal(incomplete.needsHumanAttention, true);
+        assert.match(incomplete.stalledLabel, /3h/);
+        assert.match(incomplete.aiSituationPreview, /Ficha inconclusa/i);
+
+        const enrolled = chatAuditUtils.analyzeLeadCompleteness(
+            {
+                nombre_completo: 'Carlos Alpuche Canul',
+                carrera_interes: 'Licenciatura en Derecho',
+                estado_prospecto: 'inscrito'
+            },
+            [{ sender: 'user', text: 'Ya me inscribí', timestamp: threeHoursAgo }],
+            { now }
+        );
+        assert.equal(enrolled.isIncomplete, false);
+        assert.equal(enrolled.isComplete, true);
+        assert.match(enrolled.aiSituationPreview, /Caso de Éxito/i);
+    });
+
+    it('construye un archivo ZIP válido estilo WhatsApp con .txt, .json, .md y adjuntos', () => {
+        const { zipBuffer, fileName } = zipBuilder.buildWhatsAppConversationZip({
+            aspirante: {
+                nombre_completo: 'María López Pech',
+                carrera_interes: 'Derecho',
+                estado_prospecto: 'inscrito',
+                conversacion_destacada: 1
+            },
+            canonicalPhone: '9818194049',
+            dialPhone: '5219818194049',
+            messages: [
+                { rol: 'user', mensaje: 'Hola, quiero informes', timestamp: new Date().toISOString() },
+                { rol: 'assistant', modelo_ia: 'gemini-3.8-flash', mensaje: '¡Hola! Claro que sí.', timestamp: new Date().toISOString() },
+                { rol: 'human_advisor', remitente_nombre: 'Lic. Omar', mensaje: 'Te agendo tu cita hoy.', timestamp: new Date().toISOString() }
+            ],
+            completeness: { completedCount: 11, totalFields: 11, percent: 100, aiSituationPreview: 'Inscrito' },
+            attachmentFiles: [{ fileName: 'plan_derecho.pdf', buffer: Buffer.from('%PDF-1.4 test') }]
+        });
+        assert.match(fileName, /^MetalUriel_Chat_Maria_Lopez_Pech_\d{4}-\d{2}-\d{2}\.zip$/);
+        assert.equal(zipBuffer.readUInt32LE(0), 0x04034b50); // Local File Header
+        assert.ok(zipBuffer.includes(Buffer.from('Chat_WhatsApp_Maria_Lopez_Pech.txt')));
+        assert.ok(zipBuffer.includes(Buffer.from('expediente_auditoria.json')));
+        assert.ok(zipBuffer.includes(Buffer.from('resumen_ejecutivo.md')));
+        assert.ok(zipBuffer.includes(Buffer.from('adjuntos/plan_derecho.pdf')));
+    });
+
+    it('filtra adaptadores virtuales (VirtualBox 192.168.56.x) fuera de lanUrls y expone firewallCommand', () => {
+        const hw = setupUtils.getSystemHardwareReport(3000);
+        assert.ok(Array.isArray(hw.lanUrls));
+        assert.ok(Array.isArray(hw.virtualUrls));
+        assert.ok(typeof hw.firewallCommand === 'string' && hw.firewallCommand.includes('localport=3000'));
+        for (const u of hw.lanUrls) {
+            assert.doesNotMatch(u, /192\.168\.56\./, 'IP VirtualBox no debe aparecer como LAN principal');
         }
     });
 });

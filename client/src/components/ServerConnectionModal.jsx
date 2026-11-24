@@ -28,6 +28,7 @@ export default function ServerConnectionModal({ isOpen, onClose, onConnected, fo
   if (!isOpen) return null;
 
   const isNative = isNativeCapacitor();
+  const isVirtualAdapterIp = /https?:\/\/(192\.168\.56\.|192\.168\.248\.|169\.254\.|127\.0\.0\.1|localhost)/i.test(urlInput.trim());
 
   const handleChange = (val) => {
     setUrlInput(val);
@@ -170,12 +171,32 @@ export default function ServerConnectionModal({ isOpen, onClose, onConnected, fo
                 error ? 'user-invalid-fallback border-red-500' : 'border-slate-600'
               }`}
             />
+            {isVirtualAdapterIp && (
+              <div role="alert" className="p-2.5 rounded-xl bg-amber-950/60 border border-amber-500/40 text-xs text-amber-200 leading-snug">
+                ⚠️ <strong>IP virtual o local detectada:</strong> <code className="text-amber-300">192.168.56.x</code> (VirtualBox) o <code className="text-amber-300">localhost</code> no son accesibles desde el celular. Revisa en la consola de tu PC la sección <strong>"LAN Wi-Fi / Ethernet"</strong> (ej. <code className="text-emerald-300">http://192.168.1.70:3000</code>) o usa un túnel HTTPS.
+              </div>
+            )}
             {error && (
               <p id="metal-server-url-err" role="alert" className="text-xs font-semibold text-red-400 mt-0.5">
                 ❌ {error}
               </p>
             )}
           </div>
+
+          <details className="rounded-xl bg-slate-900/80 border border-slate-700/70 p-3 text-xs text-slate-300">
+            <summary className="cursor-pointer font-bold text-slate-200 select-none">
+              💡 ¿No conecta desde el celular? Checklist en 3 pasos
+            </summary>
+            <ol className="mt-2 space-y-1.5 list-decimal list-inside text-[11px] text-slate-400 leading-relaxed">
+              <li>Verifica que el celular y la PC estén en el <strong className="text-slate-200">mismo Wi-Fi / red local</strong>.</li>
+              <li>Usa la IP real que imprime el servidor (evita <code className="text-amber-300">192.168.56.1</code> de VirtualBox).</li>
+              <li>Si Windows bloquea el puerto, abre PowerShell como Administrador en la PC y ejecuta:<br />
+                <code className="block mt-1 p-1.5 rounded bg-slate-950 text-sky-300 font-mono text-[10px] break-all">
+                  netsh advfirewall firewall add rule name="Metal-Uriel TCP 3000" dir=in action=allow protocol=TCP localport=3000
+                </code>
+              </li>
+            </ol>
+          </details>
 
           {testResult?.ok && (
             <div

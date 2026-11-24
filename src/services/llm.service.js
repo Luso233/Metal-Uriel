@@ -15,6 +15,7 @@ const {
 const { getActiveCicloEscolar, getActivePoolItems } = require('./pool.service');
 const { enviarAlertaSistema, recordLlmTelemetry } = require('./mail.service');
 const securityUtils = require('../../lib/security-utils');
+const { normalizePhoneCanonical } = require('../../lib/chat-audit-utils');
 
 let geminiClient = null;
 let anthropicClient = null;
@@ -177,7 +178,9 @@ async function llamarAPI_Gemini(modelId, prompt, history) {
     const normalizedId = legacyMap[modelId] || modelId;
     const primaryModel = (normalizedId && normalizedId.startsWith('gemini')) ? normalizedId : 'gemini-3.8-flash';
     const candidateModels = Array.from(new Set([primaryModel, 'gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-4-argon']));
-    const geminiContents = history.map(h => ({ role: h.role === 'assistant' ? 'model' : 'user', parts: [{ text: h.content }] }));
+    const geminiContents = history
+        .filter(h => h.role !== 'system')
+        .map(h => ({ role: (h.role === 'assistant' || h.role === 'human_advisor') ? 'model' : 'user', parts: [{ text: h.content }] }));
 
     let lastErr = null;
     for (const targetModel of candidateModels) {
@@ -206,7 +209,9 @@ async function llamarAPI_Claude(modelId, prompt, history) {
         model: targetModel,
         max_tokens: 1000,
         system: prompt,
-        messages: history.map(h => ({ role: h.role === 'assistant' ? 'assistant' : 'user', content: h.content })),
+        messages: history
+            .filter(h => h.role !== 'system')
+            .map(h => ({ role: (h.role === 'assistant' || h.role === 'human_advisor') ? 'assistant' : 'user', content: h.content })),
         temperature: 0.7
     });
     const replyText = response.content?.[0]?.type === 'text' ? response.content[0].text.trim() : '';
@@ -221,7 +226,13 @@ async function llamarAPI_OpenAI(modelId, prompt, history) {
     const targetModel = modelId && modelId.startsWith('gpt') ? modelId : 'gpt-4o-mini';
     const response = await openaiClient.chat.completions.create({
         model: targetModel,
-        messages: [{ role: 'system', content: prompt }, ...history.map(h => ({ role: h.role, content: h.content }))],
+        messages: [
+            { role: 'system', content: prompt },
+            ...history.filter(h => h.role !== 'system').map(h => ({
+                role: (h.role === 'assistant' || h.role === 'human_advisor') ? 'assistant' : 'user',
+                content: h.content
+            }))
+        ],
         temperature: 0.7,
         max_tokens: 800
     });
@@ -236,7 +247,13 @@ async function llamarAPI_DeepSeek(_modelId, prompt, history) {
     }
     const response = await deepseekClient.chat.completions.create({
         model: 'deepseek-chat',
-        messages: [{ role: 'system', content: prompt }, ...history.map(h => ({ role: h.role, content: h.content }))],
+        messages: [
+            { role: 'system', content: prompt },
+            ...history.filter(h => h.role !== 'system').map(h => ({
+                role: (h.role === 'assistant' || h.role === 'human_advisor') ? 'assistant' : 'user',
+                content: h.content
+            }))
+        ],
         temperature: 0.7,
         max_tokens: 800
     });
@@ -251,7 +268,13 @@ async function llamarAPI_Groq(_modelId, prompt, history) {
     }
     const response = await groqClient.chat.completions.create({
         model: 'llama-3.3-70b-versatile',
-        messages: [{ role: 'system', content: prompt }, ...history.map(h => ({ role: h.role, content: h.content }))],
+        messages: [
+            { role: 'system', content: prompt },
+            ...history.filter(h => h.role !== 'system').map(h => ({
+                role: (h.role === 'assistant' || h.role === 'human_advisor') ? 'assistant' : 'user',
+                content: h.content
+            }))
+        ],
         temperature: 0.7,
         max_tokens: 800
     });
@@ -275,7 +298,10 @@ async function llamarAPI_Ollama(modelId, prompt, history) {
             model: targetModel,
             messages: [
                 { role: 'system', content: prompt },
-                ...history.slice(-10).map(h => ({ role: h.role === 'assistant' ? 'assistant' : 'user', content: h.content }))
+                ...history
+                    .filter(h => h.role !== 'system')
+                    .slice(-10)
+                    .map(h => ({ role: (h.role === 'assistant' || h.role === 'human_advisor') ? 'assistant' : 'user', content: h.content }))
             ],
             stream: false,
             options: { temperature: 0.7, num_predict: 500 }
@@ -297,14 +323,15 @@ const FALLBACK_PROVIDER_PIPELINE = [
 ];
 
 async function callMetalUrielLLM(senderPhone, userMessage, requestedModelId = null, sedeId = 'campeche') {
-    if (!conversationMemory.has(senderPhone)) {
-        conversationMemory.set(senderPhone, []);
+    const canonicalKey = normalizePhoneCanonical(senderPhone) || senderPhone;
+    if (!conversationMemory.has(canonicalKey)) {
+        conversationMemory.set(canonicalKey, []);
         incrementTotalConversations();
     }
-    const history = conversationMemory.get(senderPhone);
+    const history = conversationMemory.get(canonicalKey);
     history.push({ role: 'user', content: userMessage, timestamp: new Date() });
-    touchUserSession(senderPhone);
-    if (history.length > 20) history.splice(0, history.length - 20);
+    touchUserSession(canonicalKey);
+    if (history.length > 24) history.splice(0, history.length - 24);
 
     let currentPrompt = getActivePrompt();
     const cicloActivo = await getActiveCicloEscolar(sedeId);
@@ -323,7 +350,7 @@ REGLA DE ORO PARA ENVÍO DE ARCHIVOS DEL POOL (CONFIRMACIÓN PREVIA):
 1. Cuando el aspirante pregunte por información de una carrera, plan de estudios, oferta educativa, horarios de clase o fotos de las instalaciones, respóndele primero de forma clara y cálida usando la información del Pool y **pregúntale primero**: "¿Te gustaría que te envíe por aquí el PDF/imagen oficial de [Nombre del Recurso]?"
 2. ÚNICAMENTE cuando el aspirante confirme que sí desea el archivo o solicite envío directo, incluye al final de tu respuesta la etiqueta exacta: [ADJUNTAR_RECURSO: codigo_del_recurso].`;
 
-    const session = userSessionState.get(senderPhone);
+    const session = userSessionState.get(canonicalKey);
     if (session?.isRegistered && session.leadData) {
         currentPrompt = `${currentPrompt}
 
@@ -388,8 +415,14 @@ NUNCA vuelvas a solicitarle los 11 datos ni a reiniciar el cuestionario.`;
                 isFallback: i > 0,
                 success: true
             });
-            history.push({ role: 'assistant', content: result.reply, timestamp: new Date() });
-            touchUserSession(senderPhone);
+            history.push({
+                role: 'assistant',
+                content: result.reply,
+                senderName: 'Metal-Uriel IA',
+                modelUsed: result.modelUsed || modelParam,
+                timestamp: new Date()
+            });
+            touchUserSession(canonicalKey);
             result.isFallbackSwitch = i > 0;
             result.latencyMs = latencyMs;
             if (i > 0) result.switchedFrom = providersToTry[0].provider;

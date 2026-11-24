@@ -7,6 +7,8 @@ import {
   formatTimeAgo
 } from './constants/dashboardData.js';
 import ServerConnectionModal from './components/ServerConnectionModal.jsx';
+import ContactProfileDrawer from './components/ContactProfileDrawer.jsx';
+import HelpCenterFaq from './components/HelpCenterFaq.jsx';
 import {
   isNativeCapacitor,
   getServerUrl,
@@ -24,7 +26,18 @@ function App() {
   const [chatFilterTab, setChatFilterTab] = useState('all'); // 'all' | 'nuevo' | 'contactado' | 'inscrito' | 'paused'
   const [isAdvisorMode, setIsAdvisorMode] = useState(true); // true = Enviar como Asesor Humano a WhatsApp | false = Simular Aspirante
   const [showFichaDrawer, setShowFichaDrawer] = useState(false);
+  const [showContactProfile, setShowContactProfile] = useState(false);
   const [showBrochurePicker, setShowBrochurePicker] = useState(false);
+  const [mobileShowChat, setMobileShowChat] = useState(false);
+  const [showToolsMenu, setShowToolsMenu] = useState(false);
+  const [showMobileNavSheet, setShowMobileNavSheet] = useState(false);
+  const [uiToast, setUiToast] = useState(null);
+  const toastTimerRef = useRef(null);
+  const showToast = (message, type = 'success') => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setUiToast({ message, type });
+    toastTimerRef.current = setTimeout(() => setUiToast(null), 4200);
+  };
 
   // Estados del Chat Activo
   const [phone, setPhone] = useState('+529811581001');
@@ -389,6 +402,21 @@ function App() {
   }, [activeTab, analyticsData]);
 
   // ================= MÉTODOS DE BANDEJA Y API =================
+  const loadFullConversationHistory = async (targetPhone) => {
+    if (!targetPhone) return;
+    try {
+      const res = await fetch(`/api/conversations/${encodeURIComponent(targetPhone)}/history`, {
+        headers: getAuthHeaders()
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.success && Array.isArray(data.messages)) {
+        setMessages(data.messages);
+        if (data.aspirante) setLiveExtractedFields(data.aspirante);
+      }
+    } catch (_) {}
+  };
+
   const loadConversations = async (silent = false) => {
     try {
       const campusQuery = selectedCampus ? `?campus=${encodeURIComponent(selectedCampus)}` : '';
@@ -398,19 +426,27 @@ function App() {
       const data = await res.json();
       if (data.success && Array.isArray(data.conversations)) {
         setConversations(data.conversations);
-        
-        // Si no hay seleccionado o es la primera carga, seleccionar la primera
+
+        // Si no hay seleccionado o es la primera carga, seleccionar la primera activa
         if (!selectedChatPhone && data.conversations.length > 0) {
-          const first = data.conversations[0];
-          setSelectedChatPhone(first.cleanPhone || first.phone);
+          const first = data.conversations.find(c => !c.archivado) || data.conversations[0];
+          const firstId = first.canonicalPhone || first.cleanPhone || first.phone;
+          setSelectedChatPhone(firstId);
           setPhone(first.phone);
           setMessages(first.messages || []);
           if (first.leadData) setLiveExtractedFields(first.leadData);
+          if (first.hasMoreHistory) loadFullConversationHistory(firstId);
         } else if (selectedChatPhone) {
-          // Sincronizar mensajes del chat actual
-          const current = data.conversations.find(c => (c.cleanPhone || c.phone) === selectedChatPhone);
-          if (current && current.messages) {
-            setMessages(current.messages);
+          // Sincronizar mensajes del chat actual sin truncar historial completo
+          const current = data.conversations.find(
+            c => (c.canonicalPhone || c.cleanPhone || c.phone) === selectedChatPhone
+          );
+          if (current) {
+            if (current.hasMoreHistory) {
+              loadFullConversationHistory(current.canonicalPhone || current.phone);
+            } else if (current.messages) {
+              setMessages(current.messages);
+            }
             if (current.leadData) setLiveExtractedFields(current.leadData);
           }
         }
@@ -421,14 +457,16 @@ function App() {
   };
 
   const handleSelectConversation = (conv) => {
-    const cleanId = conv.cleanPhone || conv.phone;
+    const cleanId = conv.canonicalPhone || conv.cleanPhone || conv.phone;
     setSelectedChatPhone(cleanId);
     setPhone(conv.phone);
     setMessages(conv.messages || []);
+    setMobileShowChat(true);
     if (conv.leadData) {
       setLiveExtractedFields(conv.leadData);
     }
-    if (inputRef.current) inputRef.current.focus();
+    loadFullConversationHistory(cleanId);
+    if (inputRef.current && window.innerWidth >= 768) inputRef.current.focus();
   };
 
   const handleToggleAiPause = async (targetPhone, currentPaused) => {
@@ -441,12 +479,16 @@ function App() {
       });
       const data = await res.json();
       if (data.success) {
+        const targetCanon = data.canonicalPhone || selectedChatPhone;
         setConversations(prev => prev.map(c => {
-          if ((c.cleanPhone || c.phone) === (targetPhone.replace(/[\s\-\+]/g, '') || targetPhone)) {
+          const cid = c.canonicalPhone || c.cleanPhone || c.phone;
+          if (cid === targetCanon || c.phone === targetPhone) {
             return { ...c, isPaused: nextPaused };
           }
           return c;
         }));
+        showToast(nextPaused ? '⏸️ IA pausada: tienes control humano del chat.' : '🤖 Robot Metal-Uriel reactivado.', 'info');
+        loadConversations(true);
       }
     } catch (e) {
       alert('Error cambiando estado de IA: ' + e.message);
@@ -1462,17 +1504,36 @@ function App() {
   const isUsuario = currentUserRole === 'usuario';
   const isAdmin = isDesarrollador || isAdministrador;
 
+  // Conteos rápidos para chips de la Bandeja Auditada
+  const inboxCounts = useMemo(() => {
+    const active = conversations.filter(c => !c.archivado);
+    return {
+      active: active.length,
+      incomplete: active.filter(c => c.completeness?.isIncomplete).length,
+      golden: conversations.filter(c => c.isGoldenCase || c.estado_prospecto === 'inscrito').length,
+      paused: active.filter(c => c.isPaused).length,
+      archived: conversations.filter(c => c.archivado).length
+    };
+  }, [conversations]);
+
   // Filtrado de la lista de conversaciones en WhatsApp Web
   const filteredConversations = useMemo(() => {
-    return conversations.filter(c => {
+    const filtered = conversations.filter(c => {
       // Filtro por Ciclo Escolar
       if (selectedCicloFilter !== 'all' && (c.ciclo_escolar || '2026-3 Septiembre') !== selectedCicloFilter) return false;
 
-      // Filtro por tab
-      if (chatFilterTab === 'nuevo' && c.estado_prospecto !== 'nuevo') return false;
-      if (chatFilterTab === 'contactado' && (c.estado_prospecto !== 'contactado' && c.estado_prospecto !== 'en_proceso')) return false;
-      if (chatFilterTab === 'inscrito' && c.estado_prospecto !== 'inscrito') return false;
-      if (chatFilterTab === 'paused' && !c.isPaused) return false;
+      // Archivado por estatus: ocultar archivados de la bandeja activa salvo en pestaña Archivados o Inscritos
+      if (chatFilterTab === 'archived') {
+        if (!c.archivado) return false;
+      } else if (chatFilterTab === 'inscrito') {
+        if (!(c.isGoldenCase || c.estado_prospecto === 'inscrito')) return false;
+      } else {
+        if (c.archivado) return false;
+        if (chatFilterTab === 'incomplete' && !c.completeness?.isIncomplete) return false;
+        if (chatFilterTab === 'nuevo' && c.estado_prospecto !== 'nuevo') return false;
+        if (chatFilterTab === 'contactado' && (c.estado_prospecto !== 'contactado' && c.estado_prospecto !== 'en_proceso')) return false;
+        if (chatFilterTab === 'paused' && !c.isPaused) return false;
+      }
 
       // Filtro por búsqueda
       if (chatSearchQuery.trim()) {
@@ -1485,11 +1546,17 @@ function App() {
       }
       return true;
     });
+
+    // En la vista "Inconclusas", priorizar las que llevan más tiempo esperando atención humana
+    if (chatFilterTab === 'incomplete') {
+      return [...filtered].sort((a, b) => (b.completeness?.stalledMs || 0) - (a.completeness?.stalledMs || 0));
+    }
+    return filtered;
   }, [conversations, chatFilterTab, chatSearchQuery, selectedCicloFilter]);
 
   // Conversación seleccionada actual
   const activeConversation = useMemo(() => {
-    return conversations.find(c => (c.cleanPhone || c.phone) === selectedChatPhone) || conversations[0] || null;
+    return conversations.find(c => (c.canonicalPhone || c.cleanPhone || c.phone) === selectedChatPhone) || conversations[0] || null;
   }, [conversations, selectedChatPhone]);
 
   return (
@@ -1510,9 +1577,9 @@ function App() {
       )}
 
       {/* ========================================================================= */}
-      {/* 1. BARRA VERTICAL DE ICONOS (ESTILO WHATSAPP WEB COMPACT ~64px)           */}
+      {/* 1. BARRA VERTICAL DE ICONOS (ESTILO WHATSAPP WEB COMPACT ~64px, SOLO DESKTOP/TABLET) */}
       {/* ========================================================================= */}
-      <aside className="w-16 bg-[#111B21] border-r border-[#222E35] flex flex-col items-center justify-between py-3 shrink-0 z-40">
+      <aside className="hidden md:flex w-16 bg-[#111B21] border-r border-[#222E35] flex-col items-center justify-between py-3 shrink-0 z-40">
         
         {/* Top: Logo & Navegación Principal */}
         <div className="flex flex-col items-center gap-4 w-full">
@@ -1822,35 +1889,44 @@ function App() {
       {/* ========================================================================= */}
       <div className="flex-1 flex flex-col h-full bg-[#0C1317] overflow-hidden">
         
-        {/* TOP BAR COMPACTA & ELEGANTE */}
-        <header className="h-12 bg-[#111B21] border-b border-[#222E35] px-4 flex items-center justify-between shrink-0 z-30">
-          
-          <div className="flex items-center gap-3">
-            <span className="font-black text-xs text-amber-400 tracking-wider flex items-center gap-1.5">
+        {/* TOP BAR SIMPLIFICADA & RESPONSIVA */}
+        <header className="h-12 bg-[#111B21] border-b border-[#222E35] px-3 sm:px-4 flex items-center justify-between gap-2 shrink-0 z-30">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+            {/* Logo táctil en móvil */}
+            <button
+              type="button"
+              onClick={() => { setActiveTab('inbox'); setMobileShowChat(false); }}
+              className="md:hidden w-8 h-8 rounded-xl bg-gradient-to-br from-[#FFC72C] to-red-600 flex items-center justify-center font-black text-slate-950 text-sm shrink-0 shadow"
+              title="Metal-Uriel UNID"
+            >
+              🐺
+            </button>
+
+            <span className="font-black text-xs text-amber-400 tracking-wider flex items-center gap-1.5 shrink-0">
               <span>:UNID</span>
-              <span className="text-slate-400 font-normal">|</span>
-              <span className="text-slate-200">Centro de Mando</span>
+              <span className="hidden sm:inline text-slate-500 font-normal">|</span>
+              <span className="hidden sm:inline text-slate-200">Metal-Uriel</span>
             </span>
 
             {/* Badge de Rol Activo */}
-            <span className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider border ${
+            <span className={`hidden sm:inline-flex px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider border shrink-0 ${
               isDesarrollador
                 ? 'bg-purple-950/80 text-purple-300 border-purple-500/40'
                 : isAdministrador
                 ? 'bg-sky-950/80 text-sky-300 border-sky-500/40'
                 : 'bg-emerald-950/80 text-emerald-300 border-emerald-500/40'
             }`}>
-              {isDesarrollador ? '👑 Desarrollador' : isAdministrador ? '🛡️ Administrador' : '🎧 Asesor'}
+              {isDesarrollador ? '👑 Dev' : isAdministrador ? '🛡️ Admin' : '🎧 Asesor'}
             </span>
 
-            {/* Selector de Campus (Global para Desarrollador, Fijo en su sede_id para Admin/Usuario) */}
-            <div className="flex items-center gap-1 bg-[#202C33] px-2.5 py-1 rounded-lg border border-slate-700/60">
-              <i data-lucide="map-pin" className="w-3.5 h-3.5 text-amber-400"></i>
+            {/* Selector de Campus */}
+            <div className="flex items-center gap-1 bg-[#202C33] px-2 py-1 rounded-lg border border-slate-700/60 min-w-0 max-w-[165px] sm:max-w-[230px]">
+              <i data-lucide="map-pin" className="w-3.5 h-3.5 text-amber-400 shrink-0"></i>
               {isDesarrollador ? (
                 <select
                   value={selectedCampus}
                   onChange={(e) => handleChangeCampus(e.target.value)}
-                  className="bg-transparent text-xs text-slate-200 font-semibold focus:outline-none cursor-pointer"
+                  className="bg-transparent text-xs text-slate-200 font-semibold focus:outline-none cursor-pointer truncate w-full"
                 >
                   {campusesList.map(c => (
                     <option key={c.id} value={c.id} className="bg-[#111B21] text-slate-200">
@@ -1859,15 +1935,15 @@ function App() {
                   ))}
                 </select>
               ) : (
-                <span className="text-xs text-slate-200 font-semibold" title="Sede asignada a tu cuenta">
+                <span className="text-xs text-slate-200 font-semibold truncate" title="Sede asignada a tu cuenta">
                   {campusesList.find(c => c.id === (authUser?.sede_id || selectedCampus))?.name || `Sede: ${authUser?.sede_id || 'Campeche'}`}
                 </span>
               )}
             </div>
 
-            {/* Selector Rápido de Ciclo Escolar Activo */}
-            <div className="hidden lg:flex items-center gap-1.5 bg-[#202C33] px-2.5 py-1 rounded-lg border border-amber-500/30" title="Ciclo Escolar Activo para nuevos registros y chats">
-              <span className="text-[10px] text-amber-400 font-bold">📅 Ciclo:</span>
+            {/* Selector Rápido de Ciclo Escolar (solo pantallas anchas) */}
+            <div className="hidden xl:flex items-center gap-1.5 bg-[#202C33] px-2.5 py-1 rounded-lg border border-amber-500/30" title="Ciclo Escolar Activo">
+              <span className="text-[10px] text-amber-400 font-bold">📅</span>
               <select
                 value={activeCiclo}
                 onChange={(e) => handleSetActiveCiclo(e.target.value)}
@@ -1884,108 +1960,140 @@ function App() {
                 ))}
               </select>
             </div>
-
-            {/* Selector de Modelo IA (Exclusivo Desarrollador) */}
-            {isDesarrollador && (
-              <div className="hidden md:flex items-center gap-1 bg-[#202C33] px-2.5 py-1 rounded-lg border border-slate-700/60">
-                <i data-lucide="cpu" className="w-3.5 h-3.5 text-sky-400"></i>
-                <select
-                  value={selectedModel}
-                  onChange={(e) => handleChangeModel(e.target.value)}
-                  className="bg-transparent text-xs text-slate-200 font-semibold focus:outline-none cursor-pointer"
-                >
-                  {modelsList.map(m => (
-                    <option key={m.id} value={m.id} className="bg-[#111B21] text-slate-200">
-                      {m.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
           </div>
 
-          {/* Acciones de la TopBar */}
-          <div className="flex items-center gap-2">
-            
-            {/* Si NO está en la bandeja, botón para regresar a WhatsApp con 1 clic */}
+          {/* Acciones Limpias de la TopBar (sin saturación) */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {activeTab !== 'inbox' && (
               <button
+                type="button"
                 onClick={() => setActiveTab('inbox')}
-                className="px-3 py-1 rounded-lg bg-[#00A884] hover:bg-[#008f6f] text-slate-950 font-black text-xs flex items-center gap-1.5 shadow transition"
+                className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-[#00A884] hover:bg-[#008f6f] text-slate-950 font-black text-xs flex items-center gap-1.5 shadow transition"
               >
-                <i data-lucide="message-square" className="w-3.5 h-3.5"></i>
-                <span>Volver a Chats WhatsApp</span>
+                <span>💬</span>
+                <span className="hidden sm:inline">Chats</span>
               </button>
             )}
 
-            {/* Botón Laboratorio de Pruebas (Exclusivo Desarrollador) */}
-            {isDesarrollador && (
-              <button
-                onClick={() => setShowTestSuiteModal(true)}
-                className="px-2.5 py-1 rounded-lg bg-purple-950/70 hover:bg-purple-900 border border-purple-500/40 text-purple-300 text-xs font-bold flex items-center gap-1.5 transition shadow"
-                title="Abrir Laboratorio de Casos de Prueba"
-              >
-                <i data-lucide="flask-conical" className="w-3.5 h-3.5 text-amber-400"></i>
-                <span className="hidden sm:inline">Laboratorio IA</span>
-              </button>
-            )}
-
-            {/* Botón Conectar / Cambiar Servidor Headless (APK Android / Remoto) */}
+            {/* Acceso rápido a FAQ / Ayuda */}
             <button
               type="button"
-              onClick={() => setShowServerModal(true)}
-              className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 text-xs font-bold flex items-center gap-1 transition"
-              title={serverUrl ? `Conectado a ${serverUrl}` : 'Configurar URL de servidor Metal-Uriel Headless / LAN'}
+              onClick={() => setActiveTab('onboarding')}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold border transition ${
+                activeTab === 'onboarding'
+                  ? 'bg-amber-400/20 border-amber-400 text-amber-200'
+                  : 'bg-[#202C33] hover:bg-[#2A3942] border-slate-700 text-slate-200'
+              }`}
+              title="Centro de Ayuda, Tutorial y FAQ"
             >
-              <span>📡</span>
-              <span className="hidden xl:inline">{serverUrl ? 'Remoto' : 'Servidor'}</span>
+              <span>❓</span>
+              <span className="hidden lg:inline ml-1">Ayuda</span>
             </button>
 
-            {/* Exportar CSV autenticado (Desarrollador y Administrador) */}
-            {!isUsuario && (
+            {/* Menú Compacto de Herramientas (agrupa Modelo IA, Lab, Excel, Servidor, Setup y DB) */}
+            <div className="relative">
               <button
                 type="button"
-                onClick={handleExportExcel}
-                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold flex items-center gap-1 border border-slate-700 transition"
-                title="Descargar Excel / CSV"
+                onClick={() => setShowToolsMenu((v) => !v)}
+                className="px-2.5 py-1.5 rounded-lg bg-[#202C33] hover:bg-[#2A3942] border border-slate-700 text-slate-100 text-xs font-bold flex items-center gap-1 transition"
+                title="Herramientas y Configuración"
               >
-                <i data-lucide="download" className="w-3.5 h-3.5"></i>
-                <span className="hidden lg:inline">Excel</span>
+                <span>⚙️</span>
+                <span className="hidden sm:inline">Menú</span>
+                <span className="text-[10px] text-slate-400">▾</span>
               </button>
-            )}
 
-            {/* Botones de Desarrollador: Setup/.env, Vaciar DB + Caché y Poblar DB */}
-            {isDesarrollador && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setShowSetupWizard(true)}
-                  className="px-2.5 py-1 rounded-lg bg-indigo-950/70 hover:bg-indigo-900 text-indigo-200 border border-indigo-500/40 text-xs font-bold flex items-center gap-1 transition"
-                  title="Abrir Asistente de Configuración (.env, API Keys, Ollama y SMTP)"
-                >
-                  <span>⚙️</span>
-                  <span className="hidden xl:inline">Setup / .env</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleTruncateDb}
-                  className="px-2.5 py-1 rounded-lg bg-red-950/70 hover:bg-red-900 text-red-300 border border-red-500/40 text-xs font-bold flex items-center gap-1 transition"
-                  title="Vaciar Base de Datos y Memoria Caché al 100%"
-                >
-                  <span>🗑️</span>
-                  <span className="hidden xl:inline">Vaciar DB + Caché</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSeedDemo}
-                  className="px-2.5 py-1 rounded-lg bg-amber-950/60 hover:bg-amber-900/80 text-amber-300 border border-amber-500/40 text-xs font-bold flex items-center gap-1 transition"
-                  title="Poblar Base de Datos con 5 prospectos institucionales demo"
-                >
-                  <span>🌱</span>
-                  <span className="hidden lg:inline">Poblar DB</span>
-                </button>
-              </>
-            )}
+              {showToolsMenu && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowToolsMenu(false)} />
+                  <div className="absolute right-0 top-10 w-64 rounded-2xl bg-[#111B21] border border-slate-700 shadow-2xl p-2 z-50 space-y-1.5 text-xs">
+                    <div className="px-2.5 py-1.5 border-b border-slate-800 flex items-center justify-between">
+                      <span className="font-bold text-slate-300 truncate">{authUser?.displayName || authUser?.email || 'Sesión UNID'}</span>
+                      <span className="text-[10px] font-mono text-amber-300 uppercase">{currentUserRole}</span>
+                    </div>
+
+                    {isDesarrollador && (
+                      <div className="px-2 py-1.5 rounded-xl bg-slate-900/80 border border-slate-800 space-y-1">
+                        <label htmlFor="menu-model-select" className="text-[10px] font-bold text-sky-300 uppercase block">
+                          🤖 Motor IA Activo
+                        </label>
+                        <select
+                          id="menu-model-select"
+                          value={selectedModel}
+                          onChange={(e) => handleChangeModel(e.target.value)}
+                          className="w-full bg-[#111B21] text-xs text-slate-200 font-semibold rounded-lg px-2 py-1.5 border border-slate-700"
+                        >
+                          {modelsList.map(m => (
+                            <option key={m.id} value={m.id}>{m.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => { setShowToolsMenu(false); setShowServerModal(true); }}
+                      className="w-full text-left px-3 py-2 rounded-xl hover:bg-[#202C33] text-sky-300 font-semibold flex items-center justify-between"
+                    >
+                      <span>📡 Servidor / Red Móvil</span>
+                      <span className="text-[10px] text-slate-400">{serverUrl ? 'Remoto' : 'Local'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => { setShowToolsMenu(false); setShowHealthModal(true); }}
+                      className="w-full text-left px-3 py-2 rounded-xl hover:bg-[#202C33] text-emerald-300 font-semibold flex items-center gap-2"
+                    >
+                      <span>🩺 Estado de Salud del Sistema</span>
+                    </button>
+
+                    {!isUsuario && (
+                      <button
+                        type="button"
+                        onClick={() => { setShowToolsMenu(false); handleExportExcel(); }}
+                        className="w-full text-left px-3 py-2 rounded-xl hover:bg-[#202C33] text-slate-200 font-semibold flex items-center gap-2"
+                      >
+                        <span>📥 Exportar Base (Excel / CSV)</span>
+                      </button>
+                    )}
+
+                    {isDesarrollador && (
+                      <>
+                        <div className="h-[1px] bg-slate-800 my-1" />
+                        <button
+                          type="button"
+                          onClick={() => { setShowToolsMenu(false); setShowTestSuiteModal(true); }}
+                          className="w-full text-left px-3 py-2 rounded-xl hover:bg-purple-950/60 text-purple-300 font-semibold flex items-center gap-2"
+                        >
+                          <span>🧪 Laboratorio de Pruebas IA</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setShowToolsMenu(false); setShowSetupWizard(true); }}
+                          className="w-full text-left px-3 py-2 rounded-xl hover:bg-indigo-950/60 text-indigo-300 font-semibold flex items-center gap-2"
+                        >
+                          <span>⚙️ Asistente Setup / .env</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setShowToolsMenu(false); handleSeedDemo(); }}
+                          className="w-full text-left px-3 py-2 rounded-xl hover:bg-amber-950/60 text-amber-300 font-semibold flex items-center gap-2"
+                        >
+                          <span>🌱 Poblar 5 Leads Demo</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setShowToolsMenu(false); handleTruncateDb(); }}
+                          className="w-full text-left px-3 py-2 rounded-xl hover:bg-red-950/60 text-rose-300 font-semibold flex items-center gap-2"
+                        >
+                          <span>🗑️ Vaciar DB + Caché</span>
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </header>
 
@@ -1993,12 +2101,12 @@ function App() {
         {/* 3. VISTA PRINCIPAL: BANDEJA DE ENTRADA WHATSAPP (FULL CANVAS)             */}
         {/* ========================================================================= */}
         {activeTab === 'inbox' && (
-          <div className="flex-1 flex overflow-hidden relative">
+          <div className="flex-1 flex overflow-hidden relative pb-14 md:pb-0">
             
             {/* ------------------------------------------------------------- */}
-            {/* 3.1. SIDEBAR DE CONTACTOS (ESTILO WHATSAPP WEB ~380px)        */}
+            {/* 3.1. SIDEBAR DE CONTACTOS (RESPONSIVO MÓVIL + DESKTOP)         */}
             {/* ------------------------------------------------------------- */}
-            <div className="w-80 md:w-96 bg-[#111B21] border-r border-[#222E35] flex flex-col shrink-0">
+            <div className={`${mobileShowChat ? 'hidden md:flex' : 'flex'} w-full md:w-80 lg:w-96 bg-[#111B21] border-r border-[#222E35] flex-col shrink-0`}>
               
               {/* Header de la lista de chats */}
               <div className="p-3 bg-[#111B21] border-b border-[#222E35] space-y-2.5 shrink-0">
@@ -2058,9 +2166,10 @@ function App() {
                   )}
                 </div>
 
-                {/* Filter Chips / Pills (Todos, Nuevos, En Seguimiento, Inscritos, IA Pausada) */}
-                <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+                {/* Filter Chips / Pills Auditados (Activos, Inconclusas, Inscritos/Estudio, Humano, Archivados) */}
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
                   <button
+                    type="button"
                     onClick={() => setChatFilterTab('all')}
                     className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition whitespace-nowrap ${
                       chatFilterTab === 'all'
@@ -2068,10 +2177,49 @@ function App() {
                         : 'bg-[#202C33] text-slate-300 hover:bg-[#2A3942]'
                     }`}
                   >
-                    Todos ({conversations.length})
+                    Todos ({inboxCounts.active})
                   </button>
 
                   <button
+                    type="button"
+                    onClick={() => setChatFilterTab('incomplete')}
+                    className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition whitespace-nowrap ${
+                      chatFilterTab === 'incomplete'
+                        ? 'bg-rose-500 text-white shadow'
+                        : 'bg-[#202C33] text-rose-300 hover:bg-[#2A3942]'
+                    }`}
+                    title="Prospectos que dejaron incompletos sus 11 datos y requieren seguimiento"
+                  >
+                    ⏳ Inconclusas ({inboxCounts.incomplete})
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setChatFilterTab('inscrito')}
+                    className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition whitespace-nowrap ${
+                      chatFilterTab === 'inscrito'
+                        ? 'bg-amber-400 text-slate-950 shadow'
+                        : 'bg-[#202C33] text-amber-300 hover:bg-[#2A3942]'
+                    }`}
+                    title="Casos de Éxito: conversaciones que lograron inscribir al postulante"
+                  >
+                    🏆 Inscritos ({inboxCounts.golden})
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setChatFilterTab('paused')}
+                    className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition whitespace-nowrap ${
+                      chatFilterTab === 'paused'
+                        ? 'bg-amber-500 text-slate-950 shadow'
+                        : 'bg-[#202C33] text-amber-300/80 hover:bg-[#2A3942]'
+                    }`}
+                  >
+                    ⏸️ Humano ({inboxCounts.paused})
+                  </button>
+
+                  <button
+                    type="button"
                     onClick={() => setChatFilterTab('nuevo')}
                     className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition whitespace-nowrap ${
                       chatFilterTab === 'nuevo'
@@ -2083,6 +2231,7 @@ function App() {
                   </button>
 
                   <button
+                    type="button"
                     onClick={() => setChatFilterTab('contactado')}
                     className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition whitespace-nowrap ${
                       chatFilterTab === 'contactado'
@@ -2094,25 +2243,15 @@ function App() {
                   </button>
 
                   <button
-                    onClick={() => setChatFilterTab('inscrito')}
+                    type="button"
+                    onClick={() => setChatFilterTab('archived')}
                     className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition whitespace-nowrap ${
-                      chatFilterTab === 'inscrito'
-                        ? 'bg-[#00A884] text-slate-950 shadow'
-                        : 'bg-[#202C33] text-slate-300 hover:bg-[#2A3942]'
+                      chatFilterTab === 'archived'
+                        ? 'bg-indigo-500 text-white shadow'
+                        : 'bg-[#202C33] text-slate-400 hover:bg-[#2A3942]'
                     }`}
                   >
-                    Inscritos 🎉
-                  </button>
-
-                  <button
-                    onClick={() => setChatFilterTab('paused')}
-                    className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition whitespace-nowrap ${
-                      chatFilterTab === 'paused'
-                        ? 'bg-amber-500 text-slate-950 shadow'
-                        : 'bg-[#202C33] text-amber-300/80 hover:bg-[#2A3942]'
-                    }`}
-                  >
-                    ⏸️ Control Humano
+                    🗄️ Archivados ({inboxCounts.archived})
                   </button>
                 </div>
               </div>
@@ -2129,10 +2268,11 @@ function App() {
                   </div>
                 ) : (
                   filteredConversations.map((conv) => {
-                    const cleanId = conv.cleanPhone || conv.phone;
+                    const cleanId = conv.canonicalPhone || conv.cleanPhone || conv.phone;
                     const isSelected = selectedChatPhone === cleanId;
+                    const comp = conv.completeness;
                     const initials = conv.name
-                      ? conv.name.split(' ').map(n => n[0]).slice(0, 2).join('').toUpperCase()
+                      ? conv.name.split(' ').filter(Boolean).map(n => n[0]).slice(0, 2).join('').toUpperCase()
                       : 'AS';
 
                     return (
@@ -2146,48 +2286,70 @@ function App() {
                         {/* Avatar */}
                         <div className="relative shrink-0 mt-0.5">
                           <div className={`w-11 h-11 rounded-full flex items-center justify-center font-black text-sm shadow ${
-                            conv.isPaused
+                            conv.isGoldenCase
+                              ? 'bg-gradient-to-br from-amber-400 via-yellow-500 to-emerald-500 text-slate-950 ring-2 ring-amber-400'
+                              : conv.isPaused
                               ? 'bg-gradient-to-br from-amber-500 to-amber-700 text-slate-950 ring-2 ring-amber-400'
                               : 'bg-gradient-to-br from-slate-700 to-slate-800 text-slate-100 ring-2 ring-emerald-500/60'
                           }`}>
                             {initials}
                           </div>
                           <span className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-[#111B21] ${
-                            conv.isPaused ? 'bg-amber-400' : 'bg-emerald-400'
+                            conv.isGoldenCase ? 'bg-amber-400' : conv.isPaused ? 'bg-amber-400' : 'bg-emerald-400'
                           }`}></span>
                         </div>
 
                         {/* Info del contacto */}
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between gap-1">
-                            <h3 className="font-bold text-xs text-slate-100 truncate">
-                              {conv.name || conv.phone}
+                            <h3 className="font-bold text-xs text-slate-100 truncate flex items-center gap-1">
+                              {conv.isGoldenCase && <span title="Caso de Éxito / Estudio">🏆</span>}
+                              <span className="truncate">{conv.name || conv.phone}</span>
                             </h3>
                             <span className="text-[10px] text-slate-400 shrink-0 font-mono">
                               {formatTimeAgo(conv.lastMessageTime)}
                             </span>
                           </div>
 
-                          {/* Carrera e indicador de IA */}
-                          <div className="flex items-center gap-1.5 mt-0.5">
-                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-[#202C33] text-amber-300 font-medium truncate max-w-[170px]">
-                              {conv.carrera || 'Interesado UNID'}
+                          {/* Carrera, estatus de IA y detector de Inconclusas */}
+                          <div className="flex flex-wrap items-center gap-1 mt-1">
+                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-[#202C33] text-amber-300 font-medium truncate max-w-[140px]">
+                              {conv.carrera || 'Por definir'}
                             </span>
-                            {conv.isPaused ? (
+                            {conv.isGoldenCase ? (
+                              <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-950 text-emerald-300 border border-emerald-500/30 font-bold">
+                                Inscrito
+                              </span>
+                            ) : comp?.isIncomplete ? (
+                              <span
+                                className={`text-[9px] px-1.5 py-0.2 rounded font-mono font-bold border ${
+                                  comp.urgency === 'alta'
+                                    ? 'bg-rose-950/90 text-rose-300 border-rose-500/40'
+                                    : 'bg-amber-950/80 text-amber-300 border-amber-500/30'
+                                }`}
+                                title={`Faltan ${11 - comp.completedCount} datos • ${comp.stalledLabel} sin completar`}
+                              >
+                                ⏳ {comp.stalledLabel} ({comp.completedCount}/11)
+                              </span>
+                            ) : null}
+                            {conv.isPaused && (
                               <span className="text-[9px] px-1 rounded bg-amber-950 text-amber-300 font-mono">
                                 ⏸️ Humano
-                              </span>
-                            ) : (
-                              <span className="text-[9px] px-1 rounded bg-emerald-950 text-emerald-300 font-mono">
-                                🤖 IA Activa
                               </span>
                             )}
                           </div>
 
-                          {/* Último mensaje */}
-                          <p className="text-[11px] text-slate-400 truncate mt-1 leading-tight">
-                            {conv.lastMessage}
-                          </p>
+                          {/* Último mensaje + contador auditado */}
+                          <div className="flex items-center justify-between gap-2 mt-1">
+                            <p className="text-[11px] text-slate-400 truncate leading-tight">
+                              {conv.lastMessage}
+                            </p>
+                            {conv.totalMessages > 0 && (
+                              <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-slate-800 text-slate-300 font-mono shrink-0">
+                                {conv.totalMessages}
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
                     );
@@ -2208,75 +2370,103 @@ function App() {
             </div>
 
             {/* ------------------------------------------------------------- */}
-            {/* 3.2. ÁREA CENTRAL: CONVERSACIÓN ACTIVA (ESTILO WHATSAPP WEB)   */}
+            {/* 3.2. ÁREA CENTRAL: CONVERSACIÓN ACTIVA (RESPONSIVO MÓVIL/PC)   */}
             {/* ------------------------------------------------------------- */}
-            <div className="flex-1 flex flex-col bg-[#0B141A] relative overflow-hidden" style={{ backgroundImage: "radial-gradient(rgba(255,255,255,0.025) 1px, transparent 0)", backgroundSize: "24px 24px" }}>
+            <div className={`${mobileShowChat ? 'flex' : 'hidden md:flex'} flex-1 flex-col bg-[#0B141A] relative overflow-hidden`} style={{ backgroundImage: "radial-gradient(rgba(255,255,255,0.025) 1px, transparent 0)", backgroundSize: "24px 24px" }}>
               
-              {/* Header del Chat Activo */}
-              <div className="h-14 bg-[#202C33] px-4 flex items-center justify-between border-b border-[#222E35] shrink-0 z-20">
+              {/* Header del Chat Activo (Avatar y nombre clickeables estilo WhatsApp) */}
+              <div className="min-h-[56px] bg-[#202C33] px-2.5 sm:px-4 py-1.5 flex items-center justify-between gap-2 border-b border-[#222E35] shrink-0 z-20">
                 
-                {/* Info del Aspirante en el Chat */}
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[#FFC72C] to-red-600 flex items-center justify-center font-black text-sm text-slate-950 shadow shrink-0">
-                    {activeConversation?.name ? activeConversation.name.substring(0, 2).toUpperCase() : 'WA'}
-                  </div>
+                {/* Botón Volver (Móvil) + Avatar/Info Clickeable -> Abre Perfil WhatsApp */}
+                <div className="flex items-center gap-2 min-w-0 flex-1">
+                  <button
+                    type="button"
+                    onClick={() => setMobileShowChat(false)}
+                    aria-label="Volver a la lista de chats"
+                    className="md:hidden min-h-[40px] min-w-[36px] rounded-xl bg-slate-800/70 hover:bg-slate-700 text-slate-100 flex items-center justify-center font-black text-base shrink-0"
+                  >
+                    ←
+                  </button>
 
-                  <div className="min-w-0">
-                    <h2 className="font-extrabold text-xs sm:text-sm text-slate-100 flex items-center gap-2 truncate">
-                      <span>{activeConversation?.name || phone}</span>
-                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-900 text-slate-300 font-mono border border-slate-700">
-                        {phone}
-                      </span>
-                    </h2>
-                    <p className="text-[11px] text-slate-400 flex items-center gap-2 truncate">
-                      <span className="text-amber-400 font-medium truncate">
-                        {activeConversation?.carrera || 'Ingeniería en Software'}
-                      </span>
-                      <span>•</span>
-                      <span>{activeConversation?.modalidad || 'Presencial'}</span>
-                    </p>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowContactProfile(true)}
+                    className="flex items-center gap-2.5 min-w-0 flex-1 text-left rounded-xl px-1.5 py-1 hover:bg-slate-700/40 transition group"
+                    title="Toca para ver info del postulante, preview IA, mover en Kanban, finalizar a mano o exportar ZIP"
+                  >
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center font-black text-sm shadow shrink-0 transition group-hover:scale-105 ${
+                      activeConversation?.isGoldenCase
+                        ? 'bg-gradient-to-br from-amber-400 via-yellow-500 to-emerald-500 text-slate-950 ring-2 ring-amber-400/70'
+                        : 'bg-gradient-to-br from-[#FFC72C] to-red-600 text-slate-950'
+                    }`}>
+                      {activeConversation?.name
+                        ? activeConversation.name.split(' ').filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase()
+                        : 'WA'}
+                    </div>
+
+                    <div className="min-w-0 flex-1">
+                      <h2 className="font-extrabold text-xs sm:text-sm text-slate-100 flex items-center gap-1.5 truncate">
+                        <span className="truncate">{activeConversation?.name || phone}</span>
+                        {activeConversation?.isGoldenCase && <span className="shrink-0">🏆</span>}
+                        <span className="hidden lg:inline text-[10px] px-1.5 py-0.2 rounded bg-slate-900 text-slate-300 font-mono border border-slate-700 shrink-0">
+                          {phone}
+                        </span>
+                      </h2>
+                      <p className="text-[11px] text-slate-400 flex items-center gap-1.5 truncate">
+                        <span className="text-amber-400 font-medium truncate">
+                          {activeConversation?.carrera || 'Toca para ver expediente'}
+                        </span>
+                        <span className="hidden sm:inline text-slate-500">•</span>
+                        <span className="hidden sm:inline text-sky-300/90 text-[10px] group-hover:underline">
+                          Info / Kanban / ZIP
+                        </span>
+                      </p>
+                    </div>
+                  </button>
                 </div>
 
-                {/* Acciones del Asesor (Pausar IA / Enviar PDF / Ficha 11 Datos) */}
-                <div className="flex items-center gap-1.5">
+                {/* Acciones Compactas del Asesor */}
+                <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
                   
                   {/* Botón Human Handover: Pausar/Reanudar IA */}
                   <button
+                    type="button"
                     onClick={() => handleToggleAiPause(phone, activeConversation?.isPaused)}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-black flex items-center gap-1.5 transition shadow ${
+                    className={`px-2.5 sm:px-3 py-1.5 rounded-xl text-[11px] sm:text-xs font-black flex items-center gap-1 transition shadow ${
                       activeConversation?.isPaused
                         ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 ring-2 ring-amber-400/50'
-                        : 'bg-[#202C33] hover:bg-[#2A3942] text-emerald-400 border border-emerald-500/40'
+                        : 'bg-[#111B21] hover:bg-[#2A3942] text-emerald-400 border border-emerald-500/40'
                     }`}
                     title={activeConversation?.isPaused ? 'La IA está pausada. Clic para reactivar Metal-Uriel.' : 'Pausar la IA y tomar control manual como Asesor.'}
                   >
-                    <i data-lucide={activeConversation?.isPaused ? 'play' : 'pause'} className="w-3.5 h-3.5"></i>
-                    <span>{activeConversation?.isPaused ? 'Reanudar Metal-Uriel' : 'Pausar IA (Control Asesor)'}</span>
+                    <span>{activeConversation?.isPaused ? '▶' : '⏸'}</span>
+                    <span className="hidden sm:inline">{activeConversation?.isPaused ? 'Reanudar IA' : 'Pausar IA'}</span>
                   </button>
 
                   {/* Botón Enviar Recurso del Pool (PDF / Imagen / Horario) */}
                   <div className="relative">
                     <button
+                      type="button"
                       onClick={() => setShowBrochurePicker(!showBrochurePicker)}
-                      className="px-2.5 py-1.5 rounded-xl bg-[#202C33] hover:bg-[#2A3942] text-amber-300 border border-amber-500/30 text-xs font-bold flex items-center gap-1.5 transition"
-                      title="Enviar Plan de Estudios, Horario o Imagen del Pool a este aspirante"
+                      className="p-2 sm:px-2.5 sm:py-1.5 rounded-xl bg-[#111B21] hover:bg-[#2A3942] text-amber-300 border border-amber-500/30 text-xs font-bold flex items-center gap-1 transition"
+                      title="Enviar Plan de Estudios, Horario o Imagen del Pool"
                     >
-                      <i data-lucide="file-text" className="w-3.5 h-3.5 text-amber-400"></i>
-                      <span className="hidden md:inline">Enviar del Pool</span>
+                      <span>📎</span>
+                      <span className="hidden xl:inline">Pool</span>
                     </button>
 
                     {/* Menú Flotante de Selección de Recurso del Pool */}
                     {showBrochurePicker && (
-                      <div className="absolute right-0 top-11 w-80 bg-[#111B21] border border-[#222E35] rounded-2xl shadow-2xl p-2 z-50 space-y-1">
+                      <div className="absolute right-0 top-11 w-72 sm:w-80 bg-[#111B21] border border-[#222E35] rounded-2xl shadow-2xl p-2 z-50 space-y-1">
                         <div className="px-2 py-1 text-[11px] font-bold text-slate-400 flex items-center justify-between border-b border-slate-800 pb-1.5">
-                          <span>Seleccionar Recurso del Pool Multimedia:</span>
-                          <button onClick={() => setShowBrochurePicker(false)} className="hover:text-white">✕</button>
+                          <span>Seleccionar Recurso del Pool:</span>
+                          <button type="button" onClick={() => setShowBrochurePicker(false)} className="hover:text-white">✕</button>
                         </div>
                         <div className="max-h-64 overflow-y-auto space-y-1 pt-1">
                           {brochures.map(b => (
                             <button
                               key={b.id}
+                              type="button"
                               onClick={() => handleSendBrochureQuick(b.id)}
                               className="w-full text-left p-2 rounded-xl hover:bg-[#202C33] text-xs text-slate-200 flex items-center justify-between group transition gap-2"
                             >
@@ -2295,26 +2485,15 @@ function App() {
                     )}
                   </div>
 
-                  {/* Toggle Ficha 11 Datos IA (Drawer) */}
+                  {/* Acceso Directo al Perfil WhatsApp (Info, Kanban, Cierre Manual, ZIP) */}
                   <button
-                    onClick={() => setShowFichaDrawer(!showFichaDrawer)}
-                    className={`p-2 rounded-xl text-xs font-bold transition ${
-                      showFichaDrawer
-                        ? 'bg-purple-600 text-white shadow'
-                        : 'bg-[#202C33] hover:bg-[#2A3942] text-purple-300 border border-purple-500/30'
-                    }`}
-                    title="Ver Ficha de 11 Datos IA y Expediente"
+                    type="button"
+                    onClick={() => setShowContactProfile(true)}
+                    className="p-2 sm:px-2.5 sm:py-1.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/35 text-emerald-300 border border-emerald-500/40 text-xs font-bold flex items-center gap-1 transition"
+                    title="Abrir Info del Postulante, Kanban, Finalizar Proceso y Exportar ZIP"
                   >
-                    <i data-lucide="list-checks" className="w-4 h-4"></i>
-                  </button>
-
-                  {/* Reiniciar Chat */}
-                  <button
-                    onClick={handleResetSession}
-                    className="p-2 rounded-xl bg-[#202C33] hover:bg-red-950/60 hover:text-red-400 text-slate-400 transition"
-                    title="Reiniciar chat y limpiar memoria"
-                  >
-                    <i data-lucide="rotate-ccw" className="w-4 h-4"></i>
+                    <span>👤</span>
+                    <span className="hidden lg:inline">Perfil & ZIP</span>
                   </button>
                 </div>
               </div>
@@ -2336,23 +2515,40 @@ function App() {
                     <p className="text-[11px]">Escribe un mensaje abajo para interactuar directamente por WhatsApp.</p>
                   </div>
                 ) : (
-                  messages.map((m) => {
+                  messages.map((m, mIdx) => {
+                    const isSystem = m.sender === 'system' || m.roleCode === 'system';
                     const isUser = m.sender === 'user';
                     const isAdvisor = m.sender === 'advisor';
                     const isBot = m.sender === 'bot' || m.role === 'assistant';
 
+                    if (isSystem) {
+                      return (
+                        <div key={m.id || mIdx} className="flex justify-center my-2">
+                          <div className="px-3 py-1.5 rounded-xl bg-slate-900/90 border border-amber-500/30 text-[11px] text-amber-200/90 text-center max-w-[90%] shadow-sm">
+                            <span>{m.text}</span>
+                            <span className="ml-2 text-[9px] font-mono text-slate-400">
+                              {m.fullDateTime || m.time}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    }
+
                     return (
                       <div
-                        key={m.id}
-                        className={`flex flex-col ${isUser ? 'items-start mr-auto' : 'items-end ml-auto'} max-w-[85%] md:max-w-[75%]`}
+                        key={m.id || mIdx}
+                        className={`flex flex-col ${isUser ? 'items-start mr-auto' : 'items-end ml-auto'} max-w-[88%] md:max-w-[75%]`}
                       >
-                        {/* Identificador de remitente para asesores humanos */}
-                        {isAdvisor && (
-                          <span className="text-[10px] text-purple-300 font-bold mb-0.5 flex items-center gap-1">
-                            <i data-lucide="user-check" className="w-3 h-3 text-purple-400"></i>
-                            {m.senderName || 'Asesor de Admisiones'}
+                        {/* Etiqueta de Auditoría de Remitente (Aspirante / Robot IA / Asesor) */}
+                        <span className={`text-[10px] font-bold mb-0.5 flex items-center gap-1 ${
+                          isUser ? 'text-sky-300' : isAdvisor ? 'text-purple-300' : 'text-emerald-300'
+                        }`}>
+                          <span>{isUser ? '👤' : isAdvisor ? '🧑‍💼' : '🤖'}</span>
+                          <span>{m.displayAuthor || m.senderName || (isUser ? 'Aspirante' : isAdvisor ? 'Asesor UNID' : 'Metal-Uriel IA')}</span>
+                          <span className="text-[9px] font-normal text-slate-400">
+                            ({m.roleLabel || (isUser ? 'Aspirante' : isAdvisor ? 'Asesor Humano' : 'Robot IA')})
                           </span>
-                        )}
+                        </span>
 
                         <div
                           className={`rounded-2xl px-3.5 py-2 text-xs shadow-md space-y-1.5 leading-relaxed relative ${
@@ -2363,7 +2559,7 @@ function App() {
                               : 'bg-[#005C4B] text-slate-100 rounded-tr-none shadow-emerald-950/20'
                           }`}
                         >
-                          <p className="whitespace-pre-wrap">{m.text}</p>
+                          <p className="whitespace-pre-wrap break-words select-text">{m.text}</p>
 
                           {/* Card de Documento PDF o Imagen Adjunta del Pool Multimedia */}
                           {m.documentAttachment && (
@@ -2392,6 +2588,7 @@ function App() {
                               <a
                                 href={m.documentAttachment.url || m.documentAttachment.pdfUrl || m.documentAttachment.url_recurso || m.documentAttachment.downloadUrl}
                                 target="_blank"
+                                rel="noopener noreferrer"
                                 download={m.documentAttachment.fileName || 'Recurso_UNID'}
                                 className="mt-1 block text-center py-1 rounded-lg bg-gradient-to-r from-[#FFC72C] to-[#F59E0B] hover:from-[#F59E0B] hover:to-[#D97706] text-slate-950 font-black text-[10px] transition shadow"
                               >
@@ -2402,14 +2599,14 @@ function App() {
                             </div>
                           )}
 
-                          {/* Pie de mensaje con hora y palomitas */}
-                          <div className="flex items-center justify-end gap-1 text-[9px] text-slate-300/70 font-mono select-none">
-                            <span>{m.time}</span>
+                          {/* Pie de mensaje con fecha/hora auditada y modelo */}
+                          <div className="flex items-center justify-end gap-1.5 text-[9px] text-slate-300/75 font-mono select-none">
+                            <span>{m.fullDateTime || m.time}</span>
                             {!isUser && (
-                              <span className="text-sky-300 font-bold ml-0.5">✓✓</span>
+                              <span className="text-sky-300 font-bold">✓✓</span>
                             )}
                             {isBot && m.modelUsed && (
-                              <span className="text-[9px] text-amber-300/80 ml-1">
+                              <span className="text-[9px] text-amber-300/80">
                                 • {m.modelUsed}
                               </span>
                             )}
@@ -4320,45 +4517,15 @@ function App() {
           </div>
         )}
 
-        {/* ====== TAB 8: SOPORTE & ONBOARDING (TODOS LOS ROLES) ====== */}
+        {/* ====== TAB 8: CENTRO DE AYUDA, TUTORIAL & FAQ PARA EL USUARIO FINAL ====== */}
         {activeTab === 'onboarding' && (
-          <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="font-extrabold text-sm sm:text-base text-white">
-                  Guía de Onboarding & Soporte Técnico UNID
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Documentación interactiva para administradores y asesores de admisiones.
-                </p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="p-4 rounded-2xl bg-[#0F172A] border border-slate-800 space-y-2">
-                <span className="text-xl">🚀</span>
-                <h3 className="font-extrabold text-xs text-white">1. Inicio Rápido</h3>
-                <p className="text-[11px] text-slate-400">
-                  Abre ngrok con <code>npx ngrok http 3000</code> y vincula el webhook en Meta Developers con el token <code>unid_meta_verify_token_2026</code>.
-                </p>
-              </div>
-
-              <div className="p-4 rounded-2xl bg-[#0F172A] border border-slate-800 space-y-2">
-                <span className="text-xl">💬</span>
-                <h3 className="font-extrabold text-xs text-white">2. Human Handover</h3>
-                <p className="text-[11px] text-slate-400">
-                  En la Bandeja de Entrada, presiona <b>Pausar IA</b> para tomar control humano del chat y responder dudas específicas por WhatsApp.
-                </p>
-              </div>
-
-              <div className="p-4 rounded-2xl bg-[#0F172A] border border-slate-800 space-y-2">
-                <span className="text-xl">🛡️</span>
-                <h3 className="font-extrabold text-xs text-white">3. Multi-Model Failover</h3>
-                <p className="text-[11px] text-slate-400">
-                  El sistema conmuta automáticamente entre Gemini, Claude, OpenAI, DeepSeek y Groq si se agota la cuota, preservando todo el historial.
-                </p>
-              </div>
-            </div>
+          <div className="flex-1 overflow-hidden">
+            <HelpCenterFaq
+              healthFull={healthFull}
+              onNavigateTab={(tab) => setActiveTab(tab)}
+              onOpenServerModal={() => setShowServerModal(true)}
+              onToast={showToast}
+            />
           </div>
         )}
       </div>
@@ -4646,6 +4813,145 @@ function App() {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* ================= BARRA INFERIOR RESPONSIVA (MÓVIL / APK) ================= */}
+      <nav
+        aria-label="Navegación móvil"
+        className="md:hidden fixed bottom-0 left-0 right-0 h-14 bg-[#111B21]/95 backdrop-blur border-t border-[#222E35] z-40 grid grid-cols-5 items-center px-1"
+      >
+        <button
+          type="button"
+          onClick={() => { setActiveTab('inbox'); setMobileShowChat(false); }}
+          className={`flex flex-col items-center justify-center py-1 rounded-xl text-[10px] font-bold transition ${
+            activeTab === 'inbox' ? 'text-[#00A884]' : 'text-slate-400'
+          }`}
+        >
+          <span className="text-base leading-none">💬</span>
+          <span className="mt-0.5">Chats</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('kanban')}
+          className={`flex flex-col items-center justify-center py-1 rounded-xl text-[10px] font-bold transition ${
+            activeTab === 'kanban' ? 'text-[#FFC72C]' : 'text-slate-400'
+          }`}
+        >
+          <span className="text-base leading-none">📋</span>
+          <span className="mt-0.5">Kanban</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('analytics')}
+          className={`flex flex-col items-center justify-center py-1 rounded-xl text-[10px] font-bold transition ${
+            activeTab === 'analytics' ? 'text-sky-400' : 'text-slate-400'
+          }`}
+        >
+          <span className="text-base leading-none">📊</span>
+          <span className="mt-0.5">Métricas</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('onboarding')}
+          className={`flex flex-col items-center justify-center py-1 rounded-xl text-[10px] font-bold transition ${
+            activeTab === 'onboarding' ? 'text-amber-400' : 'text-slate-400'
+          }`}
+        >
+          <span className="text-base leading-none">❓</span>
+          <span className="mt-0.5">Ayuda</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setShowMobileNavSheet(true)}
+          className="flex flex-col items-center justify-center py-1 rounded-xl text-[10px] font-bold text-slate-300"
+        >
+          <span className="text-base leading-none">☰</span>
+          <span className="mt-0.5">Más</span>
+        </button>
+      </nav>
+
+      {/* Hoja móvil de secciones secundarias */}
+      {showMobileNavSheet && (
+        <div
+          className="md:hidden fixed inset-0 z-[60] bg-slate-950/80 backdrop-blur-sm flex items-end"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowMobileNavSheet(false); }}
+        >
+          <div className="w-full rounded-t-3xl bg-[#111B21] border-t border-slate-700 p-5 space-y-3 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-black text-white">Más Secciones UNID</h3>
+              <button
+                type="button"
+                onClick={() => setShowMobileNavSheet(false)}
+                className="min-h-[40px] min-w-[40px] rounded-xl bg-slate-800 text-slate-300 font-bold"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <button type="button" onClick={() => { setActiveTab('brochures'); setShowMobileNavSheet(false); }} className="min-h-[44px] px-3 rounded-xl bg-slate-800/80 text-slate-100 font-bold text-left">
+                📚 Pool Multimedia
+              </button>
+              {isAdmin && (
+                <>
+                  <button type="button" onClick={() => { setActiveTab('database'); setShowMobileNavSheet(false); }} className="min-h-[44px] px-3 rounded-xl bg-slate-800/80 text-slate-100 font-bold text-left">
+                    🗄️ Base de Datos
+                  </button>
+                  <button type="button" onClick={() => { setActiveTab('prompt'); setShowMobileNavSheet(false); }} className="min-h-[44px] px-3 rounded-xl bg-slate-800/80 text-slate-100 font-bold text-left">
+                    🧠 Prompt IA
+                  </button>
+                  <button type="button" onClick={() => { setActiveTab('tenant_config'); setShowMobileNavSheet(false); }} className="min-h-[44px] px-3 rounded-xl bg-slate-800/80 text-slate-100 font-bold text-left">
+                    🏛️ Multi-Sede
+                  </button>
+                </>
+              )}
+              {isDesarrollador && (
+                <button type="button" onClick={() => { setActiveTab('users'); setShowMobileNavSheet(false); }} className="min-h-[44px] px-3 rounded-xl bg-slate-800/80 text-slate-100 font-bold text-left">
+                  👥 Usuarios RBAC
+                </button>
+              )}
+              <button type="button" onClick={() => { setShowMobileNavSheet(false); setShowServerModal(true); }} className="min-h-[44px] px-3 rounded-xl bg-sky-950/60 border border-sky-500/30 text-sky-300 font-bold text-left">
+                📡 Servidor LAN / APK
+              </button>
+              <button type="button" onClick={() => { setShowMobileNavSheet(false); handleLogout(); }} className="min-h-[44px] px-3 rounded-xl bg-rose-950/60 border border-rose-500/30 text-rose-300 font-bold text-left">
+                🚪 Cerrar Sesión
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= DRAWER PERFIL DEL POSTULANTE (ESTILO WHATSAPP) ================= */}
+      <ContactProfileDrawer
+        isOpen={showContactProfile}
+        onClose={() => setShowContactProfile(false)}
+        conversation={activeConversation}
+        authToken={authToken}
+        onRefreshData={async () => {
+          await Promise.all([loadConversations(true), loadAspirantes(true)]);
+          if (selectedChatPhone) loadFullConversationHistory(selectedChatPhone);
+        }}
+        onToast={showToast}
+      />
+
+      {/* ================= NOTIFICACIÓN TOAST NO-BLOQUEANTE ================= */}
+      {uiToast && (
+        <div
+          role="status"
+          className={`fixed bottom-16 md:bottom-5 right-4 left-4 md:left-auto md:max-w-sm z-[80] px-4 py-3 rounded-2xl shadow-2xl border text-xs font-bold flex items-center justify-between gap-3 ${
+            uiToast.type === 'error'
+              ? 'bg-rose-950/95 border-rose-500/60 text-rose-100'
+              : uiToast.type === 'info'
+              ? 'bg-sky-950/95 border-sky-500/60 text-sky-100'
+              : 'bg-emerald-950/95 border-emerald-500/60 text-emerald-100'
+          }`}
+        >
+          <span>{uiToast.message}</span>
+          <button type="button" onClick={() => setUiToast(null)} className="text-slate-300 hover:text-white shrink-0">✕</button>
         </div>
       )}
 
