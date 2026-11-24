@@ -25,7 +25,6 @@ function withTimeout(promise, timeoutMs, label = 'operación') {
                 err.status = 504;
                 reject(err);
             }, timeoutMs);
-            if (typeof timer.unref === 'function') timer.unref();
         })
     ]).finally(() => {
         if (timer) clearTimeout(timer);
