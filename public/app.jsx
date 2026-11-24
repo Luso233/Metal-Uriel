@@ -1,4 +1,4 @@
-const { useState, useEffect, useRef, useMemo } = React;
+const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
 // 11 Campos Obligatorios según el System Prompt
 const REQUIRED_FIELDS = [
@@ -784,6 +784,305 @@ function MobilePairQrModal({ isOpen, onClose, authToken, onToast }) {
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+const AUDIT_CATEGORIES = [
+  { id: 'all', label: 'Todas', icon: '📋' },
+  { id: 'AUTH', label: 'Accesos / Logins', icon: '🔐' },
+  { id: 'USUARIOS', label: 'Usuarios', icon: '👥' },
+  { id: 'API_KEYS', label: 'API Keys / Claves', icon: '🔑' },
+  { id: 'IA_MODELO', label: 'IA / Prompt', icon: '🤖' },
+  { id: 'ASPIRANTES', label: 'Aspirantes / ZIP', icon: '🎓' },
+  { id: 'SEDES', label: 'Sedes', icon: '🏛️' },
+  { id: 'BASE_DATOS', label: 'Base de Datos', icon: '🗄️' }
+];
+
+const AUDIT_SEVERITY_BADGE = {
+  critical: { label: 'CRÍTICO', cls: 'bg-rose-500/20 text-rose-300 border-rose-500/40' },
+  warning: { label: 'ALERTA', cls: 'bg-amber-500/20 text-amber-300 border-amber-500/40' },
+  info: { label: 'INFO', cls: 'bg-sky-500/15 text-sky-300 border-sky-500/35' }
+};
+
+function formatAuditTimestamp(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return String(ts);
+  return d.toLocaleString('es-MX', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  });
+}
+
+function AuditLogViewer({ authToken, onToast }) {
+  const [logs, setLogs] = useState([]);
+  const [summary, setSummary] = useState(null);
+  const [source, setSource] = useState('mariadb');
+  const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [error, setError] = useState('');
+
+  const [categoria, setCategoria] = useState('all');
+  const [severidad, setSeveridad] = useState('all');
+  const [search, setSearch] = useState('');
+
+  const loadLogs = useCallback(async (opts = {}) => {
+    setLoading(true);
+    setError('');
+    try {
+      const cat = opts.categoria ?? categoria;
+      const sev = opts.severidad ?? severidad;
+      const q = opts.search ?? search;
+      const params = new URLSearchParams({ limit: '250' });
+      if (cat && cat !== 'all') params.set('categoria', cat);
+      if (sev && sev !== 'all') params.set('severidad', sev);
+      if (q && q.trim()) params.set('search', q.trim());
+
+      const res = await fetch(`/api/audit-logs?${params.toString()}`, {
+        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {}
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || `Error HTTP ${res.status}`);
+      }
+      setLogs(data.logs || []);
+      setSummary(data.summary || null);
+      setSource(data.source || 'mariadb');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [authToken, categoria, severidad, search]);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      loadLogs();
+    }, 180);
+    return () => clearTimeout(t);
+  }, [categoria, severidad, search, loadLogs]);
+
+  const handleExportCsv = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const params = new URLSearchParams();
+      if (categoria !== 'all') params.set('categoria', categoria);
+      if (severidad !== 'all') params.set('severidad', severidad);
+      if (search.trim()) params.set('search', search.trim());
+
+      const res = await fetch(`/api/audit-logs/export?${params.toString()}`, {
+        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {}
+      });
+      if (!res.ok) throw new Error(`Error HTTP ${res.status}`);
+      const blob = await res.blob();
+      const fileName = `auditoria_metal_uriel_${new Date().toISOString().slice(0, 10)}.csv`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 1000);
+      if (onToast) onToast(`📥 Bitácora exportada: ${fileName}`);
+      loadLogs();
+    } catch (err) {
+      if (onToast) onToast(`Error exportando auditoría: ${err.message}`, 'error');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  return (
+    <div className="h-full overflow-y-auto p-4 sm:p-6">
+      <div className="max-w-6xl mx-auto space-y-5">
+        <section className="rounded-3xl bg-gradient-to-br from-[#0F1E38] via-[#111B2E] to-[#0B1220] border border-amber-400/30 p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="px-2.5 py-0.5 rounded-full bg-amber-400/15 border border-amber-400/30 text-amber-300 text-[10px] font-black uppercase tracking-wider">
+                🛡️ Seguridad & Cumplimiento
+              </span>
+              <span className="px-2 py-0.5 rounded-full bg-slate-800 text-[10px] font-mono text-slate-300">
+                Fuente: {source === 'mariadb' ? 'MariaDB Persistente' : 'RAM Respaldo'}
+              </span>
+            </div>
+            <h2 className="text-lg sm:text-xl font-black text-white">
+              Bitácora de Auditoría del Sistema
+            </h2>
+            <p className="text-xs text-slate-300 max-w-2xl">
+              Registro cronológico inmutable de inicios/cierres de sesión, altas/ediciones/bajas de usuarios, rotación de API Keys y secretos (redactados automáticamente), cambios de IA y operaciones críticas.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => loadLogs()}
+              disabled={loading}
+              className="min-h-[42px] px-3.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-100 text-xs font-bold transition"
+            >
+              {loading ? '⏳ Actualizando...' : '🔄 Actualizar'}
+            </button>
+            <button
+              type="button"
+              onClick={handleExportCsv}
+              disabled={exporting}
+              className="min-h-[42px] px-4 rounded-xl bg-gradient-to-r from-[#FFC72C] to-amber-500 text-slate-950 font-black text-xs shadow hover:brightness-110 transition disabled:opacity-60"
+            >
+              {exporting ? '⏳ Generando...' : '📥 Exportar CSV Oficial'}
+            </button>
+          </div>
+        </section>
+
+        <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="rounded-2xl bg-[#111B2E] border border-slate-800 p-3.5">
+            <div className="text-[11px] text-slate-400 font-semibold">Eventos Mostrados</div>
+            <div className="text-2xl font-black text-white mt-1">{summary?.total ?? logs.length}</div>
+          </div>
+          <div className="rounded-2xl bg-[#111B2E] border border-slate-800 p-3.5">
+            <div className="text-[11px] text-sky-300 font-semibold">🔐 Accesos Hoy</div>
+            <div className="text-2xl font-black text-sky-300 mt-1">{summary?.loginsToday ?? 0}</div>
+          </div>
+          <div className="rounded-2xl bg-[#111B2E] border border-slate-800 p-3.5">
+            <div className="text-[11px] text-amber-300 font-semibold">👥 Movimientos Usuarios</div>
+            <div className="text-2xl font-black text-amber-300 mt-1">{summary?.userChangesCount ?? 0}</div>
+          </div>
+          <div className="rounded-2xl bg-[#111B2E] border border-slate-800 p-3.5">
+            <div className="text-[11px] text-rose-300 font-semibold">🔴 Críticos / API Keys</div>
+            <div className="text-2xl font-black text-rose-300 mt-1">
+              {summary?.criticalCount ?? 0}
+              <span className="text-xs font-semibold text-slate-400 ml-1.5">
+                ({summary?.apiKeyChangesCount ?? 0} keys)
+              </span>
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-2xl bg-[#111B2E] border border-slate-800 p-3.5 space-y-3">
+          <div className="flex flex-wrap gap-1.5">
+            {AUDIT_CATEGORIES.map((cat) => (
+              <button
+                key={cat.id}
+                type="button"
+                onClick={() => setCategoria(cat.id)}
+                className={`min-h-[36px] px-3 rounded-full text-xs font-bold border transition ${
+                  categoria === cat.id
+                    ? 'bg-amber-400/20 border-amber-400 text-amber-200'
+                    : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {cat.icon} {cat.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-2">
+            <div className="flex-1">
+              <label htmlFor="audit-search-input" className="sr-only">Buscar en auditoría</label>
+              <input
+                id="audit-search-input"
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Buscar por usuario, correo, acción, IP, API key..."
+                className="w-full min-h-[42px] rounded-xl bg-[#0B1220] border border-slate-700 focus:border-amber-400 px-3.5 text-xs text-white outline-none"
+              />
+            </div>
+            <select
+              aria-label="Filtrar por severidad"
+              value={severidad}
+              onChange={(e) => setSeveridad(e.target.value)}
+              className="min-h-[42px] rounded-xl bg-[#0B1220] border border-slate-700 px-3 text-xs text-slate-200 font-bold"
+            >
+              <option value="all">Severidad: Todas</option>
+              <option value="critical">🔴 Crítico</option>
+              <option value="warning">🟡 Alerta</option>
+              <option value="info">🔵 Info</option>
+            </select>
+          </div>
+        </section>
+
+        {error && (
+          <div role="alert" className="p-3.5 rounded-2xl bg-rose-950/60 border border-rose-500/40 text-xs font-bold text-rose-200">
+            ❌ {error}
+          </div>
+        )}
+
+        <section className="space-y-2.5">
+          {logs.length === 0 ? (
+            <div className="rounded-2xl bg-[#111B2E] border border-slate-800 p-8 text-center text-xs text-slate-400">
+              {loading ? 'Cargando eventos de auditoría...' : 'No hay eventos que coincidan con los filtros seleccionados.'}
+            </div>
+          ) : (
+            logs.map((row) => {
+              const sev = AUDIT_SEVERITY_BADGE[row.severidad] || AUDIT_SEVERITY_BADGE.info;
+              return (
+                <article
+                  key={row.id}
+                  className="rounded-2xl bg-[#111B2E] border border-slate-800 hover:border-slate-700 p-3.5 sm:p-4 space-y-2 transition"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className={`px-2 py-0.5 rounded-md text-[10px] font-black border ${sev.cls}`}>
+                        {sev.label}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-md bg-slate-800 text-amber-300 text-[10px] font-mono font-bold">
+                        {row.categoria}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-700 text-slate-200 text-[10px] font-mono">
+                        {row.accion}
+                      </span>
+                    </div>
+                    <span className="text-[11px] font-mono text-slate-400">
+                      🕒 {formatAuditTimestamp(row.created_at)}
+                    </span>
+                  </div>
+
+                  <p className="text-xs sm:text-sm font-bold text-white leading-snug select-text">
+                    {row.resumen}
+                  </p>
+
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-400">
+                    <span>
+                      👤 <strong className="text-slate-200">{row.actor_nombre || row.actor_email || 'Sistema'}</strong>
+                      {row.actor_email ? ` (${row.actor_email})` : ''}
+                      {row.actor_rol ? ` • ${row.actor_rol}` : ''}
+                    </span>
+                    {row.sede_id && (
+                      <span>🏛️ Sede: <strong className="text-slate-300">{row.sede_id}</strong></span>
+                    )}
+                    {row.ip_origen && (
+                      <span className="font-mono">🌐 {row.ip_origen}</span>
+                    )}
+                    {row.objetivo_id && (
+                      <span className="font-mono text-sky-300">🎯 {row.objetivo_tipo || 'id'}: {row.objetivo_id}</span>
+                    )}
+                  </div>
+
+                  {row.detalle && (
+                    <details className="pt-1">
+                      <summary className="cursor-pointer text-[11px] font-bold text-sky-300 hover:underline select-none">
+                        🔍 Ver detalle auditado (JSON seguro)
+                      </summary>
+                      <pre className="mt-2 p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-[10px] font-mono text-emerald-300 overflow-x-auto select-text">
+                        {typeof row.detalle === 'string' ? row.detalle : JSON.stringify(row.detalle, null, 2)}
+                      </pre>
+                    </details>
+                  )}
+                </article>
+              );
+            })
+          )}
+        </section>
       </div>
     </div>
   );
@@ -2245,6 +2544,14 @@ function App() {
   };
 
   const handleLogout = () => {
+    const tokenToAudit = authToken || localStorage.getItem('metal_uriel_jwt');
+    if (tokenToAudit) {
+      fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${tokenToAudit}` },
+        keepalive: true
+      }).catch(() => {});
+    }
     localStorage.removeItem('metal_uriel_jwt');
     localStorage.removeItem('metal_uriel_user');
     setAuthToken(null);
@@ -2579,6 +2886,27 @@ function App() {
             </>
           )}
 
+          {/* Bitácora de Auditoría del Sistema (Desarrollador y Administrador de Sede) */}
+          {isAdmin && (
+            <button
+              onClick={() => setActiveTab('audit')}
+              className={`w-11 h-11 rounded-xl flex items-center justify-center transition relative group ${
+                activeTab === 'audit'
+                  ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 shadow-sm'
+                  : 'text-slate-400 hover:text-slate-100 hover:bg-[#202C33]'
+              }`}
+              title="Bitácora de Auditoría del Sistema"
+            >
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                <path d="m9 12 2 2 4-4" />
+              </svg>
+              <span className="absolute left-16 bg-[#111B21] text-xs px-2.5 py-1 rounded-md border border-[#222E35] text-white opacity-0 group-hover:opacity-100 transition whitespace-nowrap shadow-xl pointer-events-none z-50">
+                🛡️ Bitácora de Auditoría
+              </span>
+            </button>
+          )}
+
           {/* Soporte & Onboarding (Todos los roles) */}
           <button
             onClick={() => setActiveTab('onboarding')}
@@ -2816,7 +3144,10 @@ function App() {
 
                     <button type="button" onClick={() => { setShowToolsMenu(false); setShowHealthModal(true); }} className="w-full text-left px-3 py-2 rounded-xl hover:bg-[#202C33] text-emerald-300 font-semibold">🩺 Estado de Salud</button>
                     {!isUsuario && (
-                      <button type="button" onClick={() => { setShowToolsMenu(false); handleExportExcel(); }} className="w-full text-left px-3 py-2 rounded-xl hover:bg-[#202C33] text-slate-200 font-semibold">📥 Exportar Excel / CSV</button>
+                      <>
+                        <button type="button" onClick={() => { setShowToolsMenu(false); setActiveTab('audit'); }} className="w-full text-left px-3 py-2 rounded-xl hover:bg-rose-950/60 text-rose-300 font-semibold">🛡️ Bitácora de Auditoría</button>
+                        <button type="button" onClick={() => { setShowToolsMenu(false); handleExportExcel(); }} className="w-full text-left px-3 py-2 rounded-xl hover:bg-[#202C33] text-slate-200 font-semibold">📥 Exportar Excel / CSV</button>
+                      </>
                     )}
                     {isDesarrollador && (
                       <>
@@ -5094,6 +5425,12 @@ function App() {
             />
           </div>
         )}
+
+        {activeTab === 'audit' && isAdmin && (
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <AuditLogViewer authToken={authToken} onToast={showToast} />
+          </div>
+        )}
         </div>
 
         {/* BARRA INFERIOR EN FLUJO FLEX (ZERO OVERLAP EN CELULAR) */}
@@ -5404,13 +5741,14 @@ function App() {
               <button type="button" onClick={() => { setActiveTab('brochures'); setShowMobileNavSheet(false); }} className="min-h-[44px] px-3 rounded-xl bg-slate-800 text-slate-100 font-bold text-left">📚 Pool Multimedia</button>
               {isAdmin && (
                 <>
+                  <button type="button" onClick={() => { setActiveTab('audit'); setShowMobileNavSheet(false); }} className="min-h-[44px] px-3 rounded-xl bg-rose-950/50 border border-rose-500/30 text-rose-200 font-bold text-left">🛡️ Auditoría</button>
                   <button type="button" onClick={() => { setActiveTab('database'); setShowMobileNavSheet(false); }} className="min-h-[44px] px-3 rounded-xl bg-slate-800 text-slate-100 font-bold text-left">🗄️ Base de Datos</button>
                   <button type="button" onClick={() => { setActiveTab('prompt'); setShowMobileNavSheet(false); }} className="min-h-[44px] px-3 rounded-xl bg-slate-800 text-slate-100 font-bold text-left">🧠 Prompt IA</button>
                   <button type="button" onClick={() => { setActiveTab('tenant_config'); setShowMobileNavSheet(false); }} className="min-h-[44px] px-3 rounded-xl bg-slate-800 text-slate-100 font-bold text-left">🏛️ Multi-Sede</button>
                 </>
               )}
               {isDesarrollador && (
-                <button type="button" onClick={() => { setActiveTab('users'); setShowMobileNavSheet(false); }} className="min-h-[44px] px-3 rounded-xl bg-slate-800 text-slate-100 font-bold text-left">👥 Usuarios RBAC</button>
+                <button type="button" onClick={() => { setActiveTab('users_crud'); loadUsers(); loadEmailHistory(); loadSmtpSettings(); setShowMobileNavSheet(false); }} className="min-h-[44px] px-3 rounded-xl bg-slate-800 text-slate-100 font-bold text-left">👥 Usuarios RBAC</button>
               )}
               <button type="button" onClick={() => { setShowMobileNavSheet(false); handleLogout(); }} className="min-h-[44px] px-3 rounded-xl bg-rose-950/60 border border-rose-500/30 text-rose-300 font-bold text-left">🚪 Cerrar Sesión</button>
             </div>

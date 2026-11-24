@@ -23,6 +23,9 @@ const {
 } = require('./lib/chat-audit-utils');
 const { buildWhatsAppConversationZip } = require('./lib/zip-builder');
 const mobilePairUtils = require('./lib/mobile-pair-utils');
+const auditLogUtils = require('./lib/audit-log-utils');
+const auditRecorder = auditLogUtils.createAuditRecorder({ getPool: () => dbPool });
+const { recordAuditEvent, queryAuditLogs, exportAuditCsv } = auditRecorder;
 
 const TESTING_NOTIFICATION_EMAIL = (process.env.ADMISSIONS_NOTIFICATION_EMAIL || 'Luisquintero2001@gmail.com').trim();
 const UPLOADS_ROOT = path.resolve(__dirname, 'public', 'uploads');
@@ -514,6 +517,28 @@ async function initializeDatabase(options = {}) {
                 INDEX idx_llm_fecha (created_at),
                 INDEX idx_llm_proveedor (proveedor),
                 INDEX idx_llm_sede (sede_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+            `CREATE TABLE IF NOT EXISTS auditoria_sistema (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                categoria VARCHAR(40) NOT NULL,
+                accion VARCHAR(80) NOT NULL,
+                severidad VARCHAR(20) DEFAULT 'info',
+                actor_id INT NULL,
+                actor_email VARCHAR(150) NULL,
+                actor_nombre VARCHAR(150) NULL,
+                actor_rol VARCHAR(40) NULL,
+                sede_id VARCHAR(50) NULL,
+                objetivo_tipo VARCHAR(60) NULL,
+                objetivo_id VARCHAR(120) NULL,
+                resumen VARCHAR(255) NOT NULL,
+                detalle_json TEXT NULL,
+                ip_origen VARCHAR(80) NULL,
+                user_agent VARCHAR(255) NULL,
+                INDEX idx_audit_fecha (created_at),
+                INDEX idx_audit_cat (categoria, created_at),
+                INDEX idx_audit_actor (actor_email),
+                INDEX idx_audit_sede (sede_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS curp VARCHAR(18) NULL`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS aviso_privacidad_aceptado TINYINT(1) DEFAULT 1`,
@@ -4074,6 +4099,16 @@ app.post('/api/aspirantes/seed', authMiddleware, authorizeRoles('desarrollador')
         userSessionState.clear();
         processedMessageIds.clear();
         console.log('🌱 [DB SEED] Base de datos poblada con 5 prospectos demo.');
+        await recordAuditEvent({
+            req,
+            categoria: 'BASE_DATOS',
+            accion: 'DB_SEED_DEMO',
+            severidad: 'warning',
+            objetivoTipo: 'base_datos',
+            objetivoId: 'aspirantes',
+            resumen: `Base de datos poblada con 5 prospectos demo por ${req.user.displayName || req.user.correo_institucional || 'Desarrollador'}.`,
+            detalle: { count: 5 }
+        });
         res.json({ success: true, message: 'Datos demo de alta fidelidad cargados con éxito (5 prospectos).' });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -4218,23 +4253,53 @@ async function handleUserAuth(identifier, password, customName = null) {
     };
 }
 
+async function auditAuthAttemptMain(req, method, identifier, authResult) {
+    if (authResult.success && authResult.user) {
+        const u = authResult.user;
+        await recordAuditEvent({
+            req,
+            categoria: 'AUTH',
+            accion: 'LOGIN_OK',
+            severidad: 'info',
+            actor: { id: u.id, email: u.correo_institucional, nombre: u.displayName, rol: u.rol, sede_id: u.sede_id },
+            sedeId: u.sede_id,
+            objetivoTipo: 'sesion',
+            objetivoId: u.correo_institucional,
+            resumen: `Inicio de sesión exitoso (${method}) — ${u.displayName} [${u.rol}]`,
+            detalle: { metodo: method, matricula: u.matricula, sede: u.sede_id || 'GLOBAL' }
+        });
+    } else {
+        await recordAuditEvent({
+            req,
+            categoria: 'AUTH',
+            accion: 'LOGIN_FAIL',
+            severidad: 'warning',
+            actor: { email: String(identifier || 'desconocido').slice(0, 120), nombre: 'Intento fallido' },
+            objetivoTipo: 'sesion',
+            objetivoId: String(identifier || 'vacío').slice(0, 120),
+            resumen: `Intento de inicio de sesión fallido (${method}) para "${String(identifier || '').slice(0, 80)}"`,
+            detalle: { metodo: method, motivo: authResult.error || 'Credenciales inválidas' }
+        });
+    }
+}
+
 // Login Local
 app.post('/api/auth/login', authLimiter, async (req, res) => {
     const { username, email, correo_institucional, password } = req.body;
-    const authResult = await handleUserAuth(correo_institucional || username || email, password);
-    if (authResult.success) {
-        return res.json(authResult);
-    }
+    const identifier = correo_institucional || username || email;
+    const authResult = await handleUserAuth(identifier, password);
+    await auditAuthAttemptMain(req, 'local', identifier, authResult);
+    if (authResult.success) return res.json(authResult);
     return res.status(401).json(authResult);
 });
 
 // Login con Office 365
 app.post('/api/auth/o365', authLimiter, async (req, res) => {
     const { email, correo_institucional, password, name } = req.body;
-    const authResult = await handleUserAuth(correo_institucional || email, password, name);
-    if (authResult.success) {
-        return res.json(authResult);
-    }
+    const identifier = correo_institucional || email;
+    const authResult = await handleUserAuth(identifier, password, name);
+    await auditAuthAttemptMain(req, 'o365', identifier, authResult);
+    if (authResult.success) return res.json(authResult);
     return res.status(401).json(authResult);
 });
 
@@ -4242,10 +4307,78 @@ app.post('/api/auth/o365', authLimiter, async (req, res) => {
 app.post('/api/auth/microsoft', authLimiter, async (req, res) => {
     const { email, password, displayName } = req.body;
     const authResult = await handleUserAuth(email, password, displayName);
-    if (authResult.success) {
-        return res.json(authResult);
-    }
+    await auditAuthAttemptMain(req, 'microsoft', email, authResult);
+    if (authResult.success) return res.json(authResult);
     return res.status(401).json(authResult);
+});
+
+// Logout auditado
+app.post('/api/auth/logout', authMiddleware, async (req, res) => {
+    await recordAuditEvent({
+        req,
+        categoria: 'AUTH',
+        accion: 'LOGOUT',
+        severidad: 'info',
+        objetivoTipo: 'sesion',
+        objetivoId: req.user?.correo_institucional || String(req.user?.id || ''),
+        resumen: `Cierre de sesión voluntario — ${req.user?.displayName || req.user?.correo_institucional || 'Usuario'}`,
+        detalle: { rol: req.user?.rol, sede: req.user?.sede_id || 'GLOBAL' }
+    });
+    res.json({ success: true, message: 'Sesión cerrada y auditada.' });
+});
+
+// Consulta y exportación CSV de Bitácora de Auditoría (RBAC: Desarrollador y Administrador)
+app.get('/api/audit-logs', authMiddleware, authorizeRoles('desarrollador', 'administrador'), async (req, res) => {
+    try {
+        const isDev = req.user.rol === 'desarrollador';
+        const sedeId = isDev ? (req.query.sede || 'all') : (req.user.sede_id || 'campeche');
+        const result = await queryAuditLogs({
+            categoria: req.query.categoria || 'all',
+            severidad: req.query.severidad || 'all',
+            search: req.query.search || '',
+            actor: req.query.actor || '',
+            sedeId,
+            actorEmailScope: isDev ? null : req.user.correo_institucional,
+            from: req.query.from || null,
+            to: req.query.to || null,
+            limit: req.query.limit || 200
+        });
+        res.json({ success: true, ...result });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.get('/api/audit-logs/export', authMiddleware, authorizeRoles('desarrollador', 'administrador'), async (req, res) => {
+    try {
+        const isDev = req.user.rol === 'desarrollador';
+        const sedeId = isDev ? (req.query.sede || 'all') : (req.user.sede_id || 'campeche');
+        const result = await queryAuditLogs({
+            categoria: req.query.categoria || 'all',
+            severidad: req.query.severidad || 'all',
+            search: req.query.search || '',
+            sedeId,
+            actorEmailScope: isDev ? null : req.user.correo_institucional,
+            limit: 500
+        });
+        await recordAuditEvent({
+            req,
+            categoria: 'SISTEMA',
+            accion: 'AUDIT_CSV_EXPORT',
+            severidad: 'info',
+            sedeId: isDev ? null : sedeId,
+            objetivoTipo: 'auditoria',
+            resumen: `Exportación oficial CSV de Bitácora de Auditoría (${result.logs.length} eventos)`,
+            detalle: { count: result.logs.length, categoria: req.query.categoria || 'all' }
+        });
+        const csv = exportAuditCsv(result.logs);
+        const fileName = `auditoria_metal_uriel_${new Date().toISOString().slice(0, 10)}.csv`;
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        res.status(200).send(csv);
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
 });
 
 // ==========================================
@@ -4281,6 +4414,17 @@ app.post('/api/users', authMiddleware, authorizeRoles('desarrollador'), async (r
         `, [cleanCorreo, nombre_completo.trim(), mat, hashedPass, rolNorm, finalSede, activo !== undefined ? (activo ? 1 : 0) : 1]);
 
         console.log(`👤 [CRUD USUARIOS] Cuenta creada por Superadmin: ${cleanCorreo} (${rolNorm} - Sede: ${finalSede || 'GLOBAL'})`);
+        await recordAuditEvent({
+            req,
+            categoria: 'USUARIOS',
+            accion: 'USER_CREATE',
+            severidad: 'warning',
+            sedeId: finalSede,
+            objetivoTipo: 'usuario',
+            objetivoId: cleanCorreo,
+            resumen: `Usuario creado: ${nombre_completo.trim()} (${cleanCorreo}) con rol "${rolNorm}"`,
+            detalle: { userId: result.insertId, correo: cleanCorreo, nombre: nombre_completo.trim(), rol: rolNorm, sede_id: finalSede || 'GLOBAL', activo: activo !== undefined ? Boolean(activo) : true }
+        });
         res.status(201).json({
             success: true,
             message: 'Usuario creado exitosamente.',
@@ -4308,7 +4452,8 @@ app.put('/api/users/:id', authMiddleware, authorizeRoles('desarrollador'), async
         const cleanCorreo = correo_institucional ? String(correo_institucional).trim().toLowerCase() : current.correo_institucional;
         const rolNorm = rol ? normalizeRole(rol) : current.rol;
         const finalSede = rolNorm === 'desarrollador' ? null : (sede_id !== undefined ? (sede_id || 'campeche') : current.sede_id);
-        const finalPass = (password && String(password).trim().length > 0) ? hashPassword(password) : current.password;
+        const passwordChanged = Boolean(password && String(password).trim().length > 0);
+        const finalPass = passwordChanged ? hashPassword(password) : current.password;
         const finalNombre = nombre_completo ? nombre_completo.trim() : current.nombre_completo;
         const finalMat = matricula !== undefined ? String(matricula).trim() : current.matricula;
         const finalActivo = activo !== undefined ? (activo ? 1 : 0) : current.activo;
@@ -4319,6 +4464,26 @@ app.put('/api/users/:id', authMiddleware, authorizeRoles('desarrollador'), async
                 password = ?, rol = ?, sede_id = ?, activo = ?
             WHERE id = ?
         `, [cleanCorreo, finalNombre, finalMat, finalPass, rolNorm, finalSede, finalActivo, id]);
+
+        const changes = [];
+        if (cleanCorreo !== current.correo_institucional) changes.push(`correo: ${current.correo_institucional} → ${cleanCorreo}`);
+        if (finalNombre !== current.nombre_completo) changes.push(`nombre: ${current.nombre_completo} → ${finalNombre}`);
+        if (rolNorm !== current.rol) changes.push(`rol: ${current.rol} → ${rolNorm}`);
+        if (finalSede !== current.sede_id) changes.push(`sede: ${current.sede_id || 'GLOBAL'} → ${finalSede || 'GLOBAL'}`);
+        if (Boolean(finalActivo) !== Boolean(current.activo)) changes.push(`activo: ${Boolean(current.activo)} → ${Boolean(finalActivo)}`);
+        if (passwordChanged) changes.push('contraseña rotada');
+
+        await recordAuditEvent({
+            req,
+            categoria: 'USUARIOS',
+            accion: 'USER_UPDATE',
+            severidad: (rolNorm !== current.rol || passwordChanged) ? 'critical' : 'warning',
+            sedeId: finalSede,
+            objetivoTipo: 'usuario',
+            objetivoId: cleanCorreo,
+            resumen: `Usuario editado (#${id} ${cleanCorreo}): ${changes.join(', ') || 'sin cambios estructurales'}`,
+            detalle: { userId: Number(id), correo: cleanCorreo, changes, passwordChanged }
+        });
 
         console.log(`✏️ [CRUD USUARIOS] Usuario #${id} (${cleanCorreo}) actualizado a Rol: ${rolNorm} | Sede: ${finalSede || 'GLOBAL'}`);
         res.json({ success: true, message: 'Usuario actualizado correctamente.' });
@@ -4333,7 +4498,20 @@ app.delete('/api/users/:id', authMiddleware, authorizeRoles('desarrollador'), as
         if (req.user && Number(req.user.id) === Number(id)) {
             return res.status(400).json({ success: false, error: 'No puedes eliminar tu propia cuenta activa de Desarrollador.' });
         }
+        const [targetRows] = await dbPool.query('SELECT id, correo_institucional, nombre_completo, rol, sede_id FROM usuarios WHERE id = ? LIMIT 1', [id]);
+        const target = targetRows[0] || null;
         await dbPool.execute('DELETE FROM usuarios WHERE id = ?', [id]);
+        await recordAuditEvent({
+            req,
+            categoria: 'USUARIOS',
+            accion: 'USER_DELETE',
+            severidad: 'critical',
+            sedeId: target?.sede_id || null,
+            objetivoTipo: 'usuario',
+            objetivoId: target?.correo_institucional || String(id),
+            resumen: `Usuario eliminado permanentemente: ${target ? `${target.nombre_completo} (${target.correo_institucional}, rol ${target.rol})` : `ID #${id}`}`,
+            detalle: target ? { userId: target.id, correo: target.correo_institucional, nombre: target.nombre_completo, rol: target.rol, sede_id: target.sede_id || 'GLOBAL' } : { userId: Number(id) }
+        });
         console.log(`🗑️ [CRUD USUARIOS] Usuario #${id} eliminado por Superadmin.`);
         res.json({ success: true, message: 'Usuario eliminado correctamente.' });
     } catch (err) {
@@ -4407,6 +4585,16 @@ app.post('/api/settings/smtp', authMiddleware, authorizeRoles('desarrollador', '
         fs.writeFileSync(envPath, envContent, 'utf-8');
 
         console.log(`✉️ [SMTP HOT-RELOAD] Credenciales SMTP actualizadas para ${cleanUser} (${cleanHost}:${cleanPort}).`);
+        await recordAuditEvent({
+            req,
+            categoria: 'API_KEYS',
+            accion: 'SMTP_UPDATE',
+            severidad: 'critical',
+            objetivoTipo: 'smtp_config',
+            objetivoId: cleanUser,
+            resumen: `Credenciales SMTP actualizadas (${cleanHost}:${cleanPort} • ${cleanUser})`,
+            detalle: { host: cleanHost, port: cleanPort, user: cleanUser, passwordRotated: Boolean(pass && String(pass).trim()) }
+        });
         res.json({
             success: true,
             message: `Configuración SMTP en vivo guardada para ${cleanUser}. Ya puedes disparar pruebas reales a tu bandeja de Gmail.`,
@@ -4499,6 +4687,14 @@ async function handleClearAllDatabaseAndCache(req, res) {
         totalConversationsStarted = 0;
 
         console.log('🗑️ [DB + CACHE RESET] Base de datos (aspirantes + historial_conversaciones) y memoria caché vaciadas al 100%.');
+        await recordAuditEvent({
+            req,
+            categoria: 'BASE_DATOS',
+            accion: 'DB_CLEAR_ALL',
+            severidad: 'critical',
+            objetivoTipo: 'base_datos',
+            resumen: 'Vaciado total de tablas aspirantes, historial_conversaciones y caché RAM (auditoría preservada)'
+        });
         res.json({
             success: true,
             message: 'Base de datos (aspirantes e historial) y memoria caché vaciadas al 100% para testing.'
@@ -4531,6 +4727,16 @@ app.post('/api/auth/mobile-pair/create', authMiddleware, async (req, res) => {
             user: req.user,
             serverUrl: targetServerUrl
         });
+        await recordAuditEvent({
+            req,
+            categoria: 'AUTH',
+            accion: 'QR_PAIR_CREATE',
+            severidad: 'info',
+            objetivoTipo: 'sesion_qr',
+            objetivoId: session.pinFormatted,
+            resumen: `Código QR móvil generado para vincular celular (${targetServerUrl})`,
+            detalle: { serverUrl: targetServerUrl, expiresInSec: session.expiresInSec }
+        });
         res.json({
             success: true,
             ...session,
@@ -4548,13 +4754,34 @@ app.get('/api/auth/mobile-pair/status/:code', authMiddleware, (req, res) => {
     res.json({ success: true, ...status });
 });
 
-app.post('/api/auth/mobile-pair/claim', authLimiter, (req, res) => {
+app.post('/api/auth/mobile-pair/claim', authLimiter, async (req, res) => {
     const { code, pin, deviceLabel } = req.body || {};
     const claimed = mobilePairUtils.claimPairingSession({ code, pin, deviceLabel });
     if (!claimed.ok) {
+        await recordAuditEvent({
+            req,
+            categoria: 'AUTH',
+            accion: 'QR_PAIR_FAIL',
+            severidad: 'warning',
+            objetivoTipo: 'sesion_qr',
+            resumen: `Intento fallido de vinculación QR/PIN desde "${String(deviceLabel || 'Móvil').slice(0, 60)}"`,
+            detalle: { motivo: claimed.error }
+        });
         return res.status(401).json({ success: false, error: claimed.error });
     }
     const token = jwt.sign(claimed.user, JWT_SECRET, { expiresIn: '7d' });
+    await recordAuditEvent({
+        req,
+        categoria: 'AUTH',
+        accion: 'QR_PAIR_CLAIM',
+        severidad: 'info',
+        actor: { id: claimed.user.id, email: claimed.user.correo_institucional, nombre: claimed.user.displayName, rol: claimed.user.rol, sede_id: claimed.user.sede_id },
+        sedeId: claimed.user.sede_id,
+        objetivoTipo: 'sesion_qr',
+        objetivoId: claimed.user.correo_institucional,
+        resumen: `Celular vinculado por QR — ${claimed.user.displayName} (${deviceLabel || 'App Móvil'})`,
+        detalle: { deviceLabel: deviceLabel || 'App Móvil', serverUrl: claimed.serverUrl }
+    });
     return res.json({ success: true, token, user: claimed.user, serverUrl: claimed.serverUrl });
 });
 
@@ -4633,14 +4860,25 @@ app.get('/api/models', authMiddleware, (req, res) => {
 });
 
 // Cambiar modelo activo global (Exclusivo Desarrollador)
-app.post('/api/models/active', authMiddleware, authorizeRoles('desarrollador'), (req, res) => {
+app.post('/api/models/active', authMiddleware, authorizeRoles('desarrollador'), async (req, res) => {
     const { modelId } = req.body;
     const found = ALL_SUPPORTED_MODELS.find(m => m.id === modelId);
     if (!found) {
         return res.status(400).json({ error: 'Modelo no reconocido.' });
     }
+    const prevModel = globalActiveModelId;
     globalActiveModelId = modelId;
     console.log(`🤖 Modelo de IA activo actualizado globalmente a: ${modelId}`);
+    await recordAuditEvent({
+        req,
+        categoria: 'IA_MODELO',
+        accion: 'MODEL_CHANGE',
+        severidad: 'warning',
+        objetivoTipo: 'modelo_ia',
+        objetivoId: modelId,
+        resumen: `Modelo de IA global actualizado: ${prevModel} → ${modelId}`,
+        detalle: { prevModel, nextModel: modelId }
+    });
     res.json({ success: true, activeModel: globalActiveModelId });
 });
 
@@ -4653,20 +4891,37 @@ app.get('/api/prompt', authMiddleware, authorizeRoles('desarrollador', 'administ
 });
 
 // Guardar nuevo System Prompt (Desarrollador y Administrador)
-app.post('/api/prompt', authMiddleware, authorizeRoles('desarrollador', 'administrador'), (req, res) => {
+app.post('/api/prompt', authMiddleware, authorizeRoles('desarrollador', 'administrador'), async (req, res) => {
     const { prompt } = req.body;
     if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
         return res.status(400).json({ error: 'El prompt no puede estar vacío.' });
     }
     setActivePrompt(prompt);
     console.log('🔄 System Prompt actualizado dinámicamente desde el frontend.');
+    await recordAuditEvent({
+        req,
+        categoria: 'IA_MODELO',
+        accion: 'PROMPT_UPDATE',
+        severidad: 'warning',
+        objetivoTipo: 'system_prompt',
+        resumen: `Personalidad / System Prompt actualizado (${prompt.trim().length} caracteres)`,
+        detalle: { length: prompt.trim().length, preview: prompt.trim().slice(0, 140) }
+    });
     res.json({ success: true, message: 'Personalidad y prompt actualizados con éxito.', prompt: getActivePrompt() });
 });
 
 // Restaurar prompt original (Desarrollador y Administrador)
-app.post('/api/prompt/reset', authMiddleware, authorizeRoles('desarrollador', 'administrador'), (req, res) => {
+app.post('/api/prompt/reset', authMiddleware, authorizeRoles('desarrollador', 'administrador'), async (req, res) => {
     setActivePrompt(PROMPT_PRESETS[0].prompt);
     console.log('🔄 System Prompt restaurado a Metal-Uriel Oficial.');
+    await recordAuditEvent({
+        req,
+        categoria: 'IA_MODELO',
+        accion: 'PROMPT_RESET',
+        severidad: 'warning',
+        objetivoTipo: 'system_prompt',
+        resumen: 'System Prompt restaurado a la versión oficial UNID por defecto'
+    });
     res.json({ success: true, message: 'Prompt restaurado al original.', prompt: getActivePrompt() });
 });
 
@@ -4885,6 +5140,22 @@ async function handleSaveTenantConfig(req, res) {
             console.log(`🏛️ [TENANT CREATED] Sede '${slug}' registrada y cifrada con éxito.`);
         }
 
+        const rotatedSecrets = [];
+        if (whatsapp_token && !whatsapp_token.includes('••••')) rotatedSecrets.push('WHATSAPP_TOKEN');
+        if (gemini_key && !gemini_key.includes('••••')) rotatedSecrets.push('GEMINI_API_KEY');
+        if (openai_key && !openai_key.includes('••••')) rotatedSecrets.push('OPENAI_API_KEY');
+        await recordAuditEvent({
+            req,
+            categoria: rotatedSecrets.length > 0 ? 'API_KEYS' : 'SEDES',
+            accion: 'TENANT_KEYS_UPDATE',
+            severidad: rotatedSecrets.length > 0 ? 'critical' : 'warning',
+            sedeId: slug,
+            objetivoTipo: 'sede',
+            objetivoId: slug,
+            resumen: `Configuración multi-sede guardada para "${slug}"${rotatedSecrets.length ? ` (llaves rotadas: ${rotatedSecrets.join(', ')})` : ''}`,
+            detalle: { slug, phoneIdUpdated: Boolean(whatsapp_phone_number_id), rotatedSecrets, activa: activa !== undefined ? Boolean(activa) : true }
+        });
+
         res.json({ success: true, message: `Configuración para ${slug} guardada y cifrada exitosamente.` });
     } catch (err) {
         console.error('Error guardando sede:', err);
@@ -5041,6 +5312,22 @@ app.patch('/api/aspirantes/:id/status', authMiddleware, async (req, res) => {
             }).catch(console.error);
         }
 
+        await recordAuditEvent({
+            req,
+            categoria: 'ASPIRANTES',
+            accion: 'LEAD_STATUS_CHANGE',
+            severidad: 'info',
+            sedeId: prevLead?.sede_id || req.user.sede_id || null,
+            objetivoTipo: 'aspirante',
+            objetivoId: String(id),
+            resumen: `Estado del prospecto "${prevLead?.nombre_completo || `#${id}`}" cambiado de "${prevLead?.estado_prospecto || 'desconocido'}" a "${estado}".`,
+            detalle: {
+                prevEstado: prevLead?.estado_prospecto || null,
+                nextEstado: estado,
+                emailTriggered
+            }
+        });
+
         res.json({ success: true, id: Number(id), estado, emailTriggered });
     } catch (err) {
         res.status(500).json({ error: 'Error actualizando estado: ' + err.message });
@@ -5071,14 +5358,26 @@ app.patch('/api/aspirantes/:id/archive', authMiddleware, async (req, res) => {
 app.delete('/api/aspirantes/:id', authMiddleware, authorizeRoles('desarrollador', 'administrador'), async (req, res) => {
     try {
         const { id } = req.params;
+        const [rows] = await dbPool.query('SELECT id, nombre_completo, telefono_celular, sede_id FROM aspirantes WHERE id = ?', [id]);
+        const targetLead = rows[0] || null;
         if (req.user.rol !== 'desarrollador' && req.user.sede_id) {
-            const [rows] = await dbPool.query('SELECT sede_id FROM aspirantes WHERE id = ?', [id]);
-            if (rows[0]?.sede_id && rows[0].sede_id !== req.user.sede_id) {
+            if (targetLead?.sede_id && targetLead.sede_id !== req.user.sede_id) {
                 return res.status(403).json({ error: 'No tienes permiso para eliminar prospectos de otra sede.' });
             }
         }
         await dbPool.execute('DELETE FROM aspirantes WHERE id = ?', [id]);
         console.log(`🗑️ Prospecto #${id} eliminado.`);
+        await recordAuditEvent({
+            req,
+            categoria: 'ASPIRANTES',
+            accion: 'LEAD_DELETE',
+            severidad: 'warning',
+            sedeId: targetLead?.sede_id || req.user.sede_id || null,
+            objetivoTipo: 'aspirante',
+            objetivoId: String(id),
+            resumen: `Prospecto "${targetLead?.nombre_completo || `#${id}`}" eliminado definitivamente por ${req.user.displayName || req.user.correo_institucional || 'Admin'}.`,
+            detalle: { telefono: targetLead?.telefono_celular || null }
+        });
         res.json({ success: true, id: Number(id) });
     } catch (err) {
         res.status(500).json({ error: 'Error eliminando prospecto: ' + err.message });
@@ -5416,6 +5715,18 @@ app.get('/api/aspirantes/export', authMiddleware, authorizeRoles('desarrollador'
 
         const csvString = '\uFEFF' + csvRows.join('\r\n');
         
+        await recordAuditEvent({
+            req,
+            categoria: 'ASPIRANTES',
+            accion: 'LEADS_CSV_EXPORT',
+            severidad: 'info',
+            sedeId: req.user.rol !== 'desarrollador' ? (req.user.sede_id || null) : null,
+            objetivoTipo: 'exportacion_csv',
+            objetivoId: `aspirantes_${rows.length}`,
+            resumen: `Exportación CSV de ${rows.length} prospecto(s) descargada por ${req.user.displayName || req.user.correo_institucional || 'Admin'}.`,
+            detalle: { rowCount: rows.length }
+        });
+
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', `attachment; filename=aspirantes_unid_${new Date().toISOString().slice(0,10)}.csv`);
         res.status(200).send(csvString);
@@ -6029,6 +6340,17 @@ app.post('/api/conversations/:phone/finalize', authMiddleware, async (req, res) 
         if (isEnrolled) {
             dispararNotificacionCorreo('CIERRE_INSCRITO', { lead: leadRecord, asesor: actor }).catch(() => {});
         }
+        await recordAuditEvent({
+            req,
+            categoria: 'ASPIRANTES',
+            accion: 'LEAD_FINALIZE_MANUAL',
+            severidad: 'info',
+            sedeId: leadRecord?.sede_id || targetSede || null,
+            objetivoTipo: 'aspirante',
+            objetivoId: String(leadRecord?.id || canonical),
+            resumen: `Proceso finalizado manualmente como "${estado}" para ${leadRecord?.nombre_completo || canonical} por ${actor}.`,
+            detalle: { estado, archivar, isEnrolled, telefono: canonical }
+        });
         res.json({
             success: true,
             message: isEnrolled ? '🏆 Proceso finalizado como INSCRITO y resguardado como Caso de Estudio.' : `Proceso finalizado manualmente en etapa "${estado}".`,
@@ -6109,6 +6431,17 @@ app.get('/api/conversations/:phone/export-zip', authMiddleware, async (req, res)
             messages: detail.messages,
             completeness: detail.completeness,
             attachmentFiles
+        });
+        await recordAuditEvent({
+            req,
+            categoria: 'ASPIRANTES',
+            accion: 'CHAT_ZIP_EXPORT',
+            severidad: 'info',
+            sedeId: detail.aspirante?.sede_id || req.user.sede_id || null,
+            objetivoTipo: 'conversacion',
+            objetivoId: detail.canonicalPhone,
+            resumen: `Expediente ZIP de conversación (${detail.messages.length} mensajes, ${attachmentFiles.length} adjuntos) exportado por ${req.user.displayName || req.user.correo_institucional || 'Asesor'}.`,
+            detalle: { fileName, messageCount: detail.messages.length, attachmentCount: attachmentFiles.length }
         });
         res.setHeader('Content-Type', 'application/zip');
         res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
@@ -6624,19 +6957,29 @@ app.post('/api/setup/complete', setupAccessGuard, async (req, res) => {
             });
         }
 
-        // Escribir archivo .env seguro en disco
-        const envContent = setupUtils.buildEnvFileContent({
+        // Escribir archivo .env seguro en disco (con diff redactado para auditoría)
+        const envTrackedKeys = [
+            'GEMINI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY',
+            'GROQ_API_KEY', 'WHATSAPP_TOKEN', 'WHATSAPP_PHONE_NUMBER_ID', 'META_APP_SECRET',
+            'META_VERIFY_TOKEN', 'OLLAMA_API_KEY', 'SMTP_PASS', 'JWT_SECRET',
+            'ENCRYPTION_MASTER_KEY', 'DB_PASSWORD'
+        ];
+        const prevEnvSnapshot = {};
+        for (const k of envTrackedKeys) prevEnvSnapshot[k] = process.env[k] || '';
+        const effectiveAfter = {
             ...raw,
             WHATSAPP_PHONE_NUMBER_ID: raw.SKIP_WHATSAPP ? '' : raw.WHATSAPP_PHONE_NUMBER_ID,
             WHATSAPP_TOKEN: raw.SKIP_WHATSAPP ? '' : raw.WHATSAPP_TOKEN
-        });
+        };
+        const envContent = setupUtils.buildEnvFileContent(effectiveAfter);
         const envPath = path.join(__dirname, '.env');
         fs.writeFileSync(envPath, envContent, { encoding: 'utf8', mode: 0o600 });
 
         // Recargar configuración en caliente sin reiniciar el proceso
         reloadRuntimeConfig();
+        const keyDiffs = auditLogUtils.diffSensitiveKeys(prevEnvSnapshot, effectiveAfter, envTrackedKeys);
 
-        // Inicializar MariaDB (crear BD + 8 tablas + cuentas RBAC con scrypt + cifrar WhatsApp en sedes)
+        // Inicializar MariaDB (crear BD + tablas + cuentas RBAC con scrypt + cifrar WhatsApp en sedes)
         const primaryCampus = raw.PRIMARY_CAMPUS || 'campeche';
         const customDevUser = (!isReconfigure || (raw.DEV_EMAIL && raw.DEV_PASSWORD)) ? {
             correo_institucional: String(raw.DEV_EMAIL || req.user?.correo_institucional || '').trim().toLowerCase(),
@@ -6659,6 +7002,20 @@ app.post('/api/setup/complete', setupAccessGuard, async (req, res) => {
             syncPrimaryCampusCreds: true,
             customDevUser,
             customAdminUser
+        });
+
+        await recordAuditEvent({
+            req,
+            categoria: 'API_KEYS',
+            accion: isReconfigure ? 'API_KEYS_UPDATE' : 'INITIAL_SETUP_COMPLETE',
+            severidad: 'critical',
+            sedeId: primaryCampus,
+            objetivoTipo: 'env_config',
+            objetivoId: '.env',
+            resumen: isReconfigure
+                ? `Configuración y API Keys actualizadas (${keyDiffs.length} llaves modificadas: ${keyDiffs.map(d => d.key).join(', ') || 'parámetros generales'})`
+                : `Instalación inicial Plug & Play completada (${keyDiffs.length} credenciales configuradas)`,
+            detalle: { mode: isReconfigure ? 'reconfigure' : 'first_run', primaryCampus, ollamaEnabled: Boolean(raw.OLLAMA_ENABLED), changedKeys: keyDiffs }
         });
 
         // Emitir JWT listo para iniciar sesión automáticamente como el Desarrollador recién configurado

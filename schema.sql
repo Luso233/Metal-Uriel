@@ -199,4 +199,28 @@ CREATE TABLE IF NOT EXISTS `llm_telemetria` (
     INDEX `idx_llm_sede` (`sede_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Tabla 10: Bitácora Inmutable de Auditoría Empresarial (Usuarios, Logins/Logouts, API Keys, IA, BD)
+CREATE TABLE IF NOT EXISTS `auditoria_sistema` (
+    `id` BIGINT AUTO_INCREMENT PRIMARY KEY,
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    `categoria` VARCHAR(40) NOT NULL,
+    `accion` VARCHAR(80) NOT NULL,
+    `severidad` VARCHAR(20) DEFAULT 'info',
+    `actor_id` INT NULL,
+    `actor_email` VARCHAR(150) NULL,
+    `actor_nombre` VARCHAR(150) NULL,
+    `actor_rol` VARCHAR(40) NULL,
+    `sede_id` VARCHAR(50) NULL,
+    `objetivo_tipo` VARCHAR(60) NULL,
+    `objetivo_id` VARCHAR(120) NULL,
+    `resumen` VARCHAR(255) NOT NULL,
+    `detalle_json` TEXT NULL,
+    `ip_origen` VARCHAR(80) NULL,
+    `user_agent` VARCHAR(255) NULL,
+    INDEX `idx_audit_fecha` (`created_at`),
+    INDEX `idx_audit_cat` (`categoria`, `created_at`),
+    INDEX `idx_audit_actor` (`actor_email`),
+    INDEX `idx_audit_sede` (`sede_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 

@@ -11,6 +11,7 @@ const jwt = require('jsonwebtoken');
 const securityUtils = require('../lib/security-utils');
 const setupUtils = require('../lib/setup-utils');
 const chatAuditUtils = require('../lib/chat-audit-utils');
+const auditLogUtils = require('../lib/audit-log-utils');
 const zipBuilder = require('../lib/zip-builder');
 const serverMod = require('../index');
 
@@ -339,6 +340,77 @@ describe('Integración HTTP Express — Blindaje RBAC, Helmet y Firma HMAC Webho
             body: JSON.stringify({ code: qrJson.code })
         });
         assert.equal(qrReplay.status, 401);
+    });
+
+    it('registra auditoría empresarial (login fallido, logout, cambio modelo, export CSV) con RBAC estricto y cero fuga de secretos', async () => {
+        // 1. Sin JWT -> 401; usuario operativo -> 403
+        assert.equal((await fetch(`${baseUrl}/api/audit-logs`)).status, 401);
+        const userTok = signToken('usuario', 'campeche');
+        assert.equal((await fetch(`${baseUrl}/api/audit-logs`, { headers: { Authorization: `Bearer ${userTok}` } })).status, 403);
+        assert.equal((await fetch(`${baseUrl}/api/audit-logs/export`, { headers: { Authorization: `Bearer ${userTok}` } })).status, 403);
+
+        // 2. Generar eventos auditables reales: login fallido + cambio de modelo + logout
+        const secretAttempt = 'SuperSecretPassword999!';
+        const badLogin = await fetch(`${baseUrl}/api/auth/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: 'intruso@red.unid.mx', password: secretAttempt })
+        });
+        assert.equal(badLogin.status, 401);
+
+        const devTok = signToken('desarrollador', null);
+        const modelRes = await fetch(`${baseUrl}/api/models/active`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${devTok}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ modelId: 'auto-fallback' })
+        });
+        assert.equal(modelRes.status, 200);
+
+        const logoutRes = await fetch(`${baseUrl}/api/auth/logout`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${devTok}` }
+        });
+        assert.equal(logoutRes.status, 200);
+
+        // 3. Consultar bitácora como desarrollador y verificar eventos y redacción
+        const logsRes = await fetch(`${baseUrl}/api/audit-logs?limit=50`, {
+            headers: { Authorization: `Bearer ${devTok}` }
+        });
+        assert.equal(logsRes.status, 200);
+        const logsJson = await logsRes.json();
+        assert.equal(logsJson.success, true);
+        const actions = logsJson.logs.map(l => l.accion);
+        assert.ok(actions.includes('LOGIN_FAIL'), 'Debe auditar LOGIN_FAIL');
+        assert.ok(actions.includes('MODEL_CHANGE'), 'Debe auditar MODEL_CHANGE');
+        assert.ok(actions.includes('LOGOUT'), 'Debe auditar LOGOUT');
+        assert.doesNotMatch(JSON.stringify(logsJson.logs), new RegExp(secretAttempt), 'NUNCA debe guardar contraseñas en texto plano');
+
+        // 4. Exportación CSV oficial
+        const csvRes = await fetch(`${baseUrl}/api/audit-logs/export`, {
+            headers: { Authorization: `Bearer ${devTok}` }
+        });
+        assert.equal(csvRes.status, 200);
+        assert.match(csvRes.headers.get('content-type') || '', /text\/csv/i);
+        const csvText = await csvRes.text();
+        assert.match(csvText, /Fecha y Hora/);
+        assert.match(csvText, /LOGOUT/);
+
+        // 5. Prueba unitaria de redacción de API Keys y diff seguro
+        const sanitized = auditLogUtils.sanitizeAuditDetail({
+            GEMINI_API_KEY: 'AIzaSyTEST_REAL_SECRET_KEY_123456789',
+            nested: { password: 'MiPasswordSecreto', smtp_pass: 'abcd1234efgh5678', okField: 'visible' }
+        });
+        assert.doesNotMatch(JSON.stringify(sanitized), /REAL_SECRET_KEY|MiPasswordSecreto|abcd1234efgh5678/);
+        assert.equal(sanitized.nested.okField, 'visible');
+
+        const keyDiffs = auditLogUtils.diffSensitiveKeys(
+            { GEMINI_API_KEY: 'AIzaOldKey1234567890' },
+            { GEMINI_API_KEY: 'AIzaNewKey0987654321' },
+            ['GEMINI_API_KEY']
+        );
+        assert.equal(keyDiffs.length, 1);
+        assert.equal(keyDiffs[0].status, 'actualizada');
+        assert.doesNotMatch(keyDiffs[0].preview, /NewKey0987/);
     });
 });
 
