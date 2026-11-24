@@ -4,6 +4,8 @@ on:
   push:
     branches: [ "refactor/v3-modular", "main" ]
     tags: [ "v*" ]
+    paths-ignore:
+      - 'releases/**'
   workflow_dispatch:
 
 permissions:

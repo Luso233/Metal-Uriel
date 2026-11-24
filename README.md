@@ -341,7 +341,8 @@ En modo Headless, `GET /` devuelve metadatos JSON del servicio (`mode: "headless
 
 ### 2. App Android APK (Capacitor 8)
 - **Descarga directa (compilada automáticamente en la nube vía GitHub Actions):**
-  Cada push a `refactor/v3-modular` o `main` compila el bundle offline de Vite, sincroniza Capacitor y genera el instalador Android (`Metal-Uriel-UNID-v3.apk`) disponible en:
+  Cada push a `refactor/v3-modular` o `main` compila el bundle offline de Vite, sincroniza Capacitor y genera el instalador Android (`Metal-Uriel-UNID-v3.apk`, ~4.2 MB) disponible en:
+  - Carpeta del repositorio: `releases/Metal-Uriel-UNID-v3.apk`
   - Pestaña **Releases** del repositorio (`apk-latest`): `https://github.com/Luso233/Metal-Uriel/releases/tag/apk-latest`
   - Pestaña **Actions** → workflow *Build & Publish Android APK (Capacitor)* → Artifact `Metal-Uriel-UNID-v3-APK`.
 - **Primer uso en tu teléfono Android:**
