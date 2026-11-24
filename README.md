@@ -291,7 +291,7 @@ flowchart TD
     end
 
     subgraph Storage ["💾 Capa de Persistencia Híbrida"]
-        MARIADB[("MariaDB (unid_admisiones • 8 Tablas:\naspirantes, sedes, usuarios, historial,\nciclos, pool_recursos, pool_categorias, correos)")]
+        MARIADB[("MariaDB (unid_admisiones • 9 Tablas:\naspirantes, sedes, usuarios, historial,\nciclos, pool_recursos, pool_categorias,\ncorreos y llm_telemetria)")]
         FILES["Repositorio Físico (/public/uploads/recursos/,\nbrochures.json, system_prompt.txt & .env)"]
     end
 
@@ -321,13 +321,35 @@ flowchart TD
 
 ---
 
+## 🛡️ Blindaje de Producción, Docker y Pruebas Automatizadas (v2.1)
+
+- **Seguridad P0 Activada por Defecto:**
+  - **100% de rutas administrativas protegidas con JWT + RBAC** (`desarrollador`, `administrador`, `usuario`) y aislamiento automático por `sede_id`.
+  - **Verificación criptográfica HMAC-SHA256 (`X-Hub-Signature-256`)** en `POST /webhook` al configurar `META_APP_SECRET` (32 caracteres hexadecimales de Meta Developers → Configuración → Básica).
+  - **Helmet + Rate Limiting** (`express-rate-limit`) en autenticación (`/api/auth/*`), simulador (`/api/chat`) y webhook (`/webhook`), con `trust proxy` listo para Cloudflare Tunnel.
+  - **Recolector TTL 24/7 en RAM:** Purga automática cada 30 minutos de sesiones inactivas > 24 horas (preservando chats en control humano) para estabilidad 24/7 en PCs de 8 GB RAM.
+  - **Telemetría LLM (`llm_telemetria`):** Registra latencia, proveedor, modelo, fallbacks y costo estimado en MXN (compatible con Langfuse opcional vía `LANGFUSE_*`).
+- **Despliegue Alternativo con Docker Compose (Opcional):**
+  ```bash
+  docker compose up -d --build
+  ```
+  Levanta **Node.js 20 Alpine + MariaDB 11.4** con volúmenes persistentes y healthcheck en `/api/health`.
+- **Suite de Pruebas Automatizadas y CI:**
+  ```bash
+  npm run check   # Sintaxis JS
+  npm test        # 18 pruebas: RBAC, HMAC, CURP RENAPO, Guardrails, RAM GC y Setup Wizard
+  ```
+  Ejecutado automáticamente en cada push/PR mediante `.github/workflows/ci.yml` junto con escaneo anti-fuga de secretos.
+
+---
+
 ## 📡 Referencia Rápida de Endpoints Principales
 
 - **Instalación Plug & Play:** `GET /api/setup/status`, `POST /api/setup/validate`, `POST /api/setup/test-db`, `POST /api/setup/test-ai`, `POST /api/setup/test-whatsapp`, `POST /api/setup/test-smtp`, `POST /api/setup/complete`, `POST /api/system/test-alert`.
-- **Conversación & Webhook:** `GET/POST /webhook`, `POST /api/chat`, `POST /api/conversations/advisor-reply`, `POST /api/conversations/toggle-bot`.
-- **Prospectos, Kanban & Analítica:** `GET /api/aspirantes`, `PATCH /api/aspirantes/:id/status`, `GET /api/aspirantes/export`, `GET /api/analytics`, `GET /api/health/full`.
-- **Pool Multimedia & Categorías CRUD:** `GET/POST/PUT/DELETE /api/pool/categories`, `GET/POST/PUT/DELETE /api/pool/resources`, `POST /api/pool/upload`.
-- **RBAC, Sedes & IA:** `POST /api/auth/login`, `GET/POST/PUT/DELETE /api/users`, `GET/PUT /api/tenants/:slug`, `GET /api/models`, `POST /api/models/active`, `GET/POST /api/prompt`.
+- **Conversación & Webhook:** `GET/POST /webhook` (HMAC `X-Hub-Signature-256`), `POST /api/chat`, `POST /api/conversations/send-message`, `POST /api/conversations/toggle-ai`, `POST /api/conversations/send-brochure`.
+- **Prospectos, Kanban & Analítica:** `GET /api/aspirantes`, `PATCH /api/aspirantes/:id/status`, `PATCH /api/aspirantes/:id/archive`, `DELETE /api/aspirantes/:id`, `GET /api/aspirantes/export`, `GET /api/analytics` (+ telemetría LLM), `GET /api/health/full`.
+- **Pool Multimedia & Categorías CRUD:** `GET/POST/PUT/DELETE /api/pool/categories`, `GET/POST/PUT/DELETE /api/pool`, `GET /api/brochures/:id/download`.
+- **RBAC, Sedes & IA:** `POST /api/auth/login`, `POST /api/auth/o365`, `GET/POST/PUT/DELETE /api/users`, `GET/PUT/POST /api/tenants/:slug`, `POST /api/tenants/:slug/test-connection`, `GET /api/models`, `POST /api/models/active`, `GET/POST /api/prompt`.
 
 ---
 

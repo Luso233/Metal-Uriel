@@ -11,7 +11,10 @@ const fs = require('fs');
 const nodemailer = require('nodemailer');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const setupUtils = require('./lib/setup-utils');
+const securityUtils = require('./lib/security-utils');
 
 // ==========================================
 // Módulo Criptográfico AES-256-GCM para Secretos Multi-Tenant (SaaS)
@@ -100,7 +103,17 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 const app = express();
-app.use(express.json({ limit: '25mb' }));
+app.set('trust proxy', 1); // Necesario detrás de Cloudflare Tunnel / proxy inverso para rate limiting real
+app.use(helmet({
+    contentSecurityPolicy: false, // Se mantiene desactivado en main por CDN Babel/Tailwind/Chart.js; en v3 Vite se endurece
+    crossOriginEmbedderPolicy: false
+}));
+app.use(express.json({
+    limit: '25mb',
+    verify: (req, _res, buf) => {
+        req.rawBody = buf;
+    }
+}));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 const UPLOADS_DIR = path.join(__dirname, 'public', 'uploads', 'recursos');
 if (!fs.existsSync(UPLOADS_DIR)) {
@@ -108,11 +121,45 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 }
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Limitadores de tasa (Anti fuerza bruta y DoS)
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 25,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, error: 'Demasiados intentos de inicio de sesión. Espera 15 minutos.' }
+});
+const chatLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Límite de mensajes por minuto alcanzado. Intenta de nuevo en unos segundos.' }
+});
+const webhookLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 300,
+    standardHeaders: true,
+    legacyHeaders: false
+});
+
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = Number(process.env.PORT) || 3000;
 let VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || 'mi_token_secreto_123';
+let META_APP_SECRET = process.env.META_APP_SECRET || '';
 let WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || '';
 let WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || '';
+
+// Middleware de verificación criptográfica HMAC-SHA256 para Webhooks de Meta WhatsApp
+function verifyMetaWebhookSignature(req, res, next) {
+    const activeSecret = (META_APP_SECRET && !setupUtils.isPlaceholderValue(META_APP_SECRET)) ? META_APP_SECRET : '';
+    const check = securityUtils.verifyMetaSignature(req.rawBody, req.headers['x-hub-signature-256'], activeSecret);
+    if (!check.valid) {
+        console.warn(`🛡️ [META HMAC BLOQUEADO] ${check.reason} (IP: ${req.ip})`);
+        return res.status(401).json({ error: 'Firma X-Hub-Signature-256 inválida.' });
+    }
+    return next();
+}
 
 // ==========================================
 // Catálogo de Sedes Oficiales UNID (Nacional)
@@ -416,8 +463,26 @@ async function initializeDatabase(options = {}) {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         `);
 
-        // 4.5. Migraciones incrementales de las 8 tablas
+        // 4.5. Migraciones incrementales de las 9 tablas (incluye Telemetría LLM)
         const migrations = [
+            `CREATE TABLE IF NOT EXISTS llm_telemetria (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                sede_id VARCHAR(50) DEFAULT 'campeche',
+                telefono_celular VARCHAR(30) NULL,
+                proveedor VARCHAR(60) NOT NULL,
+                modelo VARCHAR(100) NOT NULL,
+                latencia_ms INT NOT NULL DEFAULT 0,
+                tokens_est_in INT NOT NULL DEFAULT 0,
+                tokens_est_out INT NOT NULL DEFAULT 0,
+                costo_est_mxn DECIMAL(10, 6) NOT NULL DEFAULT 0,
+                fue_fallback TINYINT(1) NOT NULL DEFAULT 0,
+                exito TINYINT(1) NOT NULL DEFAULT 1,
+                error_detalle VARCHAR(255) NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_llm_fecha (created_at),
+                INDEX idx_llm_proveedor (proveedor),
+                INDEX idx_llm_sede (sede_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS curp VARCHAR(18) NULL`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS aviso_privacidad_aceptado TINYINT(1) DEFAULT 1`,
             `ALTER TABLE aspirantes ADD COLUMN IF NOT EXISTS sede_id VARCHAR(50) NULL DEFAULT 'campeche'`,
@@ -568,7 +633,9 @@ async function initializeDatabase(options = {}) {
 }
 
 // Ejecutar auto-inicialización al arranque sin tumbar Express si MariaDB aún no está configurado
-initializeDatabase();
+if (process.env.NODE_ENV !== 'test') {
+    initializeDatabase();
+}
 
 // ==========================================
 // 1.5. Algoritmo Oficial de Generación de CURP (RENAPO)
@@ -1250,6 +1317,7 @@ function reloadRuntimeConfig() {
     CRYPTO_KEY = crypto.createHash('sha256').update(ENCRYPTION_MASTER_KEY).digest();
     JWT_SECRET = process.env.JWT_SECRET || 'unid_metal_uriel_jwt_secret_key_2026';
     VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || 'mi_token_secreto_123';
+    META_APP_SECRET = process.env.META_APP_SECRET || '';
     WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || '';
     WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || '';
     ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
@@ -1416,11 +1484,112 @@ function getProviderCooldownRemaining(providerKey) {
     return Math.ceil((expiresAt - Date.now()) / 1000); // en segundos
 }
 
-// Memoria conversacional y métricas de sesiones
+// Memoria conversacional y métricas de sesiones (con recolector TTL 24/7 para PCs de 8 GB RAM)
 const conversationMemory = new Map();
-const userSessionState = new Map(); // senderPhone -> { isRegistered: boolean, leadData: object, insertId: number, registeredAt: Date }
+const userSessionState = new Map(); // senderPhone -> { isRegistered, leadData, insertId, registeredAt, isPaused, lastActivityAt }
 const processedMessageIds = new Set();
 let totalConversationsStarted = 0;
+let lastMemoryCleanupStats = {
+    lastRunAt: null,
+    evictedConversations: 0,
+    evictedSessions: 0,
+    evictedMessageIds: 0
+};
+
+function touchUserSession(phone) {
+    if (!phone) return;
+    const existing = userSessionState.get(phone) || { isRegistered: false, isPaused: false };
+    existing.lastActivityAt = Date.now();
+    userSessionState.set(phone, existing);
+}
+
+function runMemoryCleanup(opts = {}) {
+    const stats = securityUtils.cleanupMemoryMaps(conversationMemory, userSessionState, processedMessageIds, opts);
+    lastMemoryCleanupStats = {
+        ...stats,
+        lastRunAt: new Date().toISOString()
+    };
+    if (stats.evictedConversations > 0 || stats.evictedSessions > 0) {
+        console.log(`🧹 [RAM GC 24/7] Limpiadas ${stats.evictedConversations} conversaciones y ${stats.evictedSessions} sesiones inactivas (>24h). Activas: ${stats.remainingConversations}`);
+    }
+    return stats;
+}
+
+if (process.env.NODE_ENV !== 'test') {
+    const gcTimer = setInterval(() => runMemoryCleanup(), 30 * 60 * 1000);
+    if (typeof gcTimer.unref === 'function') gcTimer.unref();
+}
+
+// Buffer en memoria y persistencia de Telemetría LLM (MariaDB + Langfuse opcional)
+const llmTelemetryBuffer = [];
+function recordLlmTelemetry(entry) {
+    const tokensIn = entry.tokensIn || 0;
+    const tokensOut = entry.tokensOut || 0;
+    const costoMxn = securityUtils.estimateCostMxn(entry.provider, entry.model, tokensIn, tokensOut);
+    const record = {
+        sede_id: entry.sedeId || 'campeche',
+        telefono_celular: entry.phone || null,
+        proveedor: String(entry.provider || 'unknown').slice(0, 60),
+        modelo: String(entry.model || 'unknown').slice(0, 100),
+        latencia_ms: Math.max(0, Math.round(entry.latencyMs || 0)),
+        tokens_est_in: tokensIn,
+        tokens_est_out: tokensOut,
+        costo_est_mxn: costoMxn,
+        fue_fallback: entry.isFallback ? 1 : 0,
+        exito: entry.success ? 1 : 0,
+        error_detalle: entry.errorDetail ? String(entry.errorDetail).slice(0, 250) : null,
+        created_at: new Date().toISOString()
+    };
+
+    llmTelemetryBuffer.unshift(record);
+    if (llmTelemetryBuffer.length > 200) llmTelemetryBuffer.pop();
+
+    if (isDatabaseReady && process.env.NODE_ENV !== 'test') {
+        dbPool.execute(
+            `INSERT INTO llm_telemetria (sede_id, telefono_celular, proveedor, modelo, latencia_ms, tokens_est_in, tokens_est_out, costo_est_mxn, fue_fallback, exito, error_detalle)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                record.sede_id, record.telefono_celular, record.proveedor, record.modelo,
+                record.latencia_ms, record.tokens_est_in, record.tokens_est_out,
+                record.costo_est_mxn, record.fue_fallback, record.exito, record.error_detalle
+            ]
+        ).catch(() => {});
+    }
+
+    // Hook opcional de observabilidad Langfuse (fire-and-forget si está configurado en .env)
+    const lfHost = (process.env.LANGFUSE_HOST || '').trim().replace(/\/+$/, '');
+    const lfPub = (process.env.LANGFUSE_PUBLIC_KEY || '').trim();
+    const lfSec = (process.env.LANGFUSE_SECRET_KEY || '').trim();
+    if (lfHost && lfPub && lfSec && process.env.NODE_ENV !== 'test') {
+        const authBasic = Buffer.from(`${lfPub}:${lfSec}`).toString('base64');
+        const traceId = crypto.randomUUID ? crypto.randomUUID() : `trace_${Date.now()}`;
+        axios.post(`${lfHost}/api/public/ingestion`, {
+            batch: [{
+                id: `${traceId}_gen`,
+                type: 'generation-create',
+                timestamp: record.created_at,
+                body: {
+                    id: traceId,
+                    name: 'metal-uriel-chat',
+                    model: record.modelo,
+                    metadata: {
+                        provider: record.proveedor,
+                        sede_id: record.sede_id,
+                        fue_fallback: Boolean(record.fue_fallback),
+                        latency_ms: record.latencia_ms,
+                        costo_est_mxn: record.costo_est_mxn
+                    },
+                    usage: { input: record.tokens_est_in, output: record.tokens_est_out, unit: 'TOKENS' },
+                    level: record.exito ? 'DEFAULT' : 'ERROR',
+                    statusMessage: record.error_detalle || 'OK'
+                }
+            }]
+        }, {
+            headers: { Authorization: `Basic ${authBasic}`, 'Content-Type': 'application/json' },
+            timeout: 3000
+        }).catch(() => {});
+    }
+}
 
 // ==========================================
 // 5. Gestión Dinámica y Presets del System Prompt
@@ -1945,6 +2114,7 @@ async function callMetalUrielLLM(senderPhone, userMessage, requestedModelId = nu
 
     const history = conversationMemory.get(senderPhone);
     history.push({ role: 'user', content: userMessage, timestamp: new Date() });
+    touchUserSession(senderPhone);
 
     if (history.length > 20) {
         history.splice(0, history.length - 20);
@@ -2053,13 +2223,32 @@ INSTRUCCIONES CLAVE DE ATENCIÓN:
             console.log(`🔄 [CONTEXT PRESERVATION] Inyectando salvaguarda de continuidad para ${providerKey.toUpperCase()} (${history.length} mensajes en memoria)...`);
         }
 
+        const tStart = Date.now();
+        const estTokensIn = securityUtils.estimateTokens(promptToUse) + securityUtils.estimateTokens(history);
+
         try {
             console.log(`📡 [AI INFERENCE] Intentando con ${providerKey.toUpperCase()} (${modelParam})...`);
             const result = await currentTarget.fn(modelParam, promptToUse, history);
-            
+            const latencyMs = Date.now() - tStart;
+            const estTokensOut = securityUtils.estimateTokens(result.reply);
+
+            recordLlmTelemetry({
+                sedeId,
+                phone: senderPhone,
+                provider: result.provider || providerKey,
+                model: result.modelUsed || modelParam,
+                latencyMs,
+                tokensIn: estTokensIn,
+                tokensOut: estTokensOut,
+                isFallback: i > 0,
+                success: true
+            });
+
             // Éxito: guardar en historial y retornar
-            history.push({ role: 'assistant', content: result.reply });
+            history.push({ role: 'assistant', content: result.reply, timestamp: new Date() });
+            touchUserSession(senderPhone);
             result.isFallbackSwitch = (i > 0);
+            result.latencyMs = latencyMs;
             if (i > 0) {
                 result.switchedFrom = providersToTry[0].provider;
             }
@@ -2067,8 +2256,22 @@ INSTRUCCIONES CLAVE DE ATENCIÓN:
 
         } catch (error) {
             lastError = error;
+            const latencyMs = Date.now() - tStart;
             const status = error.status || error.response?.status || error.statusCode;
             const errorMsg = error.message || '';
+
+            recordLlmTelemetry({
+                sedeId,
+                phone: senderPhone,
+                provider: providerKey,
+                model: modelParam,
+                latencyMs,
+                tokensIn: estTokensIn,
+                tokensOut: 0,
+                isFallback: i > 0,
+                success: false,
+                errorDetail: `${status || ''} ${errorMsg}`.trim()
+            });
 
             // Detectar Rate Limits (429), API Key Expirada (401) o Cuota Agotada (403, 402, 503)
             const isQuotaOrRateLimit = status === 429 || status === 403 || status === 402 || status === 401 ||
@@ -2779,17 +2982,23 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
 
     // Si el LLM generó el JSON de registro completo o completó la ficha (Evento B)
     if (jsonData && (jsonData.completado || (jsonData.nombre_completo && jsonData.carrera_interes))) {
+        const guardrail = securityUtils.validateStructuredLeadJson(jsonData);
+        const validatedJson = guardrail.data || jsonData;
+        if (guardrail.warnings && guardrail.warnings.length > 0) {
+            console.warn(`🛡️ [JSON GUARDRAIL] Normalizaciones aplicadas:`, guardrail.warnings.join('; '));
+        }
+
         let insertId = null;
         try {
-            jsonData.completado = true;
-            if (!jsonData.telefono_celular) jsonData.telefono_celular = senderPhone;
-            if (!jsonData.curp && jsonData.nombre_completo && jsonData.fecha_nacimiento) {
-                jsonData.curp = generarCurp(jsonData);
+            validatedJson.completado = true;
+            if (!validatedJson.telefono_celular) validatedJson.telefono_celular = senderPhone;
+            if (!validatedJson.curp && validatedJson.nombre_completo && validatedJson.fecha_nacimiento) {
+                validatedJson.curp = generarCurp(validatedJson);
             }
-            insertId = await guardarAspiranteEnBD(jsonData, senderPhone);
-            console.log(`🎉 [REGISTRO EXITOSO] Aspirante ${jsonData.nombre_completo} guardado en MariaDB con ID #${insertId}`);
+            insertId = await guardarAspiranteEnBD(validatedJson, senderPhone);
+            console.log(`🎉 [REGISTRO EXITOSO] Aspirante ${validatedJson.nombre_completo} guardado en MariaDB con ID #${insertId}`);
             // Trigger Evento B: "Ficha de aspirante completada - [Nombre del Aspirante]"
-            notificarEquipoAdmisiones(jsonData, insertId).catch(console.error);
+            notificarEquipoAdmisiones(validatedJson, insertId).catch(console.error);
         } catch (dbErr) {
             console.error('⚠️ Error guardando en MariaDB:', dbErr.message);
         }
@@ -2797,15 +3006,16 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
         // Actualizar el estado de sesión del usuario para memoria persistente (NUNCA BORRAR HISTORIAL)
         userSessionState.set(senderPhone, {
             isRegistered: true,
-            leadData: jsonData,
+            leadData: validatedJson,
             insertId,
-            registeredAt: new Date()
+            registeredAt: new Date(),
+            lastActivityAt: Date.now()
         });
 
         const finalReply = cleanReply && cleanReply.length > 20 ? cleanReply : (
-            `¡Muchas gracias *${jsonData.nombre_completo || 'estimado aspirante'}*! 🎉\n\n` +
-            `He registrado exitosamente tu ficha para la carrera de *${jsonData.carrera_interes || 'tu carrera de interés'}* en la modalidad *${jsonData.modalidad_estudios || 'Presencial'}* (Campus: ${jsonData.campus_interes || 'Campeche'}).\n\n` +
-            `Tu expediente ha sido enviado a la Coordinación de Admisiones para validar tu beca del 50% y el 90% de descuento en tu inscripción. Un asesor se comunicará contigo al ${jsonData.telefono_celular || senderPhone} para concluir tu pre-registro.\n\n` +
+            `¡Muchas gracias *${validatedJson.nombre_completo || 'estimado aspirante'}*! 🎉\n\n` +
+            `He registrado exitosamente tu ficha para la carrera de *${validatedJson.carrera_interes || 'tu carrera de interés'}* en la modalidad *${validatedJson.modalidad_estudios || 'Presencial'}* (Campus: ${validatedJson.campus_interes || 'Campeche'}).\n\n` +
+            `Tu expediente ha sido enviado a la Coordinación de Admisiones para validar tu beca del 50% y el 90% de descuento en tu inscripción. Un asesor se comunicará contigo al ${validatedJson.telefono_celular || senderPhone} para concluir tu pre-registro.\n\n` +
             `¡Bienvenido a la familia UNID! 🔴🐾`
         );
 
@@ -2815,8 +3025,8 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
             reply: finalReply,
             completed: true,
             leadCompleted: true,
-            leadData: jsonData,
-            partialFields: jsonData,
+            leadData: validatedJson,
+            partialFields: validatedJson,
             insertId,
             modelUsed,
             documentAttachment: formattedAttachment
@@ -3113,8 +3323,8 @@ function saveUploadedBase64File(fileData, originalFileName, prefixCode = 'recurs
     };
 }
 
-// 0. Ciclos Escolares por Sede (GET & POST) - Abierto a los 3 roles
-app.get('/api/ciclos', optionalAuthMiddleware, async (req, res) => {
+// 0. Ciclos Escolares por Sede (GET & POST) - Protegido con JWT para los 3 roles
+app.get('/api/ciclos', authMiddleware, async (req, res) => {
     try {
         let sedeId = req.query.sede_id || req.query.campus || 'campeche';
         if (req.user && req.user.rol !== 'desarrollador' && req.user.sede_id) {
@@ -3165,7 +3375,7 @@ app.get('/api/ciclos', optionalAuthMiddleware, async (req, res) => {
     }
 });
 
-app.post('/api/ciclos', optionalAuthMiddleware, async (req, res) => {
+app.post('/api/ciclos', authMiddleware, async (req, res) => {
     try {
         let sedeId = req.body.sede_id || 'campeche';
         if (req.user && req.user.rol !== 'desarrollador' && req.user.sede_id) {
@@ -3227,7 +3437,7 @@ const DEFAULT_POOL_CATEGORIES = [
     { id: 5, slug: 'becas_costos', nombre: 'Becas y Costos', icono: '💰', color: 'rose', descripcion: 'Convocatorias de becas, colegiaturas, descuentos y financiamiento', orden: 5 }
 ];
 
-app.get('/api/pool/categories', optionalAuthMiddleware, async (req, res) => {
+app.get('/api/pool/categories', authMiddleware, async (req, res) => {
     try {
         const [rows] = await dbPool.query('SELECT * FROM pool_categorias WHERE activa = 1 ORDER BY orden ASC, id ASC');
         if (rows && rows.length > 0) {
@@ -3239,7 +3449,7 @@ app.get('/api/pool/categories', optionalAuthMiddleware, async (req, res) => {
     }
 });
 
-app.post('/api/pool/categories', optionalAuthMiddleware, async (req, res) => {
+app.post('/api/pool/categories', authMiddleware, async (req, res) => {
     try {
         const { nombre, icono, color, descripcion, slug: customSlug } = req.body;
         if (!nombre || !String(nombre).trim()) {
@@ -3286,7 +3496,7 @@ app.post('/api/pool/categories', optionalAuthMiddleware, async (req, res) => {
     }
 });
 
-app.put('/api/pool/categories/:id', optionalAuthMiddleware, async (req, res) => {
+app.put('/api/pool/categories/:id', authMiddleware, async (req, res) => {
     try {
         const { id } = req.params;
         const { nombre, icono, color, descripcion } = req.body;
@@ -3320,7 +3530,7 @@ app.put('/api/pool/categories/:id', optionalAuthMiddleware, async (req, res) => 
     }
 });
 
-app.delete('/api/pool/categories/:id', optionalAuthMiddleware, async (req, res) => {
+app.delete('/api/pool/categories/:id', authMiddleware, async (req, res) => {
     try {
         const { id } = req.params;
         const [rows] = await dbPool.query('SELECT * FROM pool_categorias WHERE id = ? OR slug = ? LIMIT 1', [id, id]);
@@ -3349,7 +3559,7 @@ app.delete('/api/pool/categories/:id', optionalAuthMiddleware, async (req, res) 
 });
 
 // 1. Obtener catálogo completo del Pool Multimedia (y compatible con /api/brochures)
-app.get('/api/pool', optionalAuthMiddleware, async (req, res) => {
+app.get('/api/pool', authMiddleware, async (req, res) => {
     try {
         let sedeId = req.query.sede_id || req.query.campus || null;
         if (req.user && req.user.rol !== 'desarrollador' && req.user.sede_id) {
@@ -3362,7 +3572,7 @@ app.get('/api/pool', optionalAuthMiddleware, async (req, res) => {
     }
 });
 
-app.get('/api/brochures', optionalAuthMiddleware, async (req, res) => {
+app.get('/api/brochures', authMiddleware, async (req, res) => {
     try {
         let sedeId = req.query.sede_id || req.query.campus || null;
         if (req.user && req.user.rol !== 'desarrollador' && req.user.sede_id) {
@@ -3503,8 +3713,8 @@ async function handleCreatePoolResource(req, res) {
     }
 }
 
-app.post('/api/pool', optionalAuthMiddleware, handleCreatePoolResource);
-app.post('/api/brochures', optionalAuthMiddleware, handleCreatePoolResource);
+app.post('/api/pool', authMiddleware, handleCreatePoolResource);
+app.post('/api/brochures', authMiddleware, handleCreatePoolResource);
 
 // 3. Modificar / Actualizar recurso existente en el Pool Multimedia - Abierto a los 3 roles
 async function handleUpdatePoolResource(req, res) {
@@ -3623,8 +3833,8 @@ async function handleUpdatePoolResource(req, res) {
     }
 }
 
-app.put('/api/pool/:id', optionalAuthMiddleware, handleUpdatePoolResource);
-app.put('/api/brochures/:id', optionalAuthMiddleware, handleUpdatePoolResource);
+app.put('/api/pool/:id', authMiddleware, handleUpdatePoolResource);
+app.put('/api/brochures/:id', authMiddleware, handleUpdatePoolResource);
 
 // 4. Eliminar recurso del Pool Multimedia - Abierto a los 3 roles
 async function handleDeletePoolResource(req, res) {
@@ -3643,8 +3853,8 @@ async function handleDeletePoolResource(req, res) {
     }
 }
 
-app.delete('/api/pool/:id', optionalAuthMiddleware, handleDeletePoolResource);
-app.delete('/api/brochures/:id', optionalAuthMiddleware, handleDeletePoolResource);
+app.delete('/api/pool/:id', authMiddleware, handleDeletePoolResource);
+app.delete('/api/brochures/:id', authMiddleware, handleDeletePoolResource);
 
 // 5. Descarga o redirección de Recurso Oficial UNID (PDF o Imagen subida)
 app.get('/api/brochures/:id/download', async (req, res) => {
@@ -3704,8 +3914,8 @@ app.get('/api/brochures/:id/download', async (req, res) => {
     res.status(200).send(pdfBuffer);
 });
 
-// Sembrar datos de demostración (Poblar DB)
-app.post('/api/aspirantes/seed', async (req, res) => {
+// Sembrar datos de demostración (Poblar DB - Exclusivo Desarrollador)
+app.post('/api/aspirantes/seed', authMiddleware, authorizeRoles('desarrollador'), async (req, res) => {
     try {
         const connection = await dbPool.getConnection();
         await connection.query('DELETE FROM aspirantes');
@@ -3861,7 +4071,7 @@ async function handleUserAuth(identifier, password, customName = null) {
 }
 
 // Login Local
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authLimiter, async (req, res) => {
     const { username, email, correo_institucional, password } = req.body;
     const authResult = await handleUserAuth(correo_institucional || username || email, password);
     if (authResult.success) {
@@ -3871,7 +4081,7 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // Login con Office 365
-app.post('/api/auth/o365', async (req, res) => {
+app.post('/api/auth/o365', authLimiter, async (req, res) => {
     const { email, correo_institucional, password, name } = req.body;
     const authResult = await handleUserAuth(correo_institucional || email, password, name);
     if (authResult.success) {
@@ -3881,7 +4091,7 @@ app.post('/api/auth/o365', async (req, res) => {
 });
 
 // Login con Microsoft Entra ID
-app.post('/api/auth/microsoft', async (req, res) => {
+app.post('/api/auth/microsoft', authLimiter, async (req, res) => {
     const { email, password, displayName } = req.body;
     const authResult = await handleUserAuth(email, password, displayName);
     if (authResult.success) {
@@ -3986,7 +4196,7 @@ app.delete('/api/users/:id', authMiddleware, authorizeRoles('desarrollador'), as
 // ==========================================
 // 14.6. Endpoints de Configuración SMTP en Vivo, Auditoría y Prueba de Correos
 // ==========================================
-app.get('/api/settings/smtp', optionalAuthMiddleware, (req, res) => {
+app.get('/api/settings/smtp', authMiddleware, authorizeRoles('desarrollador', 'administrador'), (req, res) => {
     const smtpHost = process.env.SMTP_HOST || 'smtp.gmail.com';
     const smtpPort = process.env.SMTP_PORT || '587';
     const smtpUser = process.env.SMTP_USER || TESTING_NOTIFICATION_EMAIL;
@@ -4007,7 +4217,7 @@ app.get('/api/settings/smtp', optionalAuthMiddleware, (req, res) => {
     });
 });
 
-app.post('/api/settings/smtp', optionalAuthMiddleware, async (req, res) => {
+app.post('/api/settings/smtp', authMiddleware, authorizeRoles('desarrollador', 'administrador'), async (req, res) => {
     try {
         const { host, port, user, pass } = req.body;
         const cleanHost = (host || 'smtp.gmail.com').trim();
@@ -4059,7 +4269,7 @@ app.post('/api/settings/smtp', optionalAuthMiddleware, async (req, res) => {
     }
 });
 
-app.get('/api/notifications/history', optionalAuthMiddleware, (req, res) => {
+app.get('/api/notifications/history', authMiddleware, authorizeRoles('desarrollador', 'administrador'), (req, res) => {
     const smtpPass = process.env.SMTP_PASS || '';
     const isLive = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && smtpPass && !smtpPass.includes('tu_app_password') && smtpPass.trim().length >= 8);
     res.json({
@@ -4070,7 +4280,7 @@ app.get('/api/notifications/history', optionalAuthMiddleware, (req, res) => {
     });
 });
 
-app.post('/api/notifications/test', optionalAuthMiddleware, async (req, res) => {
+app.post('/api/notifications/test', authMiddleware, authorizeRoles('desarrollador', 'administrador'), async (req, res) => {
     try {
         const evento = req.body.evento || req.body.eventoTipo;
         let resultLog = null;
@@ -4150,16 +4360,16 @@ async function handleClearAllDatabaseAndCache(req, res) {
     }
 }
 
-app.delete('/api/aspirantes/all', handleClearAllDatabaseAndCache);
-app.post('/api/database/clear-all', handleClearAllDatabaseAndCache);
+app.delete('/api/aspirantes/all', authMiddleware, authorizeRoles('desarrollador'), handleClearAllDatabaseAndCache);
+app.post('/api/database/clear-all', authMiddleware, authorizeRoles('desarrollador'), handleClearAllDatabaseAndCache);
 
 // Verificar token JWT
 app.get('/api/auth/me', authMiddleware, (req, res) => {
     res.json({ success: true, user: req.user });
 });
 
-// Chat interactivo desde el simulador web
-app.post('/api/chat', async (req, res) => {
+// Chat interactivo desde el simulador web (Protegido con JWT + Rate Limit)
+app.post('/api/chat', authMiddleware, chatLimiter, async (req, res) => {
     try {
         const { phone, message, model } = req.body;
         if (!message) {
@@ -4175,7 +4385,7 @@ app.post('/api/chat', async (req, res) => {
 });
 
 // Catálogo de modelos con filtrado estricto por API Key configurada
-app.get('/api/models', (req, res) => {
+app.get('/api/models', authMiddleware, (req, res) => {
     // Filtrar solo los modelos que TIENEN API Key válida configurada (o el Auto-Fallback)
     const configuredModels = ALL_SUPPORTED_MODELS.map(m => {
         let isReady = false;
@@ -4232,8 +4442,8 @@ app.get('/api/models', (req, res) => {
     });
 });
 
-// Cambiar modelo activo global
-app.post('/api/models/active', (req, res) => {
+// Cambiar modelo activo global (Exclusivo Desarrollador)
+app.post('/api/models/active', authMiddleware, authorizeRoles('desarrollador'), (req, res) => {
     const { modelId } = req.body;
     const found = ALL_SUPPORTED_MODELS.find(m => m.id === modelId);
     if (!found) {
@@ -4244,16 +4454,16 @@ app.post('/api/models/active', (req, res) => {
     res.json({ success: true, activeModel: globalActiveModelId });
 });
 
-// Obtener prompt actual
-app.get('/api/prompt', (req, res) => {
+// Obtener prompt actual (Desarrollador y Administrador)
+app.get('/api/prompt', authMiddleware, authorizeRoles('desarrollador', 'administrador'), (req, res) => {
     res.json({
         prompt: getActivePrompt(),
         presets: PROMPT_PRESETS
     });
 });
 
-// Guardar nuevo System Prompt
-app.post('/api/prompt', (req, res) => {
+// Guardar nuevo System Prompt (Desarrollador y Administrador)
+app.post('/api/prompt', authMiddleware, authorizeRoles('desarrollador', 'administrador'), (req, res) => {
     const { prompt } = req.body;
     if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
         return res.status(400).json({ error: 'El prompt no puede estar vacío.' });
@@ -4263,8 +4473,8 @@ app.post('/api/prompt', (req, res) => {
     res.json({ success: true, message: 'Personalidad y prompt actualizados con éxito.', prompt: getActivePrompt() });
 });
 
-// Restaurar prompt original
-app.post('/api/prompt/reset', (req, res) => {
+// Restaurar prompt original (Desarrollador y Administrador)
+app.post('/api/prompt/reset', authMiddleware, authorizeRoles('desarrollador', 'administrador'), (req, res) => {
     setActivePrompt(PROMPT_PRESETS[0].prompt);
     console.log('🔄 System Prompt restaurado a Metal-Uriel Oficial.');
     res.json({ success: true, message: 'Prompt restaurado al original.', prompt: getActivePrompt() });
@@ -4280,7 +4490,7 @@ app.get('/api/campuses', (req, res) => {
 });
 
 // Listar todas las sedes con estado de configuración (Tokens enmascarados)
-app.get('/api/tenants', async (req, res) => {
+app.get('/api/tenants', authMiddleware, authorizeRoles('desarrollador', 'administrador'), async (req, res) => {
     try {
         let sedes = [];
         try {
@@ -4329,6 +4539,11 @@ app.get('/api/tenants', async (req, res) => {
             });
         }
 
+        // Aislamiento de sede: un Administrador de Sede solo ve su campus asignado
+        if (req.user.rol !== 'desarrollador' && req.user.sede_id) {
+            sedes = sedes.filter(s => s.slug === req.user.sede_id);
+        }
+
         res.json({ success: true, count: sedes.length, tenants: sedes });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -4336,9 +4551,12 @@ app.get('/api/tenants', async (req, res) => {
 });
 
 // Obtener detalle de una sede específica
-app.get('/api/tenants/:slug', async (req, res) => {
+app.get('/api/tenants/:slug', authMiddleware, authorizeRoles('desarrollador', 'administrador'), async (req, res) => {
     try {
         const { slug } = req.params;
+        if (req.user.rol !== 'desarrollador' && req.user.sede_id && slug !== req.user.sede_id) {
+            return res.status(403).json({ success: false, error: 'Solo puedes consultar la configuración de tu propia sede asignada.' });
+        }
         const [rows] = await dbPool.query('SELECT * FROM sedes WHERE slug = ? OR id = ?', [slug, slug]);
         
         if (rows.length === 0) {
@@ -4390,10 +4608,13 @@ app.get('/api/tenants/:slug', async (req, res) => {
     }
 });
 
-// Guardar o actualizar configuración de sede (Cifrado en reposo)
-app.post('/api/tenants/:slug', async (req, res) => {
+// Guardar o actualizar configuración de sede (Cifrado en reposo — soporta POST y PUT)
+async function handleSaveTenantConfig(req, res) {
     try {
         const { slug } = req.params;
+        if (req.user.rol !== 'desarrollador' && req.user.sede_id && slug !== req.user.sede_id) {
+            return res.status(403).json({ success: false, error: 'Solo puedes modificar la configuración de tu propia sede asignada.' });
+        }
         const {
             whatsapp_phone_number_id,
             whatsapp_token,
@@ -4479,13 +4700,18 @@ app.post('/api/tenants/:slug', async (req, res) => {
         console.error('Error guardando sede:', err);
         res.status(500).json({ success: false, error: err.message });
     }
-});
+}
+app.post('/api/tenants/:slug', authMiddleware, authorizeRoles('desarrollador', 'administrador'), handleSaveTenantConfig);
+app.put('/api/tenants/:slug', authMiddleware, authorizeRoles('desarrollador', 'administrador'), handleSaveTenantConfig);
 
-// Prueba de Conectividad con Meta WhatsApp para una Sede
-app.post('/api/tenants/:slug/test-whatsapp', async (req, res) => {
+// Prueba de Conectividad con Meta WhatsApp para una Sede (soporta /test-whatsapp y /test-connection)
+async function handleTestTenantWhatsApp(req, res) {
     try {
         const { slug } = req.params;
-        const { testPhone } = req.body;
+        if (req.user.rol !== 'desarrollador' && req.user.sede_id && slug !== req.user.sede_id) {
+            return res.status(403).json({ success: false, error: 'Solo puedes probar la conexión de tu propia sede asignada.' });
+        }
+        const { testPhone } = req.body || {};
 
         const [rows] = await dbPool.query('SELECT * FROM sedes WHERE slug = ?', [slug]);
         let tokenToTest = WHATSAPP_TOKEN;
@@ -4547,10 +4773,12 @@ app.post('/api/tenants/:slug/test-whatsapp', async (req, res) => {
             error: `Error conectando con Meta: ${metaError}`
         });
     }
-});
+}
+app.post('/api/tenants/:slug/test-whatsapp', authMiddleware, authorizeRoles('desarrollador', 'administrador'), handleTestTenantWhatsApp);
+app.post('/api/tenants/:slug/test-connection', authMiddleware, authorizeRoles('desarrollador', 'administrador'), handleTestTenantWhatsApp);
 
 // Obtener lista de aspirantes con estados y filtros (con aislamiento de sede para roles no-superadmin)
-app.get('/api/aspirantes', optionalAuthMiddleware, async (req, res) => {
+app.get('/api/aspirantes', authMiddleware, async (req, res) => {
     try {
         let { campus } = req.query;
         // Si el usuario es administrador o usuario (asesor), forzar su sede_id asignada
@@ -4575,7 +4803,7 @@ app.get('/api/aspirantes', optionalAuthMiddleware, async (req, res) => {
 });
 
 // Actualizar estado del prospecto para el Kanban + Trigger Evento C (Cierre/Inscrito)
-app.patch('/api/aspirantes/:id/status', optionalAuthMiddleware, async (req, res) => {
+app.patch('/api/aspirantes/:id/status', authMiddleware, async (req, res) => {
     try {
         const { id } = req.params;
         const { estado } = req.body;
@@ -4584,9 +4812,12 @@ app.patch('/api/aspirantes/:id/status', optionalAuthMiddleware, async (req, res)
             return res.status(400).json({ error: 'Estado de prospecto no válido.' });
         }
 
-        // Consultar estado previo para disparar Evento C únicamente al pasar a "inscrito"
+        // Consultar estado previo para disparar Evento C únicamente al pasar a "inscrito" y verificar sede
         const [prevRows] = await dbPool.query('SELECT * FROM aspirantes WHERE id = ?', [id]);
         const prevLead = prevRows[0] || null;
+        if (prevLead && req.user.rol !== 'desarrollador' && req.user.sede_id && prevLead.sede_id && prevLead.sede_id !== req.user.sede_id) {
+            return res.status(403).json({ error: 'No tienes permiso para modificar prospectos de otra sede.' });
+        }
 
         await dbPool.execute('UPDATE aspirantes SET estado_prospecto = ? WHERE id = ?', [estado, id]);
         console.log(`📌 Prospecto #${id} actualizado al estado: ${estado}`);
@@ -4609,10 +4840,16 @@ app.patch('/api/aspirantes/:id/status', optionalAuthMiddleware, async (req, res)
 });
 
 // Archivar o Desarchivar un prospecto
-app.patch('/api/aspirantes/:id/archive', async (req, res) => {
+app.patch('/api/aspirantes/:id/archive', authMiddleware, async (req, res) => {
     try {
         const { id } = req.params;
         const { archivado } = req.body;
+        if (req.user.rol !== 'desarrollador' && req.user.sede_id) {
+            const [rows] = await dbPool.query('SELECT sede_id FROM aspirantes WHERE id = ?', [id]);
+            if (rows[0]?.sede_id && rows[0].sede_id !== req.user.sede_id) {
+                return res.status(403).json({ error: 'No tienes permiso para archivar prospectos de otra sede.' });
+            }
+        }
         const archVal = (archivado === true || archivado === 1 || archivado === '1') ? 1 : 0;
         await dbPool.execute('UPDATE aspirantes SET archivado = ? WHERE id = ?', [archVal, id]);
         console.log(`🗄️ Prospecto #${id} ${archVal ? 'archivado' : 'desarchivado'}.`);
@@ -4622,10 +4859,16 @@ app.patch('/api/aspirantes/:id/archive', async (req, res) => {
     }
 });
 
-// Eliminar definitivamente un prospecto
-app.delete('/api/aspirantes/:id', async (req, res) => {
+// Eliminar definitivamente un prospecto (Desarrollador y Administrador de Sede)
+app.delete('/api/aspirantes/:id', authMiddleware, authorizeRoles('desarrollador', 'administrador'), async (req, res) => {
     try {
         const { id } = req.params;
+        if (req.user.rol !== 'desarrollador' && req.user.sede_id) {
+            const [rows] = await dbPool.query('SELECT sede_id FROM aspirantes WHERE id = ?', [id]);
+            if (rows[0]?.sede_id && rows[0].sede_id !== req.user.sede_id) {
+                return res.status(403).json({ error: 'No tienes permiso para eliminar prospectos de otra sede.' });
+            }
+        }
         await dbPool.execute('DELETE FROM aspirantes WHERE id = ?', [id]);
         console.log(`🗑️ Prospecto #${id} eliminado.`);
         res.json({ success: true, id: Number(id) });
@@ -4634,12 +4877,22 @@ app.delete('/api/aspirantes/:id', async (req, res) => {
     }
 });
 
-// Analytics y métricas para el Dashboard blindado con catálogo oficial UNID
-app.get('/api/analytics', async (req, res) => {
+// Analytics y métricas para el Dashboard blindado con catálogo oficial UNID + Telemetría LLM
+app.get('/api/analytics', authMiddleware, async (req, res) => {
     try {
         let rows = [];
+        let targetSede = req.query.campus || null;
+        if (req.user.rol !== 'desarrollador' && req.user.sede_id) {
+            targetSede = req.user.sede_id;
+        }
         try {
-            const [dbRows] = await dbPool.query('SELECT * FROM aspirantes');
+            let sql = 'SELECT * FROM aspirantes';
+            const params = [];
+            if (targetSede && targetSede !== 'all' && targetSede !== 'todas') {
+                sql += ' WHERE (sede_id = ? OR campus_interes LIKE ?)';
+                params.push(targetSede, `%${targetSede.replace(/_/g, ' ')}%`);
+            }
+            const [dbRows] = await dbPool.query(sql, params);
             rows = dbRows;
         } catch (e) {
             console.warn('MariaDB offline para analytics:', e.message);
@@ -4712,6 +4965,53 @@ app.get('/api/analytics', async (req, res) => {
         const totalConversations = totalConversationsStarted || (totalLeads + conversationMemory.size) || 1;
         const conversionRate = totalConversations > 0 ? ((totalLeads / totalConversations) * 100).toFixed(1) : '100.0';
 
+        // Telemetría de Inferencia LLM (MariaDB o buffer en memoria)
+        let llmTelemetry = {
+            totalCalls: llmTelemetryBuffer.length,
+            avgLatencyMs: 0,
+            fallbackCount: 0,
+            estimatedCostMxn: 0,
+            byProvider: []
+        };
+        try {
+            const [summaryRows] = await dbPool.query(`
+                SELECT
+                    COUNT(*) AS totalCalls,
+                    ROUND(AVG(latencia_ms)) AS avgLatencyMs,
+                    SUM(CASE WHEN fue_fallback = 1 THEN 1 ELSE 0 END) AS fallbackCount,
+                    ROUND(SUM(costo_est_mxn), 4) AS estimatedCostMxn
+                FROM llm_telemetria
+                WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+            `);
+            const [providerRows] = await dbPool.query(`
+                SELECT
+                    proveedor AS provider,
+                    modelo AS model,
+                    COUNT(*) AS calls,
+                    ROUND(AVG(latencia_ms)) AS avgLatencyMs,
+                    ROUND(SUM(costo_est_mxn), 4) AS costMxn
+                FROM llm_telemetria
+                WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+                GROUP BY proveedor, modelo
+                ORDER BY calls DESC
+                LIMIT 10
+            `);
+            if (summaryRows[0] && Number(summaryRows[0].totalCalls) > 0) {
+                llmTelemetry = {
+                    totalCalls: Number(summaryRows[0].totalCalls || 0),
+                    avgLatencyMs: Number(summaryRows[0].avgLatencyMs || 0),
+                    fallbackCount: Number(summaryRows[0].fallbackCount || 0),
+                    estimatedCostMxn: Number(summaryRows[0].estimatedCostMxn || 0),
+                    byProvider: providerRows
+                };
+            } else if (llmTelemetryBuffer.length > 0) {
+                const total = llmTelemetryBuffer.length;
+                llmTelemetry.avgLatencyMs = Math.round(llmTelemetryBuffer.reduce((a, b) => a + b.latencia_ms, 0) / total);
+                llmTelemetry.fallbackCount = llmTelemetryBuffer.filter(x => x.fue_fallback).length;
+                llmTelemetry.estimatedCostMxn = Number(llmTelemetryBuffer.reduce((a, b) => a + b.costo_est_mxn, 0).toFixed(4));
+            }
+        } catch (_) {}
+
         res.json({
             success: true,
             totalLeads,
@@ -4724,15 +5024,16 @@ app.get('/api/analytics', async (req, res) => {
             byInterest,
             byModality,
             totalConversations,
-            conversionRate: Number(conversionRate)
+            conversionRate: Number(conversionRate),
+            llmTelemetry
         });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
 });
 
-// Monitor de Salud Semáforo Completo Multi-Proveedor
-app.get('/api/health/full', async (req, res) => {
+// Monitor de Salud Semáforo Completo Multi-Proveedor (Protegido con JWT)
+app.get('/api/health/full', authMiddleware, async (req, res) => {
     let dbStatus = false;
     let dbLatencyMs = null;
     let dbCount = 0;
@@ -4810,7 +5111,14 @@ app.get('/api/health/full', async (req, res) => {
                 status: hasMeta ? 'configured' : 'sandbox_local',
                 tokenPresent: Boolean(WHATSAPP_TOKEN && !setupUtils.isPlaceholderValue(WHATSAPP_TOKEN)),
                 phoneNumberIdPresent: Boolean(WHATSAPP_PHONE_NUMBER_ID && !setupUtils.isPlaceholderValue(WHATSAPP_PHONE_NUMBER_ID)),
-                verifyTokenPresent: Boolean(VERIFY_TOKEN)
+                verifyTokenPresent: Boolean(VERIFY_TOKEN),
+                webhookSignatureEnabled: Boolean(META_APP_SECRET && !setupUtils.isPlaceholderValue(META_APP_SECRET))
+            },
+            memoryGc: {
+                activeConversations: conversationMemory.size,
+                activeSessions: userSessionState.size,
+                dedupIdsCached: processedMessageIds.size,
+                lastCleanupAt: lastMemoryCleanupStats.lastRunAt
             },
             notifications: {
                 status: hasSmtp ? 'configured' : 'simulated_console',
@@ -4822,41 +5130,36 @@ app.get('/api/health/full', async (req, res) => {
     });
 });
 
-// Diagnóstico simple de Salud
+// Diagnóstico simple de Salud (Público mínimo para Docker/PM2/Cloudflare healthchecks; sin exponer stack/errores internos)
 app.get('/api/health', async (req, res) => {
     let dbStatus = false;
-    let dbError = null;
     try {
         const connection = await dbPool.getConnection();
         connection.release();
         dbStatus = true;
-    } catch (e) {
-        dbError = e.message;
-    }
+    } catch (_) {}
 
     res.json({
         status: 'online',
         botName: 'Metal-Uriel',
-        hasGeminiKey: isValidApiKey(process.env.GEMINI_API_KEY),
-        hasClaudeKey: isValidApiKey(process.env.ANTHROPIC_API_KEY),
-        hasOpenAiKey: isValidApiKey(process.env.OPENAI_API_KEY),
-        hasDeepSeekKey: isValidApiKey(process.env.DEEPSEEK_API_KEY),
-        hasGroqKey: isValidApiKey(process.env.GROQ_API_KEY),
-        ollamaEnabled: isOllamaConfigured(),
-        activeModel: globalActiveModelId,
-        hasSmtpConfigured: Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS && !setupUtils.isPlaceholderValue(process.env.SMTP_PASS)),
         dbConnected: dbStatus,
-        dbError: dbError,
-        activeSessions: conversationMemory.size
+        webhookSignatureEnabled: Boolean(META_APP_SECRET && !setupUtils.isPlaceholderValue(META_APP_SECRET))
     });
 });
 
-// Exportar aspirantes en formato CSV con Lead Scoring y Resumen
-app.get('/api/aspirantes/export', async (req, res) => {
+// Exportar aspirantes en formato CSV con Lead Scoring y Resumen (Desarrollador y Administrador de Sede)
+app.get('/api/aspirantes/export', authMiddleware, authorizeRoles('desarrollador', 'administrador'), async (req, res) => {
     try {
         let rows = [];
         try {
-            const [dbRows] = await dbPool.query('SELECT * FROM aspirantes ORDER BY created_at DESC');
+            let sql = 'SELECT * FROM aspirantes';
+            const params = [];
+            if (req.user.rol !== 'desarrollador' && req.user.sede_id) {
+                sql += ' WHERE (sede_id = ? OR campus_interes LIKE ?)';
+                params.push(req.user.sede_id, `%${req.user.sede_id.replace(/_/g, ' ')}%`);
+            }
+            sql += ' ORDER BY created_at DESC';
+            const [dbRows] = await dbPool.query(sql, params);
             rows = dbRows;
         } catch (dbErr) {
             console.warn('⚠️ No se pudo consultar MariaDB para exportar CSV:', dbErr.message);
@@ -4913,15 +5216,17 @@ app.get('/api/aspirantes/export', async (req, res) => {
     }
 });
 
-// Reiniciar sesión
-app.post('/api/session/reset', (req, res) => {
+// Reiniciar sesión (Protegido con JWT)
+app.post('/api/session/reset', authMiddleware, (req, res) => {
     const { phone } = req.body;
     if (phone) {
         conversationMemory.delete(phone);
         userSessionState.delete(phone);
-    } else {
+    } else if (req.user.rol === 'desarrollador') {
         conversationMemory.clear();
         userSessionState.clear();
+    } else {
+        return res.status(403).json({ error: 'Solo el Desarrollador puede limpiar todas las sesiones globales.' });
     }
     res.json({ success: true, message: 'Sesión reiniciada con éxito.' });
 });
@@ -4931,7 +5236,7 @@ app.post('/api/session/reset', (req, res) => {
 // ==========================================
 
 // Endpoint GET: Verificación del Webhook de Meta
-app.get('/webhook', (req, res) => {
+app.get('/webhook', webhookLimiter, (req, res) => {
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
     const challenge = req.query['hub.challenge'];
@@ -4951,8 +5256,8 @@ app.get('/webhook', (req, res) => {
     return res.sendStatus(400);
 });
 
-// Endpoint POST: Recepción de Mensajes de WhatsApp
-app.post('/webhook', async (req, res) => {
+// Endpoint POST: Recepción de Mensajes de WhatsApp (Protegido con Rate Limit + HMAC X-Hub-Signature-256)
+app.post('/webhook', webhookLimiter, verifyMetaWebhookSignature, async (req, res) => {
     // 1. Responder de inmediato con 200 OK a Meta
     res.status(200).send('EVENT_RECEIVED');
 
@@ -5038,8 +5343,8 @@ app.post('/webhook', async (req, res) => {
 // 15.5. Endpoints de Bandeja de Entrada en Vivo (Live Inbox & Human Handover)
 // ==========================================
 
-// Obtener lista completa de conversaciones activas e históricas (con auditoría y filtro por sede_id)
-app.get('/api/conversations', optionalAuthMiddleware, async (req, res) => {
+// Obtener lista completa de conversaciones activas e históricas (Protegido con JWT y aislamiento por sede_id)
+app.get('/api/conversations', authMiddleware, async (req, res) => {
     try {
         let targetSede = req.query.campus || null;
         if (req.user && req.user.rol !== 'desarrollador' && req.user.sede_id) {
@@ -5186,8 +5491,8 @@ app.get('/api/conversations', optionalAuthMiddleware, async (req, res) => {
     }
 });
 
-// Enviar mensaje manual desde el Asesor de Admisiones a WhatsApp
-app.post('/api/conversations/send-message', async (req, res) => {
+// Enviar mensaje manual desde el Asesor de Admisiones a WhatsApp (Protegido con JWT)
+app.post('/api/conversations/send-message', authMiddleware, async (req, res) => {
     try {
         const { phone, message, pauseAi, senderName } = req.body;
         if (!phone || !message) {
@@ -5201,15 +5506,18 @@ app.post('/api/conversations/send-message', async (req, res) => {
         const history = conversationMemory.get(phone);
         const msgObj = {
             role: 'human_advisor',
-            senderName: senderName || 'Lic. Admisiones UNID',
+            senderName: senderName || req.user?.displayName || 'Lic. Admisiones UNID',
             content: message.trim(),
             timestamp: new Date()
         };
         history.push(msgObj);
-        await guardarMensajeHistorialBD(phone, 'human_advisor', message.trim(), 'campeche');
+        const targetSede = (req.user.rol !== 'desarrollador' && req.user.sede_id) ? req.user.sede_id : 'campeche';
+        await guardarMensajeHistorialBD(phone, 'human_advisor', message.trim(), targetSede);
 
         if (!userSessionState.has(phone)) {
-            userSessionState.set(phone, { isRegistered: false, isPaused: false });
+            userSessionState.set(phone, { isRegistered: false, isPaused: false, lastActivityAt: Date.now() });
+        } else {
+            userSessionState.get(phone).lastActivityAt = Date.now();
         }
         if (pauseAi !== undefined) {
             userSessionState.get(phone).isPaused = Boolean(pauseAi);
@@ -5224,16 +5532,17 @@ app.post('/api/conversations/send-message', async (req, res) => {
     }
 });
 
-// Alternar pausa de la IA para un aspirante específico (Human Handover)
-app.post('/api/conversations/toggle-ai', (req, res) => {
+// Alternar pausa de la IA para un aspirante específico (Human Handover - Protegido con JWT)
+app.post('/api/conversations/toggle-ai', authMiddleware, (req, res) => {
     try {
         const { phone, isPaused } = req.body;
         if (!phone) return res.status(400).json({ error: 'Teléfono requerido.' });
 
         if (!userSessionState.has(phone)) {
-            userSessionState.set(phone, { isRegistered: false, isPaused: false });
+            userSessionState.set(phone, { isRegistered: false, isPaused: false, lastActivityAt: Date.now() });
         }
         userSessionState.get(phone).isPaused = Boolean(isPaused);
+        userSessionState.get(phone).lastActivityAt = Date.now();
 
         console.log(`🤖 [HUMAN HANDOVER] IA para [${phone}] ahora está: ${isPaused ? '⏸️ PAUSADA (Control Asesor Humano)' : '▶️ ACTIVA (Metal-Uriel)'}`);
 
@@ -5243,8 +5552,8 @@ app.post('/api/conversations/toggle-ai', (req, res) => {
     }
 });
 
-// Enviar recurso del Pool Multimedia (PDF o Imagen) directamente desde la interfaz al chat
-app.post('/api/conversations/send-brochure', async (req, res) => {
+// Enviar recurso del Pool Multimedia (PDF o Imagen) directamente desde la interfaz al chat (Protegido con JWT)
+app.post('/api/conversations/send-brochure', authMiddleware, async (req, res) => {
     try {
         const { phone, brochureId } = req.body;
         if (!phone || !brochureId) return res.status(400).json({ error: 'Teléfono y brochureId requeridos.' });
@@ -5407,6 +5716,8 @@ app.get('/api/setup/current-config', setupAccessGuard, (req, res) => {
         hasWhatsAppToken: Boolean(WHATSAPP_TOKEN && !setupUtils.isPlaceholderValue(WHATSAPP_TOKEN)),
         maskedWhatsAppToken: (WHATSAPP_TOKEN && !setupUtils.isPlaceholderValue(WHATSAPP_TOKEN)) ? maskSecret(WHATSAPP_TOKEN) : '',
         META_VERIFY_TOKEN: safeVal(process.env.META_VERIFY_TOKEN, ''),
+        hasMetaAppSecret: Boolean(META_APP_SECRET && !setupUtils.isPlaceholderValue(META_APP_SECRET)),
+        maskedMetaAppSecret: (META_APP_SECRET && !setupUtils.isPlaceholderValue(META_APP_SECRET)) ? maskSecret(META_APP_SECRET) : '',
         hasJwtSecret: Boolean(process.env.JWT_SECRET && process.env.JWT_SECRET.length >= 32 && !setupUtils.isPlaceholderValue(process.env.JWT_SECRET)),
         hasEncryptionKey: Boolean(process.env.ENCRYPTION_MASTER_KEY && process.env.ENCRYPTION_MASTER_KEY.length >= 32 && !setupUtils.isPlaceholderValue(process.env.ENCRYPTION_MASTER_KEY)),
         ADMISSIONS_NOTIFICATION_EMAIL: safeVal(process.env.ADMISSIONS_NOTIFICATION_EMAIL, ''),
@@ -5646,8 +5957,8 @@ app.post('/api/setup/complete', setupAccessGuard, async (req, res) => {
         if (isReconfigure) {
             const preserveKeys = [
                 'DB_PASSWORD', 'GEMINI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY',
-                'DEEPSEEK_API_KEY', 'GROQ_API_KEY', 'WHATSAPP_TOKEN', 'OLLAMA_API_KEY',
-                'JWT_SECRET', 'ENCRYPTION_MASTER_KEY', 'SMTP_PASS'
+                'DEEPSEEK_API_KEY', 'GROQ_API_KEY', 'WHATSAPP_TOKEN', 'META_APP_SECRET',
+                'OLLAMA_API_KEY', 'JWT_SECRET', 'ENCRYPTION_MASTER_KEY', 'SMTP_PASS'
             ];
             for (const k of preserveKeys) {
                 if (raw[k] === '__KEEP_EXISTING__' || (!raw[k] && (k === 'JWT_SECRET' || k === 'ENCRYPTION_MASTER_KEY'))) {
@@ -5784,31 +6095,61 @@ app.post('/api/system/test-alert', authMiddleware, authorizeRoles('desarrollador
 // ==========================================
 // 16. Inicialización del Servidor (0.0.0.0 para Red Local + Plug & Play)
 // ==========================================
-const server = app.listen(PORT, HOST, async () => {
-    const hw = setupUtils.getSystemHardwareReport(PORT);
-    const setupInfo = await computeSetupStatus().catch(() => ({ needsSetup: false }));
-    console.log(`====================================================`);
-    console.log(`🐺 :UNID Centro de Mando • Metal-Uriel v2.0 (Plug & Play)`);
-    console.log(`💻 Hardware: ${hw.cpuCores} núcleos | RAM: ${hw.freeMemGB}/${hw.totalMemGB} GB libre`);
-    console.log(`🛡️ Modo de Inferencia: ${globalActiveModelId} ${isOllamaConfigured() ? '(+ Ollama Local último recurso)' : ''}`);
-    console.log(`🌐 Acceso Local: http://localhost:${PORT}`);
-    if (hw.lanUrls.length > 0) {
-        hw.lanUrls.forEach(u => console.log(`🏢 Acceso Red Local (LAN Admisiones): ${u}`));
-    }
-    console.log(`🚦 Health Monitor: http://localhost:${PORT}/api/health/full`);
-    console.log(`🔗 Webhook de WhatsApp: http://localhost:${PORT}/webhook`);
-    if (setupInfo.needsSetup) {
-        console.log(`🧩 PRIMER USO DETECTADO: Abre http://localhost:${PORT} en tu navegador para completar el Asistente de Instalación.`);
-    }
-    console.log(`====================================================`);
-});
+function startServer(port = PORT, host = HOST) {
+    const server = app.listen(port, host, async () => {
+        const hw = setupUtils.getSystemHardwareReport(port);
+        const setupInfo = await computeSetupStatus().catch(() => ({ needsSetup: false }));
+        const hmacActive = Boolean(META_APP_SECRET && !setupUtils.isPlaceholderValue(META_APP_SECRET));
+        console.log(`====================================================`);
+        console.log(`🐺 :UNID Centro de Mando • Metal-Uriel v2.1 (Blindado + Plug & Play)`);
+        console.log(`💻 Hardware: ${hw.cpuCores} núcleos | RAM: ${hw.freeMemGB}/${hw.totalMemGB} GB libre`);
+        console.log(`🛡️ Modo de Inferencia: ${globalActiveModelId} ${isOllamaConfigured() ? '(+ Ollama Local último recurso)' : ''}`);
+        console.log(`🔐 Seguridad: Helmet + Rate Limiting + RBAC 100% + HMAC Webhook ${hmacActive ? 'ACTIVO ✅' : 'SANDBOX (agrega META_APP_SECRET en producción)'}`);
+        console.log(`🌐 Acceso Local: http://localhost:${port}`);
+        if (hw.lanUrls.length > 0) {
+            hw.lanUrls.forEach(u => console.log(`🏢 Acceso Red Local (LAN Admisiones): ${u}`));
+        }
+        console.log(`🚦 Health Monitor: http://localhost:${port}/api/health/full`);
+        console.log(`🔗 Webhook de WhatsApp: http://localhost:${port}/webhook`);
+        if (setupInfo.needsSetup) {
+            console.log(`🧩 PRIMER USO DETECTADO: Abre http://localhost:${port} en tu navegador para completar el Asistente de Instalación.`);
+        }
+        console.log(`====================================================`);
+    });
 
-server.on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-        console.warn(`\n⚠️ [AVISO] El puerto ${PORT} ya está en uso por otra instancia activa de Metal-Uriel.`);
-        console.warn(`👉 La aplicación ya está corriendo en http://localhost:${PORT} (no necesitas abrir otra terminal, o cierra la anterior antes de ejecutar npm run dev).\n`);
-        process.exit(0);
-    } else {
-        console.error('🔥 Error en el servidor HTTP:', err);
-    }
-});
+    server.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+            console.warn(`\n⚠️ [AVISO] El puerto ${port} ya está en uso por otra instancia activa de Metal-Uriel.`);
+            console.warn(`👉 La aplicación ya está corriendo en http://localhost:${port} (no necesitas abrir otra terminal, o cierra la anterior antes de ejecutar npm run dev).\n`);
+            process.exit(0);
+        } else {
+            console.error('🔥 Error en el servidor HTTP:', err);
+        }
+    });
+
+    return server;
+}
+
+if (require.main === module) {
+    startServer();
+}
+
+module.exports = {
+    app,
+    startServer,
+    generarCurp,
+    extractJsonFromLlmReply,
+    resolveSedeId,
+    authMiddleware,
+    authorizeRoles,
+    normalizeRole,
+    encryptSecret,
+    decryptSecret,
+    hashPassword,
+    verifyPassword,
+    setProviderCooldown,
+    isProviderInCooldown,
+    getProviderCooldownRemaining,
+    verifyMetaWebhookSignature,
+    runMemoryCleanup
+};

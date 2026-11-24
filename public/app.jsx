@@ -434,23 +434,37 @@ function App() {
   const statusChartRef = useRef(null);
   const chartInstances = useRef({});
 
-  // ================= CARGA INICIAL Y POLLING EN VIVO =================
+  // ================= CARGA INICIAL Y POLLING EN VIVO (SOLO AUTENTICADO) =================
   useEffect(() => {
-    fetchHealthFull();
     loadCampuses();
+  }, []);
+
+  useEffect(() => {
+    const token = authToken || localStorage.getItem('metal_uriel_jwt');
+    if (!token) return;
+
+    const userRol = (authUser?.rol || authUser?.role || 'usuario').toLowerCase();
+    const isAdminOrDev = userRol === 'desarrollador' || userRol === 'administrador';
+
+    fetchHealthFull();
     loadModels();
     loadCiclos();
     loadAspirantes();
     loadConversations();
-    loadPromptData();
     loadAnalytics();
     loadPoolCategories();
     loadBrochures();
-    loadTenants();
-    loadTenantDetails('campeche');
-    loadUsers();
-    loadEmailHistory();
-    loadSmtpSettings();
+
+    if (isAdminOrDev) {
+      loadPromptData();
+      loadTenants();
+      loadTenantDetails(authUser?.sede_id || selectedCampus || 'campeche');
+      loadEmailHistory();
+      loadSmtpSettings();
+    }
+    if (userRol === 'desarrollador') {
+      loadUsers();
+    }
 
     // Polling en vivo para sincronización de WhatsApp en tiempo real (cada 3.5 segundos)
     const liveInterval = setInterval(() => {
@@ -463,7 +477,7 @@ function App() {
       clearInterval(liveInterval);
       clearInterval(healthInterval);
     };
-  }, []);
+  }, [authToken, selectedCampus]);
 
   // Auto-scroll en el chat
   useEffect(() => {
@@ -620,7 +634,7 @@ function App() {
     try {
       const res = await fetch('/api/conversations/toggle-ai', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ phone: targetPhone, isPaused: nextPaused })
       });
       const data = await res.json();
@@ -643,7 +657,7 @@ function App() {
       setShowBrochurePicker(false);
       const res = await fetch('/api/conversations/send-brochure', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ phone, brochureId })
       });
       const data = await res.json();
@@ -657,7 +671,8 @@ function App() {
 
   const fetchHealthFull = async () => {
     try {
-      const res = await fetch('/api/health/full');
+      const res = await fetch('/api/health/full', { headers: getAuthHeaders() });
+      if (!res.ok) return;
       const data = await res.json();
       setHealthFull(data);
     } catch (e) {
@@ -684,7 +699,8 @@ function App() {
 
   const loadModels = async () => {
     try {
-      const res = await fetch('/api/models');
+      const res = await fetch('/api/models', { headers: getAuthHeaders() });
+      if (!res.ok) return;
       const data = await res.json();
       if (data.models) {
         setModelsList(data.models);
@@ -964,7 +980,7 @@ function App() {
     try {
       await fetch('/api/models/active', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ modelId })
       });
       fetchHealthFull();
@@ -992,7 +1008,9 @@ function App() {
   const loadAnalytics = async () => {
     setAnalyticsLoading(true);
     try {
-      const res = await fetch('/api/analytics');
+      const campusQuery = selectedCampus ? `?campus=${encodeURIComponent(selectedCampus)}` : '';
+      const res = await fetch(`/api/analytics${campusQuery}`, { headers: getAuthHeaders() });
+      if (!res.ok) return;
       const data = await res.json();
       if (data.success) {
         setAnalyticsData(data);
@@ -1006,7 +1024,8 @@ function App() {
 
   const loadPromptData = async () => {
     try {
-      const res = await fetch('/api/prompt');
+      const res = await fetch('/api/prompt', { headers: getAuthHeaders() });
+      if (!res.ok) return;
       const data = await res.json();
       if (data.prompt) setCustomPrompt(data.prompt);
       if (data.presets) setPromptPresets(data.presets);
@@ -1015,10 +1034,32 @@ function App() {
     }
   };
 
+  const handleExportExcel = async () => {
+    try {
+      const res = await fetch('/api/aspirantes/export', { headers: getAuthHeaders() });
+      if (!res.ok) {
+        const msg = await res.text().catch(() => '');
+        alert('No se pudo exportar Excel/CSV: ' + (msg || `HTTP ${res.status}`));
+        return;
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `aspirantes_unid_${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      alert('Error descargando CSV: ' + err.message);
+    }
+  };
+
   const handleSeedDemo = async () => {
     if (!confirm('🌱 ¿Deseas poblar la base de datos con 5 prospectos institucionales de demostración?')) return;
     try {
-      const res = await fetch('/api/aspirantes/seed', { method: 'POST' });
+      const res = await fetch('/api/aspirantes/seed', { method: 'POST', headers: getAuthHeaders() });
       const data = await res.json();
       if (data.success) {
         await loadAspirantes();
@@ -1034,7 +1075,7 @@ function App() {
   const handleTruncateDb = async () => {
     if (!confirm('🗑️ ¿Estás seguro de VACIAR por completo la base de datos (aspirantes + historial de chats) y limpiar toda la memoria caché para testing desde cero?')) return;
     try {
-      const res = await fetch('/api/aspirantes/all', { method: 'DELETE' });
+      const res = await fetch('/api/aspirantes/all', { method: 'DELETE', headers: getAuthHeaders() });
       const data = await res.json();
       if (data.success) {
         setAspirantes([]);
@@ -1235,7 +1276,7 @@ function App() {
     try {
       const res = await fetch(`/api/aspirantes/${aspiranteId}/archive`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ archivado: !currentArchived })
       });
       const data = await res.json();
@@ -1252,7 +1293,7 @@ function App() {
   const handleDeleteLead = async (aspiranteId) => {
     if (!confirm('¿Eliminar permanentemente a este prospecto de MariaDB?')) return;
     try {
-      const res = await fetch(`/api/aspirantes/${aspiranteId}`, { method: 'DELETE' });
+      const res = await fetch(`/api/aspirantes/${aspiranteId}`, { method: 'DELETE', headers: getAuthHeaders() });
       const data = await res.json();
       if (data.success) {
         loadAspirantes();
@@ -1268,7 +1309,8 @@ function App() {
   // SaaS Tenants & Config
   const loadTenants = async () => {
     try {
-      const res = await fetch('/api/tenants');
+      const res = await fetch('/api/tenants', { headers: getAuthHeaders() });
+      if (!res.ok) return;
       const data = await res.json();
       if (data.success) setTenantsList(data.tenants || []);
     } catch (e) {
@@ -1279,7 +1321,8 @@ function App() {
   const loadTenantDetails = async (slug) => {
     setTenantLoading(true);
     try {
-      const res = await fetch(`/api/tenants/${slug}`);
+      const res = await fetch(`/api/tenants/${slug}`, { headers: getAuthHeaders() });
+      if (!res.ok) return;
       const data = await res.json();
       if (data.success && data.tenant) {
         const t = data.tenant;
@@ -1329,7 +1372,7 @@ function App() {
 
       const res = await fetch(`/api/tenants/${selectedTenantSlug}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(payload)
       });
       const data = await res.json();
@@ -1352,7 +1395,11 @@ function App() {
     setTenantTesting(true);
     setTenantTestResult(null);
     try {
-      const res = await fetch(`/api/tenants/${selectedTenantSlug}/test-connection`, { method: 'POST' });
+      const res = await fetch(`/api/tenants/${selectedTenantSlug}/test-connection`, {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({})
+      });
       const data = await res.json();
       setTenantTestResult(data);
     } catch (e) {
@@ -1385,7 +1432,7 @@ function App() {
       try {
         await fetch('/api/conversations/send-message', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({
             phone: currentPhone,
             message: textToSend.trim(),
@@ -1414,7 +1461,7 @@ function App() {
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           phone: currentPhone,
           message: textToSend,
@@ -1473,7 +1520,7 @@ function App() {
     try {
       await fetch('/api/session/reset', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ phone })
       });
       setMessages([
@@ -1499,7 +1546,7 @@ function App() {
     try {
       const res = await fetch('/api/prompt', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ prompt: customPrompt })
       });
       const data = await res.json();
@@ -2081,17 +2128,17 @@ function App() {
               </button>
             )}
 
-            {/* Exportar CSV (Desarrollador y Administrador) */}
+            {/* Exportar CSV autenticado (Desarrollador y Administrador) */}
             {!isUsuario && (
-              <a
-                href="/api/aspirantes/export"
-                target="_blank"
+              <button
+                type="button"
+                onClick={handleExportExcel}
                 className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold flex items-center gap-1 border border-slate-700 transition"
                 title="Descargar Excel / CSV"
               >
                 <i data-lucide="download" className="w-3.5 h-3.5"></i>
                 <span className="hidden lg:inline">Excel</span>
-              </a>
+              </button>
             )}
 
             {/* Botones de Desarrollador: Setup/.env, Vaciar DB + Caché y Poblar DB */}

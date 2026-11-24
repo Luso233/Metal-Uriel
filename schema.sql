@@ -167,4 +167,24 @@ CREATE TABLE IF NOT EXISTS `bitacora_notificaciones_correo` (
     INDEX `idx_correo_fecha` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Tabla 9: Telemetría de Inferencia LLM (Latencia, Fallback, Tokens y Costo Estimado MXN)
+CREATE TABLE IF NOT EXISTS `llm_telemetria` (
+    `id` BIGINT AUTO_INCREMENT PRIMARY KEY,
+    `sede_id` VARCHAR(50) DEFAULT 'campeche',
+    `telefono_celular` VARCHAR(30) NULL,
+    `proveedor` VARCHAR(60) NOT NULL,
+    `modelo` VARCHAR(100) NOT NULL,
+    `latencia_ms` INT NOT NULL DEFAULT 0,
+    `tokens_est_in` INT NOT NULL DEFAULT 0,
+    `tokens_est_out` INT NOT NULL DEFAULT 0,
+    `costo_est_mxn` DECIMAL(10, 6) NOT NULL DEFAULT 0,
+    `fue_fallback` TINYINT(1) NOT NULL DEFAULT 0,
+    `exito` TINYINT(1) NOT NULL DEFAULT 1,
+    `error_detalle` VARCHAR(255) NULL,
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX `idx_llm_fecha` (`created_at`),
+    INDEX `idx_llm_proveedor` (`proveedor`),
+    INDEX `idx_llm_sede` (`sede_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 

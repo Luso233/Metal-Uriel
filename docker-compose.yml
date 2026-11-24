@@ -1,0 +1,54 @@
+# ==========================================================
+# Metal-Uriel — Stack Plug & Play en Contenedores (Node.js + MariaDB)
+# Uso rápido:
+#   1. Copia .env.example a .env (o deja que el Setup Wizard lo genere)
+#   2. Ejecuta: docker compose up -d --build
+#   3. Abre: http://localhost:3000
+# ==========================================================
+services:
+  mariadb:
+    image: mariadb:11.4
+    container_name: metal-uriel-mariadb
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_PASSWORD:-unid_mariadb_root_2026}
+      MARIADB_DATABASE: ${DB_NAME:-unid_admisiones}
+      TZ: America/Merida
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  metal-uriel:
+    build: .
+    container_name: metal-uriel-app
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    ports:
+      - "${PORT:-3000}:3000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+      DB_HOST: mariadb
+      DB_PORT: 3306
+      DB_USER: ${DB_USER:-root}
+      DB_PASSWORD: ${DB_PASSWORD:-unid_mariadb_root_2026}
+      DB_NAME: ${DB_NAME:-unid_admisiones}
+    volumes:
+      - ./public/uploads/recursos:/app/public/uploads/recursos
+      - ./logs:/app/logs
+    mem_limit: 512m
+
+volumes:
+  mariadb_data:

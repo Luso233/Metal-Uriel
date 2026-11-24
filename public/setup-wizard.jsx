@@ -27,6 +27,7 @@
     WHATSAPP_PHONE_NUMBER_ID: { label: 'WhatsApp Phone Number ID', minLen: 10, maxLen: 20, pattern: '^\\d{10,20}$', regex: /^\d{10,20}$/, hint: 'SOLO NÚMEROS (10 a 20 dígitos, ej. 1332834883256423). Cópialo de Meta Developers.' },
     WHATSAPP_TOKEN: { label: 'Meta WhatsApp Access Token', minLen: 80, maxLen: 500, pattern: '^EAA[0-9A-Za-z_-]{77,497}$', regex: /^EAA[0-9A-Za-z_-]{77,497}$/, hint: 'Inicia con "EAA", solo letras y números (80 a 500 caracteres sin espacios).' },
     META_VERIFY_TOKEN: { label: 'Meta Webhook Verify Token', minLen: 8, maxLen: 128, pattern: '^[0-9A-Za-z_-]{8,128}$', regex: /^[0-9A-Za-z_-]{8,128}$/, hint: '8 a 128 caracteres (letras, números, _ o -). Debe coincidir con el Webhook en Meta.' },
+    META_APP_SECRET: { label: 'Meta App Secret (Firma HMAC Webhook)', minLen: 32, maxLen: 64, pattern: '^[a-fA-F0-9]{32,64}$', regex: /^[a-fA-F0-9]{32,64}$/, hint: 'Opcional (recomendado en producción): 32 caracteres hexadecimales (Meta Developers → Configuración → Básica). Activa validación criptográfica X-Hub-Signature-256.' },
     JWT_SECRET: { label: 'JWT Secret', minLen: 32, maxLen: 128, pattern: '^\\S{32,128}$', regex: /^\S{32,128}$/, hint: 'Mínimo 32 caracteres aleatorios sin espacios.' },
     ENCRYPTION_MASTER_KEY: { label: 'Llave Maestra AES-256-GCM', minLen: 32, maxLen: 128, pattern: '^\\S{32,128}$', regex: /^\S{32,128}$/, hint: 'Mínimo 32 caracteres aleatorios sin espacios para cifrar secretos en MariaDB.' },
     DEV_EMAIL: { label: 'Correo del Desarrollador', minLen: 6, maxLen: 180, regex: /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/, hint: 'Tu correo institucional (@red.unid.mx) o administrativo.' },
@@ -214,6 +215,7 @@
       WHATSAPP_PHONE_NUMBER_ID: '',
       WHATSAPP_TOKEN: '',
       META_VERIFY_TOKEN: 'unid_meta_' + browserRandomHex(10),
+      META_APP_SECRET: '',
       JWT_SECRET: browserRandomHex(32),
       ENCRYPTION_MASTER_KEY: browserRandomHex(32),
       DEV_EMAIL: '00774343@red.unid.mx',
@@ -280,6 +282,7 @@
             WHATSAPP_PHONE_NUMBER_ID: data.WHATSAPP_PHONE_NUMBER_ID || '',
             WHATSAPP_TOKEN: data.hasWhatsAppToken ? '__KEEP_EXISTING__' : '',
             META_VERIFY_TOKEN: data.META_VERIFY_TOKEN || prev.META_VERIFY_TOKEN,
+            META_APP_SECRET: data.hasMetaAppSecret ? '__KEEP_EXISTING__' : '',
             JWT_SECRET: data.hasJwtSecret ? '__KEEP_EXISTING__' : prev.JWT_SECRET,
             ENCRYPTION_MASTER_KEY: data.hasEncryptionKey ? '__KEEP_EXISTING__' : prev.ENCRYPTION_MASTER_KEY,
             ADMISSIONS_NOTIFICATION_EMAIL: data.ADMISSIONS_NOTIFICATION_EMAIL || '',
@@ -374,7 +377,7 @@
           stepErrors.AI_PROVIDERS = 'Error: Configura al menos un motor de IA válido (recomendado: Google Gemini) o habilita Ollama Local.';
         }
       } else if (targetStep === 3) {
-        checkKeys(['META_VERIFY_TOKEN']);
+        checkKeys(['META_VERIFY_TOKEN', 'META_APP_SECRET']);
         if (!form.SKIP_WHATSAPP) {
           checkKeys(['WHATSAPP_PHONE_NUMBER_ID', 'WHATSAPP_TOKEN']);
         }
@@ -908,6 +911,14 @@
                       🎲 Generar
                     </button>
                   }
+                />
+
+                <WizardField
+                  id="META_APP_SECRET" name="META_APP_SECRET" label="Meta App Secret — Firma HMAC X-Hub-Signature-256 (Opcional)" isSecret
+                  pattern={CLIENT_RULES.META_APP_SECRET.pattern} minLength={32} maxLength={64} placeholder="32 caracteres hexadecimales (ej. a1b2c3...)"
+                  hint={CLIENT_RULES.META_APP_SECRET.hint} value={form.META_APP_SECRET}
+                  keepExistingHint={existingFlags.hasMetaAppSecret ? `(${existingFlags.maskedMetaAppSecret})` : ''}
+                  onChange={handleFieldChange} onBlur={handleFieldBlur} error={errors.META_APP_SECRET}
                 />
               </fieldset>
             )}

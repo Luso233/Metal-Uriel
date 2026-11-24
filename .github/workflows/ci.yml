@@ -1,0 +1,46 @@
+name: Metal-Uriel CI (Seguridad, Sintaxis y Pruebas)
+
+on:
+  push:
+    branches: [ main, "refactor/**", "feature/**" ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Verificación de sintaxis Backend
+        run: npm run check
+
+      - name: Verificación de sintaxis Frontend JSX (esbuild)
+        run: |
+          npx --yes esbuild public/app.jsx --outfile=/dev/null
+          npx --yes esbuild public/setup-wizard.jsx --outfile=/dev/null
+
+      - name: Suite de pruebas automatizadas (RBAC, HMAC, CURP, Guardrails, RAM GC)
+        run: npm test
+
+      - name: Escaneo anti-fuga de secretos en archivos versionados
+        run: |
+          if git ls-files | grep -E '^\.env$'; then
+            echo "ERROR CRÍTICO: El archivo .env está versionado en Git."
+            exit 1
+          fi
+          if git grep -nE '(AIzaSy[0-9A-Za-z_-]{30,}|sk-proj-[0-9A-Za-z_-]{20,}|sk-ant-[0-9A-Za-z_-]{20,}|EAA[A-Za-z0-9]{60,})' -- ':!tests/*' ':!README.md'; then
+            echo "ERROR CRÍTICO: Posible API Key real detectada en el repositorio."
+            exit 1
+          fi
+          echo "Escaneo de secretos limpio."
