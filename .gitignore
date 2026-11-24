@@ -15,9 +15,10 @@ Informe_Estadia_*.pdf
 *.docx
 
 # ==========================================
-# Dependencias de Node.js
+# Dependencias de Node.js y Build Frontend Vite
 # ==========================================
 node_modules/
+public/dist/
 package-lock.json
 jspm_packages/
 .pnp

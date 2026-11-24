@@ -1,18 +1,32 @@
-# Imagen de producción ligera para Metal-Uriel (UNID Admisiones)
+# =========================================================================
+# Stage 1: Compilación del Frontend Offline (Vite + React 18 + Tailwind CSS)
+# =========================================================================
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+
+COPY vite.config.mjs tailwind.config.cjs postcss.config.cjs ./
+COPY client ./client
+RUN npm run build
+
+# =========================================================================
+# Stage 2: Imagen Final de Producción (Ligera, Modular y 100% Offline LAN)
+# =========================================================================
 FROM node:20-alpine
 
 WORKDIR /app
 
-# Instalar solo dependencias de producción
 COPY package*.json ./
 RUN npm ci --omit=dev
 
-# Copiar código fuente y recursos estáticos (incluye PDFs institucionales en public/uploads/recursos)
 COPY index.js schema.sql brochures.json system_prompt.txt .env.example ./
 COPY lib ./lib
-COPY public ./public
+COPY src ./src
+COPY public/uploads ./public/uploads
+COPY --from=builder /app/public/dist ./public/dist
 
-# Crear carpeta de logs y asegurar permisos de usuario no-root
 RUN mkdir -p /app/logs /app/public/uploads/recursos && chown -R node:node /app
 USER node
 

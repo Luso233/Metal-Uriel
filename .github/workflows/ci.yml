@@ -1,4 +1,4 @@
-name: Metal-Uriel CI (Seguridad, Sintaxis y Pruebas)
+name: Metal-Uriel CI (Seguridad, Build Vite, Sintaxis y Pruebas)
 
 on:
   push:
@@ -22,13 +22,11 @@ jobs:
       - name: Instalar dependencias
         run: npm ci
 
-      - name: Verificación de sintaxis Backend
+      - name: Verificación de sintaxis Backend (index.js, lib/, src/)
         run: npm run check
 
-      - name: Verificación de sintaxis Frontend JSX (esbuild)
-        run: |
-          npx --yes esbuild public/app.jsx --outfile=/dev/null
-          npx --yes esbuild public/setup-wizard.jsx --outfile=/dev/null
+      - name: Build de producción Frontend Offline (Vite + React 18 + Tailwind CSS)
+        run: npm run build
 
       - name: Suite de pruebas automatizadas (RBAC, HMAC, CURP, Guardrails, RAM GC)
         run: npm test
