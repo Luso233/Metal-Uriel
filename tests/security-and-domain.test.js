@@ -9,6 +9,9 @@ const crypto = require('node:crypto');
 const jwt = require('jsonwebtoken');
 
 const securityUtils = require('../lib/security-utils');
+const setupUtils = require('../lib/setup-utils');
+const chatAuditUtils = require('../lib/chat-audit-utils');
+const zipBuilder = require('../lib/zip-builder');
 const serverMod = require('../index');
 
 describe('lib/security-utils — HMAC Meta, Guardrails JSON, Geografía y RAM GC', () => {
@@ -180,9 +183,13 @@ describe('Integración HTTP Express — Blindaje RBAC, Helmet y Firma HMAC Webho
         });
     });
 
-    after((_, done) => {
-        if (httpServer) httpServer.close(done);
-        else done();
+    after(async () => {
+        if (httpServer) {
+            await new Promise((resolve) => httpServer.close(resolve));
+        }
+        if (typeof serverMod.closePool === 'function') {
+            try { await serverMod.closePool(); } catch (_) {}
+        }
     });
 
     it('expone cabeceras Helmet y /api/health mínimo sin filtrar detalles internos', async () => {
@@ -274,5 +281,83 @@ describe('Integración HTTP Express — Blindaje RBAC, Helmet y Firma HMAC Webho
         });
         assert.equal(okRes.status, 200);
         assert.equal(await okRes.text(), 'EVENT_RECEIVED');
+    });
+
+    it('responde JSON 200 (sin 500 HTML) en /api/settings/smtp y /api/notifications/history y soporta CORS APK + /export-zip', async () => {
+        const devTok = signToken('desarrollador', null);
+
+        const smtpRes = await fetch(`${baseUrl}/api/settings/smtp`, { headers: { Authorization: `Bearer ${devTok}` } });
+        assert.equal(smtpRes.status, 200);
+        const smtpJson = await smtpRes.json();
+        assert.equal(smtpJson.success, true);
+        assert.ok(smtpJson.smtp.targetEmail);
+
+        const histNotifRes = await fetch(`${baseUrl}/api/notifications/history`, { headers: { Authorization: `Bearer ${devTok}` } });
+        assert.equal(histNotifRes.status, 200);
+        const histNotifJson = await histNotifRes.json();
+        assert.equal(histNotifJson.success, true);
+
+        const preflight = await fetch(`${baseUrl}/api/health`, {
+            method: 'OPTIONS',
+            headers: { Origin: 'https://localhost', 'Access-Control-Request-Method': 'GET' }
+        });
+        assert.equal(preflight.status, 204);
+        assert.equal(preflight.headers.get('access-control-allow-origin'), 'https://localhost');
+
+        const zipRes = await fetch(`${baseUrl}/api/conversations/5219818194049/export-zip`, {
+            headers: { Authorization: `Bearer ${devTok}` }
+        });
+        assert.equal(zipRes.status, 200);
+        assert.match(zipRes.headers.get('content-type') || '', /application\/zip/i);
+        const buf = Buffer.from(await zipRes.arrayBuffer());
+        assert.equal(buf[0], 0x50);
+        assert.equal(buf[1], 0x4b);
+    });
+});
+
+describe('Auditoría Eterna de Chats, Deduplicación Canónica, ZIP y Filtro VirtualBox', () => {
+    it('unifica variantes telefónicas MX/WhatsApp a una clave canónica única', () => {
+        const variants = ['5219818194049', '+52 1 981 819 4049', '+52 981 819 4049', '529818194049', '981-819-4049'];
+        const normalized = new Set(variants.map(chatAuditUtils.normalizePhoneCanonical));
+        assert.equal(normalized.size, 1);
+        assert.equal(Array.from(normalized)[0], '9818194049');
+    });
+
+    it('detecta conversaciones inconclusas y resguarda Casos de Éxito (Inscritos)', () => {
+        const now = Date.now();
+        const oldIso = new Date(now - 3 * 60 * 60 * 1000).toISOString();
+        const inc = chatAuditUtils.analyzeLeadCompleteness(
+            { nombre_completo: 'Prospecto WhatsApp (5219811112233)', carrera_interes: 'Derecho', estado_prospecto: 'nuevo' },
+            [{ sender: 'user', text: 'Hola', timestamp: oldIso }],
+            { now }
+        );
+        assert.equal(inc.isIncomplete, true);
+        assert.equal(inc.urgency, 'alta');
+        assert.match(inc.stalledLabel, /3h/);
+
+        const win = chatAuditUtils.analyzeLeadCompleteness(
+            { nombre_completo: 'Carlos Alpuche', carrera_interes: 'Derecho', estado_prospecto: 'inscrito' },
+            [{ sender: 'user', text: 'Listo', timestamp: oldIso }],
+            { now }
+        );
+        assert.equal(win.isIncomplete, false);
+        assert.match(win.aiSituationPreview, /Caso de Éxito/i);
+    });
+
+    it('genera ZIP válido estilo WhatsApp y filtra IPs VirtualBox 192.168.56.x', () => {
+        const { zipBuffer, fileName } = zipBuilder.buildWhatsAppConversationZip({
+            aspirante: { nombre_completo: 'María López', estado_prospecto: 'inscrito' },
+            canonicalPhone: '9818194049',
+            dialPhone: '5219818194049',
+            messages: [{ rol: 'user', mensaje: 'Hola', timestamp: new Date().toISOString() }],
+            completeness: { completedCount: 11, totalFields: 11, percent: 100 }
+        });
+        assert.match(fileName, /\.zip$/);
+        assert.equal(zipBuffer.readUInt32LE(0), 0x04034b50);
+
+        const hw = setupUtils.getSystemHardwareReport(3000);
+        for (const u of hw.lanUrls) {
+            assert.doesNotMatch(u, /192\.168\.56\./);
+        }
     });
 });

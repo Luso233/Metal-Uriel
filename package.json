@@ -10,7 +10,7 @@
     "prod:logs": "pm2 logs metal-uriel",
     "prod:restart": "pm2 restart metal-uriel",
     "prod:stop": "pm2 stop metal-uriel",
-    "check": "node --check index.js && node --check lib/setup-utils.js && node --check lib/security-utils.js",
+    "check": "node --check index.js && node --check lib/setup-utils.js && node --check lib/security-utils.js && node --check lib/chat-audit-utils.js && node --check lib/zip-builder.js",
     "test": "node --test tests/*.test.js"
   },
   "keywords": [

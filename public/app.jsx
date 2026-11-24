@@ -216,6 +216,414 @@ function formatTimeAgo(dateStr) {
   return d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' });
 }
 
+const DRAWER_KANBAN_STAGES = [
+  { id: 'nuevo', label: 'Nuevo', icon: '🆕', activeClass: 'bg-sky-500/20 border-sky-400 text-sky-200' },
+  { id: 'contactado', label: 'Contactado', icon: '🤝', activeClass: 'bg-indigo-500/20 border-indigo-400 text-indigo-200' },
+  { id: 'en_proceso', label: 'En Proceso', icon: '📋', activeClass: 'bg-amber-500/20 border-amber-400 text-amber-200' },
+  { id: 'inscrito', label: 'Inscrito', icon: '🏆', activeClass: 'bg-emerald-500/25 border-emerald-400 text-emerald-200' },
+  { id: 'no_interesado', label: 'No Interesado', icon: '✖️', activeClass: 'bg-rose-500/20 border-rose-400 text-rose-200' }
+];
+
+const DRAWER_STATUS_BADGE = {
+  nuevo: { label: 'Nuevo Prospecto', cls: 'bg-sky-500/20 text-sky-300 border-sky-500/40' },
+  contactado: { label: 'Contactado', cls: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40' },
+  en_proceso: { label: 'En Proceso', cls: 'bg-amber-500/20 text-amber-300 border-amber-500/40' },
+  inscrito: { label: '🏆 Inscrito (Caso de Éxito)', cls: 'bg-emerald-500/25 text-emerald-200 border-emerald-400/60' },
+  no_interesado: { label: 'No Interesado', cls: 'bg-rose-500/20 text-rose-300 border-rose-500/40' }
+};
+
+function ContactProfileDrawer({ isOpen, onClose, conversation, authToken, onRefreshData, onToast }) {
+  const [movingStage, setMovingStage] = useState(false);
+  const [exportingZip, setExportingZip] = useState(false);
+  const [togglingFlag, setTogglingFlag] = useState(false);
+  const [showFinalizeForm, setShowFinalizeForm] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
+  const [finalStage, setFinalStage] = useState('inscrito');
+  const [finalNombre, setFinalNombre] = useState('');
+  const [finalCarrera, setFinalCarrera] = useState('');
+  const [finalNotas, setFinalNotas] = useState('');
+  const [finalArchivar, setFinalArchivar] = useState(false);
+  const [formError, setFormError] = useState('');
+
+  useEffect(() => {
+    if (!isOpen || !conversation) return;
+    const ld = conversation.leadData || {};
+    setFinalStage('inscrito');
+    setFinalNombre(ld.nombre_completo && !/^prospecto whatsapp/i.test(ld.nombre_completo) ? ld.nombre_completo : '');
+    setFinalCarrera(ld.carrera_interes && !/por definir/i.test(ld.carrera_interes) ? ld.carrera_interes : '');
+    setFinalNotas(ld.notas_asesor || '');
+    setFinalArchivar(false);
+    setShowFinalizeForm(false);
+    setFormError('');
+  }, [isOpen, conversation && (conversation.canonicalPhone || conversation.phone)]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e) => { if (e.key === 'Escape' && onClose) onClose(); };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
+
+  if (!isOpen || !conversation) return null;
+
+  const lead = conversation.leadData || {};
+  const comp = conversation.completeness || { completedCount: 0, totalFields: 11, percent: 0, missingFields: [], isIncomplete: true, stalledLabel: 'Reciente', aiSituationPreview: 'Sin resumen disponible.' };
+  const statusInfo = DRAWER_STATUS_BADGE[conversation.estado_prospecto] || DRAWER_STATUS_BADGE.nuevo;
+  const phoneId = conversation.canonicalPhone || conversation.phone;
+  const initials = String(conversation.name || 'A').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('') || 'A';
+  const authHeaders = authToken ? { Authorization: `Bearer ${authToken}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
+
+  const handleMoveKanban = async (nextStage) => {
+    if (movingStage || nextStage === conversation.estado_prospecto) return;
+    setMovingStage(true);
+    try {
+      if (lead.id) {
+        const res = await fetch(`/api/aspirantes/${lead.id}/status`, {
+          method: 'PATCH',
+          headers: authHeaders,
+          body: JSON.stringify({ estado: nextStage, estado_prospecto: nextStage })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Error moviendo etapa Kanban');
+      } else {
+        const res = await fetch(`/api/conversations/${encodeURIComponent(phoneId)}/finalize`, {
+          method: 'POST',
+          headers: authHeaders,
+          body: JSON.stringify({ estado_prospecto: nextStage, nombre_completo: conversation.name, carrera_interes: conversation.carrera })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Error actualizando etapa');
+      }
+      onToast && onToast(nextStage === 'inscrito' ? '🏆 Aspirante movido a INSCRITO y resguardado como Caso de Éxito.' : `📊 Movido a etapa "${nextStage.replace('_', ' ')}" en Kanban.`);
+      onRefreshData && await onRefreshData();
+    } catch (err) {
+      onToast && onToast(err.message, 'error');
+    } finally {
+      setMovingStage(false);
+    }
+  };
+
+  const handleToggleFlags = async (patch) => {
+    if (togglingFlag) return;
+    setTogglingFlag(true);
+    try {
+      const res = await fetch(`/api/conversations/${encodeURIComponent(phoneId)}/highlight`, {
+        method: 'PATCH',
+        headers: authHeaders,
+        body: JSON.stringify(patch)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'No se pudo actualizar.');
+      if (patch.conversacion_destacada !== undefined) onToast && onToast(patch.conversacion_destacada ? '🏆 Marcada como Caso de Estudio permanente.' : 'Removida de Casos de Estudio.');
+      else if (patch.archivado !== undefined) onToast && onToast(patch.archivado ? '🗄️ Conversación archivada.' : '📂 Conversación restaurada.');
+      onRefreshData && await onRefreshData();
+    } catch (err) {
+      onToast && onToast(err.message, 'error');
+    } finally {
+      setTogglingFlag(false);
+    }
+  };
+
+  const handleFinalizeSubmit = async (e) => {
+    e.preventDefault();
+    setFormError('');
+    setFinalizing(true);
+    try {
+      const res = await fetch(`/api/conversations/${encodeURIComponent(phoneId)}/finalize`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({
+          estado_prospecto: finalStage,
+          nombre_completo: finalNombre.trim() || undefined,
+          carrera_interes: finalCarrera.trim() || undefined,
+          notas_asesor: finalNotas.trim(),
+          archivar: finalArchivar
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'No se pudo finalizar el proceso.');
+      onToast && onToast(data.message || 'Proceso finalizado manualmente.');
+      setShowFinalizeForm(false);
+      onRefreshData && await onRefreshData();
+    } catch (err) {
+      setFormError(err.message);
+      onToast && onToast(err.message, 'error');
+    } finally {
+      setFinalizing(false);
+    }
+  };
+
+  const handleExportZip = async () => {
+    if (exportingZip) return;
+    setExportingZip(true);
+    try {
+      const res = await fetch(`/api/conversations/${encodeURIComponent(phoneId)}/export-zip`, {
+        method: 'GET',
+        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {}
+      });
+      if (!res.ok) {
+        let msg = `Error HTTP ${res.status}`;
+        try { const j = await res.json(); if (j.error) msg = j.error; } catch (_) {}
+        throw new Error(msg);
+      }
+      const blob = await res.blob();
+      const disp = res.headers.get('Content-Disposition') || '';
+      const fnMatch = disp.match(/filename="?([^"]+)"?/i);
+      const fileName = fnMatch ? fnMatch[1] : `MetalUriel_Chat_${phoneId}.zip`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+      onToast && onToast(`📦 ZIP exportado: ${fileName}`);
+    } catch (err) {
+      onToast && onToast(`Error exportando ZIP: ${err.message}`, 'error');
+    } finally {
+      setExportingZip(false);
+    }
+  };
+
+  const msgs = conversation.messages || [];
+  const totalCount = conversation.totalMessages || msgs.length;
+
+  return (
+    <div className="fixed inset-0 z-[65] flex justify-end bg-slate-950/75 backdrop-blur-sm" role="dialog" aria-modal="true" onClick={(e) => { if (e.target === e.currentTarget && onClose) onClose(); }}>
+      <aside className="w-full max-w-md h-full bg-[#0B1220] border-l border-slate-700/80 shadow-2xl flex flex-col overflow-hidden">
+        <header className="shrink-0 px-4 py-3.5 bg-[#0F172A] border-b border-slate-800 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <button type="button" onClick={onClose} aria-label="Cerrar perfil" className="min-h-[44px] min-w-[44px] rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center justify-center font-bold">←</button>
+            <div className="min-w-0">
+              <h2 className="text-sm sm:text-base font-black text-white truncate">Info del Postulante</h2>
+              <p className="text-[11px] text-slate-400 truncate">Expediente auditado • {totalCount} mensajes</p>
+            </div>
+          </div>
+          <span className={`shrink-0 px-2.5 py-1 rounded-full text-[11px] font-bold border ${statusInfo.cls}`}>{statusInfo.label}</span>
+        </header>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          <section className="rounded-2xl bg-[#111B2E] border border-slate-800 p-4 flex flex-col items-center text-center gap-2">
+            <div className={`w-20 h-20 rounded-full flex items-center justify-center text-2xl font-black shadow-lg ${conversation.isGoldenCase ? 'bg-gradient-to-br from-amber-400 via-yellow-500 to-emerald-500 text-slate-950 ring-4 ring-amber-400/40' : 'bg-gradient-to-br from-sky-500 to-indigo-600 text-white ring-2 ring-slate-700'}`}>{initials}</div>
+            <div>
+              <h3 className="text-lg font-black text-white leading-tight">{conversation.name}</h3>
+              <p className="text-xs font-mono text-sky-300 mt-0.5">{conversation.phone}</p>
+              <p className="text-xs text-amber-300 font-semibold mt-1">🎓 {conversation.carrera || 'Carrera por definir'}</p>
+              <p className="text-[11px] text-slate-400 mt-0.5">📍 {conversation.campus || 'Campeche'} • {conversation.modalidad || 'Presencial'}</p>
+            </div>
+            {conversation.isGoldenCase && (
+              <div className="w-full mt-1 p-2.5 rounded-xl bg-amber-500/15 border border-amber-400/40 text-left text-xs text-amber-200">
+                <div className="font-black text-amber-300">🏆 Conversación de Éxito (Archivo de Estudio)</div>
+                <p className="text-[11px] text-amber-100/80 mt-0.5">Resguardada permanentemente para estudiar estrategias de inscripción exitosas.</p>
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-2xl bg-gradient-to-br from-indigo-950/70 to-slate-900 border border-indigo-500/35 p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-black uppercase tracking-wider text-indigo-300">🧠 Situación Actual (Preview IA)</span>
+              {comp.isIncomplete ? (
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${comp.urgency === 'alta' ? 'bg-rose-500/20 text-rose-300 border-rose-500/40' : 'bg-amber-500/20 text-amber-300 border-amber-500/40'}`}>
+                  ⏳ Inconclusa ({comp.stalledLabel})
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">✓ Completa</span>
+              )}
+            </div>
+            <p className="text-xs sm:text-sm text-slate-100 leading-relaxed">{comp.aiSituationPreview}</p>
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-slate-400 font-semibold">Avance de 11 datos UNID</span>
+                <span className="font-black text-white">{comp.completedCount}/{comp.totalFields} ({comp.percent}%)</span>
+              </div>
+              <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
+                <div className={`h-full rounded-full ${comp.percent >= 80 ? 'bg-emerald-400' : comp.percent >= 45 ? 'bg-amber-400' : 'bg-rose-400'}`} style={{ width: `${Math.max(4, comp.percent)}%` }} />
+              </div>
+              {comp.missingFields && comp.missingFields.length > 0 && comp.isIncomplete && (
+                <p className="text-[11px] text-slate-400"><strong className="text-amber-300">Faltan:</strong> {comp.missingFields.join(', ')}.</p>
+              )}
+            </div>
+          </section>
+
+          <section className="rounded-2xl bg-[#111B2E] border border-slate-800 p-4 space-y-2.5">
+            <h4 className="text-xs font-black uppercase tracking-wider text-slate-300">📊 Mover en Tablero Kanban</h4>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {DRAWER_KANBAN_STAGES.map(stage => (
+                <button key={stage.id} type="button" disabled={movingStage} onClick={() => handleMoveKanban(stage.id)} className={`min-h-[44px] px-2.5 py-2 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition ${conversation.estado_prospecto === stage.id ? `${stage.activeClass} ring-2 ring-white/25` : 'bg-slate-900/70 border-slate-700 text-slate-300 hover:bg-slate-800'}`}>
+                  <span>{stage.icon}</span><span className="truncate">{stage.label}</span>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="rounded-2xl bg-[#111B2E] border border-slate-800 p-4 space-y-2.5">
+            <h4 className="text-xs font-black uppercase tracking-wider text-slate-300">⚡ Acciones del Asesor</h4>
+            <button type="button" disabled={exportingZip} onClick={handleExportZip} className="w-full min-h-[48px] px-4 py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:brightness-110 text-slate-950 font-black text-sm shadow-lg transition disabled:opacity-60">
+              {exportingZip ? '⏳ Generando ZIP...' : '📦 Exportar Conversación (.ZIP)'}
+            </button>
+            <p className="text-[11px] text-slate-400 text-center">Incluye Chat_WhatsApp.txt auditado, expediente JSON, resumen y adjuntos.</p>
+
+            <button type="button" onClick={() => setShowFinalizeForm(v => !v)} className="w-full min-h-[46px] px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#FFC72C] to-amber-500 hover:brightness-110 text-slate-950 font-black text-xs sm:text-sm transition">
+              {showFinalizeForm ? '▲ Ocultar Cierre Manual' : '✅ Finalizar Proceso a Mano'}
+            </button>
+
+            {showFinalizeForm && (
+              <form noValidate onSubmit={handleFinalizeSubmit} className="mt-2 p-3.5 rounded-xl bg-slate-950/90 border border-amber-500/40 space-y-3">
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="m-fin-stage" className="text-xs font-bold text-slate-200">Resultado de Cierre</label>
+                  <select id="m-fin-stage" value={finalStage} onChange={e => setFinalStage(e.target.value)} className="w-full min-h-[42px] rounded-xl bg-[#0F172A] border border-slate-600 px-3 text-xs text-white">
+                    <option value="inscrito">🏆 Inscrito (Caso de Estudio)</option>
+                    <option value="en_proceso">📋 En Proceso</option>
+                    <option value="contactado">🤝 Contactado</option>
+                    <option value="no_interesado">✖️ No Interesado</option>
+                  </select>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <input type="text" value={finalNombre} onChange={e => setFinalNombre(e.target.value)} placeholder="Nombre completo (opc.)" className="w-full min-h-[40px] rounded-xl bg-[#0F172A] border border-slate-600 px-3 text-xs text-white" />
+                  <input type="text" value={finalCarrera} onChange={e => setFinalCarrera(e.target.value)} placeholder="Carrera (opc.)" className="w-full min-h-[40px] rounded-xl bg-[#0F172A] border border-slate-600 px-3 text-xs text-white" />
+                </div>
+                <textarea rows={2} value={finalNotas} onChange={e => setFinalNotas(e.target.value)} placeholder="Notas de cierre del asesor..." className="w-full rounded-xl bg-[#0F172A] border border-slate-600 p-2.5 text-xs text-white" />
+                <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                  <input type="checkbox" checked={finalArchivar} onChange={e => setFinalArchivar(e.target.checked)} className="w-4 h-4 accent-amber-400" />
+                  <span>Archivar conversación al finalizar</span>
+                </label>
+                {formError && <p role="alert" className="text-xs text-rose-400 font-semibold">❌ {formError}</p>}
+                <button type="submit" disabled={finalizing} className="w-full min-h-[44px] rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs transition disabled:opacity-60">
+                  {finalizing ? '⏳ Guardando...' : '💾 Confirmar Finalización Manual'}
+                </button>
+              </form>
+            )}
+
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <button type="button" disabled={togglingFlag || !lead.id} onClick={() => handleToggleFlags({ conversacion_destacada: !conversation.isGoldenCase })} className={`min-h-[44px] px-3 rounded-xl border text-xs font-bold transition disabled:opacity-40 ${conversation.isGoldenCase ? 'bg-amber-500/20 border-amber-400 text-amber-200' : 'bg-slate-900 border-slate-700 text-slate-300'}`}>
+                {conversation.isGoldenCase ? '🏆 En Estudio' : '⭐ Destacar'}
+              </button>
+              <button type="button" disabled={togglingFlag || !lead.id} onClick={() => handleToggleFlags({ archivado: !conversation.archivado })} className={`min-h-[44px] px-3 rounded-xl border text-xs font-bold transition disabled:opacity-40 ${conversation.archivado ? 'bg-indigo-500/20 border-indigo-400 text-indigo-200' : 'bg-slate-900 border-slate-700 text-slate-300'}`}>
+                {conversation.archivado ? '📂 Desarchivar' : '🗄️ Archivar'}
+              </button>
+            </div>
+          </section>
+
+          <section className="rounded-2xl bg-[#111B2E] border border-slate-800 p-4 space-y-2 text-xs">
+            <h4 className="text-xs font-black uppercase tracking-wider text-slate-300">📋 Datos Clave</h4>
+            <div className="flex justify-between gap-2 border-b border-slate-800/80 pb-1.5"><span className="text-slate-400">Correo</span><span className="text-slate-100 truncate">{lead.correo_electronico || 'Pendiente'}</span></div>
+            <div className="flex justify-between gap-2 border-b border-slate-800/80 pb-1.5"><span className="text-slate-400">CURP</span><span className="text-sky-300 font-mono">{lead.curp || 'Pendiente'}</span></div>
+            <div className="flex justify-between gap-2 border-b border-slate-800/80 pb-1.5"><span className="text-slate-400">Bachillerato</span><span className="text-slate-100 truncate">{lead.bachillerato_procedencia || 'Pendiente'}</span></div>
+            <div className="flex justify-between gap-2"><span className="text-slate-400">Auditoría</span><span className="text-slate-200 font-semibold">👤 {msgs.filter(m => m.sender === 'user').length} • 🤖 {msgs.filter(m => m.sender === 'bot').length} • 🧑‍💼 {msgs.filter(m => m.sender === 'advisor').length}</span></div>
+          </section>
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+const HELP_TUTORIAL_STEPS = [
+  { step: '1', icon: '💬', title: 'Revisa Chats y Detecta Inconclusas', desc: 'Cada número aparece una sola vez (sin duplicados). Usa "⏳ Inconclusas" para ver quién dejó datos pendientes y cuánto tiempo lleva esperando.', tip: 'Cada mensaje guarda fecha, hora y rol (Aspirante, Robot IA o Asesor).' },
+  { step: '2', icon: '👤', title: 'Toca la Foto del Postulante (WhatsApp)', desc: 'Abre su Perfil para ver el preview IA de su situación, su avance de 11 datos y moverlo directo en el Kanban.', tip: 'Todo sin salir de la conversación.' },
+  { step: '3', icon: '🧑‍💼', title: 'Control Humano o Finalizar a Mano', desc: 'Pausa la IA para contestar tú mismo, o usa "✅ Finalizar Proceso a Mano" si se inscribió por llamada o presencialmente.', tip: 'Los Inscritos se guardan como 🏆 Casos de Éxito para estudio futuro.' },
+  { step: '4', icon: '📦', title: 'Exporta Conversaciones en .ZIP', desc: 'Desde el perfil del contacto descarga un .ZIP estilo WhatsApp con el .txt auditado, JSON forense, resumen y adjuntos.', tip: 'Listo para auditoría o capacitación del equipo.' }
+];
+
+const HELP_FAQ_ITEMS = [
+  { category: 'Bandeja & Auditoría', q: '¿Por qué antes se perdían mensajes o se duplicaba el mismo número?', a: 'Ahora Metal-Uriel normaliza todas las variantes telefónicas (521..., +52..., 10 dígitos) a una clave canónica única y guarda TODOS los mensajes en MariaDB sin límite de 1,000, incluso cuando la IA está en pausa.' },
+  { category: 'Bandeja & Auditoría', q: '¿Cómo identifico conversaciones inconclusas?', a: 'Toca el filtro "⏳ Inconclusas" en la Bandeja de Entrada. Verás cuántos datos faltan y el tiempo exacto detenido para rescatar al prospecto a tiempo.' },
+  { category: 'Cierres & Éxito', q: '¿Cómo se guardan las conversaciones que convencieron a inscribirse?', a: 'Al marcar a un postulante como "Inscrito" en Kanban o en "Finalizar Proceso a Mano", su chat se archiva como 🏆 Caso de Éxito permanente y filtrable.' },
+  { category: 'Exportación ZIP', q: '¿Qué incluye el archivo .ZIP exportado?', a: 'Incluye Chat_WhatsApp.txt con fechas y remitentes auditados, expediente_auditoria.json, resumen_ejecutivo.md y la carpeta adjuntos/ con los PDFs e imágenes enviadas.' },
+  { category: 'App Android & Red', q: 'La app Android (APK) da "Tiempo de espera agotado (7s)". ¿Qué reviso?', a: '1) Usa la IP Wi-Fi/Ethernet real de tu PC (evita 192.168.56.1 de VirtualBox). 2) Confirma que celular y PC estén en el mismo Wi-Fi. 3) Permite el puerto TCP 3000 en el Firewall de Windows con el comando mostrado arriba.' },
+  { category: 'App Android & Red', q: '¿Funciona en navegador de celular o tablet?', a: 'Sí, la vista es 100% responsiva con barra de navegación inferior y vista de chats adaptada a pantallas táctiles.' }
+];
+
+function HelpCenterFaq({ healthFull, onNavigateTab, onToast }) {
+  const [search, setSearch] = useState('');
+  const [cat, setCat] = useState('Todas');
+  const hw = (healthFull && healthFull.hardware) || null;
+  const primaryLanUrl = (hw && (hw.primaryLanUrl || (hw.lanUrls && hw.lanUrls[0]))) || 'http://192.168.1.70:3000';
+  const firewallCmd = (hw && hw.firewallCommand) || 'netsh advfirewall firewall add rule name="Metal-Uriel TCP 3000" dir=in action=allow protocol=TCP localport=3000';
+  const categories = useMemo(() => ['Todas', ...Array.from(new Set(HELP_FAQ_ITEMS.map(i => i.category)))], []);
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return HELP_FAQ_ITEMS.filter(i => (cat === 'Todas' || i.category === cat) && (!q || i.q.toLowerCase().includes(q) || i.a.toLowerCase().includes(q)));
+  }, [search, cat]);
+
+  const copyText = async (txt, label) => {
+    try { await navigator.clipboard.writeText(txt); onToast && onToast(`📋 ${label} copiado.`); } catch (_) { onToast && onToast(txt, 'info'); }
+  };
+
+  return (
+    <div className="h-full overflow-y-auto p-4 sm:p-6 pb-24 md:pb-8">
+      <div className="max-w-5xl mx-auto space-y-6">
+        <section className="rounded-3xl bg-gradient-to-br from-[#0F1E38] via-[#111B2E] to-[#0B1220] border border-amber-400/30 p-5 sm:p-7 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="space-y-1.5">
+            <span className="inline-flex px-3 py-1 rounded-full bg-amber-400/15 border border-amber-400/30 text-amber-300 text-[11px] font-black uppercase">📚 Centro de Ayuda UNID</span>
+            <h2 className="text-xl sm:text-2xl font-black text-white">Tutorial, Preguntas Frecuentes y Soporte para Asesores</h2>
+            <p className="text-xs sm:text-sm text-slate-300 max-w-2xl">Guía práctica para rescatar chats inconclusos, auditar conversaciones, exportar respaldos ZIP y conectar tu celular o APK.</p>
+          </div>
+          <button type="button" onClick={() => onNavigateTab && onNavigateTab('inbox')} className="min-h-[44px] px-4 rounded-xl bg-gradient-to-r from-[#FFC72C] to-amber-500 text-slate-950 font-black text-xs shrink-0 shadow">💬 Ir a Bandeja de Chats</button>
+        </section>
+
+        <section className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+          {HELP_TUTORIAL_STEPS.map(s => (
+            <article key={s.step} className="rounded-2xl bg-[#111B2E] border border-slate-800 p-4 space-y-2">
+              <div className="flex items-center gap-2.5">
+                <span className="w-9 h-9 rounded-xl bg-amber-400/15 border border-amber-400/30 flex items-center justify-center text-lg">{s.icon}</span>
+                <div>
+                  <span className="text-[10px] font-black uppercase text-amber-400">Paso {s.step}</span>
+                  <h4 className="text-sm font-black text-white leading-tight">{s.title}</h4>
+                </div>
+              </div>
+              <p className="text-xs text-slate-300 leading-relaxed">{s.desc}</p>
+              <div className="text-[11px] text-sky-300 bg-sky-950/30 border border-sky-500/20 rounded-xl px-3 py-1.5">💡 {s.tip}</div>
+            </article>
+          ))}
+        </section>
+
+        <section className="rounded-2xl bg-[#0F172A] border border-emerald-500/35 p-4 sm:p-5 space-y-3">
+          <h3 className="text-sm sm:text-base font-black text-emerald-300">📱 Conectar Celular / App Android (APK) por Wi-Fi LAN</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="rounded-xl bg-slate-950/80 border border-slate-800 p-3 space-y-2">
+              <div className="text-[11px] font-bold uppercase text-slate-400">1. URL Real Detectada (ignora 192.168.56.x VirtualBox)</div>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 text-xs font-mono text-emerald-300 bg-slate-900 px-3 py-2 rounded-lg border border-slate-700 truncate">{primaryLanUrl}</code>
+                <button type="button" onClick={() => copyText(primaryLanUrl, 'URL LAN')} className="min-h-[38px] px-3 rounded-lg bg-emerald-500/20 border border-emerald-400/40 text-emerald-200 text-xs font-bold">📋 Copiar</button>
+              </div>
+            </div>
+            <div className="rounded-xl bg-slate-950/80 border border-slate-800 p-3 space-y-2">
+              <div className="text-[11px] font-bold uppercase text-slate-400">2. Abrir Puerto 3000 en Firewall Windows (PowerShell Admin)</div>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 text-[11px] font-mono text-sky-300 bg-slate-900 px-3 py-2 rounded-lg border border-slate-700 truncate">{firewallCmd}</code>
+                <button type="button" onClick={() => copyText(firewallCmd, 'Comando Firewall')} className="min-h-[38px] px-3 rounded-lg bg-sky-500/20 border border-sky-400/40 text-sky-200 text-xs font-bold">📋 Copiar</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <h3 className="text-sm sm:text-base font-black text-white">❓ Preguntas Frecuentes (FAQ)</h3>
+            <input type="search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar: ZIP, APK, inconclusas..." className="w-full sm:w-72 min-h-[40px] rounded-xl bg-[#0F172A] border border-slate-700 px-3.5 text-xs text-white" />
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {categories.map(c => (
+              <button key={c} type="button" onClick={() => setCat(c)} className={`px-3 py-1.5 rounded-full text-xs font-bold border ${cat === c ? 'bg-amber-400/20 border-amber-400 text-amber-200' : 'bg-slate-900 border-slate-700 text-slate-400'}`}>{c}</button>
+            ))}
+          </div>
+          <div className="space-y-2">
+            {filtered.map((item, idx) => (
+              <details key={idx} open={idx === 0 && !search} className="rounded-2xl bg-[#111B2E] border border-slate-800 open:border-amber-400/40">
+                <summary className="cursor-pointer list-none px-4 py-3 flex items-center justify-between gap-3 text-xs sm:text-sm font-bold text-slate-100">
+                  <span><span className="mr-2 px-2 py-0.5 rounded bg-slate-800 text-[10px] text-amber-300">{item.category}</span>{item.q}</span>
+                  <span className="text-slate-400 text-xs">▼</span>
+                </summary>
+                <div className="px-4 pb-3.5 pt-1 text-xs sm:text-sm text-slate-300 border-t border-slate-800/70">{item.a}</div>
+              </details>
+            ))}
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   // ================= ESTADOS PRINCIPALES =================
   const [activeTab, setActiveTab] = useState('inbox'); // 'inbox' (default) | 'kanban' | 'analytics' | 'brochures' | 'database' | 'inspector' | 'prompt' | 'tenant_config' | 'onboarding'
@@ -227,7 +635,18 @@ function App() {
   const [chatFilterTab, setChatFilterTab] = useState('all'); // 'all' | 'nuevo' | 'contactado' | 'inscrito' | 'paused'
   const [isAdvisorMode, setIsAdvisorMode] = useState(true); // true = Enviar como Asesor Humano a WhatsApp | false = Simular Aspirante
   const [showFichaDrawer, setShowFichaDrawer] = useState(false);
+  const [showContactProfile, setShowContactProfile] = useState(false);
   const [showBrochurePicker, setShowBrochurePicker] = useState(false);
+  const [mobileShowChat, setMobileShowChat] = useState(false);
+  const [showToolsMenu, setShowToolsMenu] = useState(false);
+  const [showMobileNavSheet, setShowMobileNavSheet] = useState(false);
+  const [uiToast, setUiToast] = useState(null);
+  const toastTimerRef = useRef(null);
+  const showToast = (message, type = 'success') => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setUiToast({ message, type });
+    toastTimerRef.current = setTimeout(() => setUiToast(null), 4200);
+  };
 
   // Estados del Chat Activo
   const [phone, setPhone] = useState('+529811581001');
@@ -587,6 +1006,19 @@ function App() {
   }, [activeTab, analyticsData]);
 
   // ================= MÉTODOS DE BANDEJA Y API =================
+  const loadFullConversationHistory = async (targetPhone) => {
+    if (!targetPhone) return;
+    try {
+      const res = await fetch(`/api/conversations/${encodeURIComponent(targetPhone)}/history`, { headers: getAuthHeaders() });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.success && Array.isArray(data.messages)) {
+        setMessages(data.messages);
+        if (data.aspirante) setLiveExtractedFields(data.aspirante);
+      }
+    } catch (_) {}
+  };
+
   const loadConversations = async (silent = false) => {
     try {
       const campusQuery = selectedCampus ? `?campus=${encodeURIComponent(selectedCampus)}` : '';
@@ -596,19 +1028,20 @@ function App() {
       const data = await res.json();
       if (data.success && Array.isArray(data.conversations)) {
         setConversations(data.conversations);
-        
-        // Si no hay seleccionado o es la primera carga, seleccionar la primera
+
         if (!selectedChatPhone && data.conversations.length > 0) {
-          const first = data.conversations[0];
-          setSelectedChatPhone(first.cleanPhone || first.phone);
+          const first = data.conversations.find(c => !c.archivado) || data.conversations[0];
+          const firstId = first.canonicalPhone || first.cleanPhone || first.phone;
+          setSelectedChatPhone(firstId);
           setPhone(first.phone);
           setMessages(first.messages || []);
           if (first.leadData) setLiveExtractedFields(first.leadData);
+          if (first.hasMoreHistory) loadFullConversationHistory(firstId);
         } else if (selectedChatPhone) {
-          // Sincronizar mensajes del chat actual
-          const current = data.conversations.find(c => (c.cleanPhone || c.phone) === selectedChatPhone);
-          if (current && current.messages) {
-            setMessages(current.messages);
+          const current = data.conversations.find(c => (c.canonicalPhone || c.cleanPhone || c.phone) === selectedChatPhone);
+          if (current) {
+            if (current.hasMoreHistory) loadFullConversationHistory(current.canonicalPhone || current.phone);
+            else if (current.messages) setMessages(current.messages);
             if (current.leadData) setLiveExtractedFields(current.leadData);
           }
         }
@@ -619,14 +1052,14 @@ function App() {
   };
 
   const handleSelectConversation = (conv) => {
-    const cleanId = conv.cleanPhone || conv.phone;
+    const cleanId = conv.canonicalPhone || conv.cleanPhone || conv.phone;
     setSelectedChatPhone(cleanId);
     setPhone(conv.phone);
     setMessages(conv.messages || []);
-    if (conv.leadData) {
-      setLiveExtractedFields(conv.leadData);
-    }
-    if (inputRef.current) inputRef.current.focus();
+    setMobileShowChat(true);
+    if (conv.leadData) setLiveExtractedFields(conv.leadData);
+    loadFullConversationHistory(cleanId);
+    if (inputRef.current && window.innerWidth >= 768) inputRef.current.focus();
   };
 
   const handleToggleAiPause = async (targetPhone, currentPaused) => {
@@ -639,15 +1072,17 @@ function App() {
       });
       const data = await res.json();
       if (data.success) {
+        const targetCanon = data.canonicalPhone || selectedChatPhone;
         setConversations(prev => prev.map(c => {
-          if ((c.cleanPhone || c.phone) === (targetPhone.replace(/[\s\-\+]/g, '') || targetPhone)) {
-            return { ...c, isPaused: nextPaused };
-          }
+          const cid = c.canonicalPhone || c.cleanPhone || c.phone;
+          if (cid === targetCanon || c.phone === targetPhone) return { ...c, isPaused: nextPaused };
           return c;
         }));
+        showToast(nextPaused ? '⏸️ IA pausada: control humano activo.' : '🤖 Robot Metal-Uriel reactivado.', 'info');
+        loadConversations(true);
       }
     } catch (e) {
-      alert('Error cambiando estado de IA: ' + e.message);
+      showToast('Error cambiando estado de IA: ' + e.message, 'error');
     }
   };
 
@@ -1660,34 +2095,49 @@ function App() {
   const isUsuario = currentUserRole === 'usuario';
   const isAdmin = isDesarrollador || isAdministrador;
 
+  const inboxCounts = useMemo(() => {
+    const active = conversations.filter(c => !c.archivado);
+    return {
+      active: active.length,
+      incomplete: active.filter(c => c.completeness && c.completeness.isIncomplete).length,
+      golden: conversations.filter(c => c.isGoldenCase || c.estado_prospecto === 'inscrito').length,
+      paused: active.filter(c => c.isPaused).length,
+      archived: conversations.filter(c => c.archivado).length
+    };
+  }, [conversations]);
+
   // Filtrado de la lista de conversaciones en WhatsApp Web
   const filteredConversations = useMemo(() => {
-    return conversations.filter(c => {
-      // Filtro por Ciclo Escolar
+    const filtered = conversations.filter(c => {
       if (selectedCicloFilter !== 'all' && (c.ciclo_escolar || '2026-3 Septiembre') !== selectedCicloFilter) return false;
-
-      // Filtro por tab
-      if (chatFilterTab === 'nuevo' && c.estado_prospecto !== 'nuevo') return false;
-      if (chatFilterTab === 'contactado' && (c.estado_prospecto !== 'contactado' && c.estado_prospecto !== 'en_proceso')) return false;
-      if (chatFilterTab === 'inscrito' && c.estado_prospecto !== 'inscrito') return false;
-      if (chatFilterTab === 'paused' && !c.isPaused) return false;
-
-      // Filtro por búsqueda
+      if (chatFilterTab === 'archived') {
+        if (!c.archivado) return false;
+      } else if (chatFilterTab === 'inscrito') {
+        if (!(c.isGoldenCase || c.estado_prospecto === 'inscrito')) return false;
+      } else {
+        if (c.archivado) return false;
+        if (chatFilterTab === 'incomplete' && !(c.completeness && c.completeness.isIncomplete)) return false;
+        if (chatFilterTab === 'nuevo' && c.estado_prospecto !== 'nuevo') return false;
+        if (chatFilterTab === 'contactado' && (c.estado_prospecto !== 'contactado' && c.estado_prospecto !== 'en_proceso')) return false;
+        if (chatFilterTab === 'paused' && !c.isPaused) return false;
+      }
       if (chatSearchQuery.trim()) {
         const q = chatSearchQuery.toLowerCase();
-        const matchName = String(c.name || '').toLowerCase().includes(q);
-        const matchPhone = String(c.phone || '').toLowerCase().includes(q);
-        const matchCarrera = String(c.carrera || '').toLowerCase().includes(q);
-        const matchLast = String(c.lastMessage || '').toLowerCase().includes(q);
-        return matchName || matchPhone || matchCarrera || matchLast;
+        return String(c.name || '').toLowerCase().includes(q)
+          || String(c.phone || '').toLowerCase().includes(q)
+          || String(c.carrera || '').toLowerCase().includes(q)
+          || String(c.lastMessage || '').toLowerCase().includes(q);
       }
       return true;
     });
+    if (chatFilterTab === 'incomplete') {
+      return [...filtered].sort((a, b) => ((b.completeness && b.completeness.stalledMs) || 0) - ((a.completeness && a.completeness.stalledMs) || 0));
+    }
+    return filtered;
   }, [conversations, chatFilterTab, chatSearchQuery, selectedCicloFilter]);
 
-  // Conversación seleccionada actual
   const activeConversation = useMemo(() => {
-    return conversations.find(c => (c.cleanPhone || c.phone) === selectedChatPhone) || conversations[0] || null;
+    return conversations.find(c => (c.canonicalPhone || c.cleanPhone || c.phone) === selectedChatPhone) || conversations[0] || null;
   }, [conversations, selectedChatPhone]);
 
   return (
@@ -1708,9 +2158,9 @@ function App() {
       )}
 
       {/* ========================================================================= */}
-      {/* 1. BARRA VERTICAL DE ICONOS (ESTILO WHATSAPP WEB COMPACT ~64px)           */}
+      {/* 1. BARRA VERTICAL DE ICONOS (SOLO DESKTOP/TABLET >= md) */}
       {/* ========================================================================= */}
-      <aside className="w-16 bg-[#111B21] border-r border-[#222E35] flex flex-col items-center justify-between py-3 shrink-0 z-40">
+      <aside className="hidden md:flex w-16 bg-[#111B21] border-r border-[#222E35] flex-col items-center justify-between py-3 shrink-0 z-40">
         
         {/* Top: Logo & Navegación Principal */}
         <div className="flex flex-col items-center gap-4 w-full">
@@ -2020,35 +2470,41 @@ function App() {
       {/* ========================================================================= */}
       <div className="flex-1 flex flex-col h-full bg-[#0C1317] overflow-hidden">
         
-        {/* TOP BAR COMPACTA & ELEGANTE */}
-        <header className="h-12 bg-[#111B21] border-b border-[#222E35] px-4 flex items-center justify-between shrink-0 z-30">
-          
-          <div className="flex items-center gap-3">
-            <span className="font-black text-xs text-amber-400 tracking-wider flex items-center gap-1.5">
+        {/* TOP BAR SIMPLIFICADA & RESPONSIVA */}
+        <header className="h-12 bg-[#111B21] border-b border-[#222E35] px-3 sm:px-4 flex items-center justify-between gap-2 shrink-0 z-30">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+            <button
+              type="button"
+              onClick={() => { setActiveTab('inbox'); setMobileShowChat(false); }}
+              className="md:hidden w-8 h-8 rounded-xl bg-gradient-to-br from-[#FFC72C] to-red-600 flex items-center justify-center font-black text-slate-950 text-sm shrink-0 shadow"
+              title="Metal-Uriel UNID"
+            >
+              🐺
+            </button>
+
+            <span className="font-black text-xs text-amber-400 tracking-wider flex items-center gap-1.5 shrink-0">
               <span>:UNID</span>
-              <span className="text-slate-400 font-normal">|</span>
-              <span className="text-slate-200">Centro de Mando</span>
+              <span className="hidden sm:inline text-slate-500 font-normal">|</span>
+              <span className="hidden sm:inline text-slate-200">Metal-Uriel</span>
             </span>
 
-            {/* Badge de Rol Activo */}
-            <span className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider border ${
+            <span className={`hidden sm:inline-flex px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider border shrink-0 ${
               isDesarrollador
                 ? 'bg-purple-950/80 text-purple-300 border-purple-500/40'
                 : isAdministrador
                 ? 'bg-sky-950/80 text-sky-300 border-sky-500/40'
                 : 'bg-emerald-950/80 text-emerald-300 border-emerald-500/40'
             }`}>
-              {isDesarrollador ? '👑 Desarrollador' : isAdministrador ? '🛡️ Administrador' : '🎧 Asesor'}
+              {isDesarrollador ? '👑 Dev' : isAdministrador ? '🛡️ Admin' : '🎧 Asesor'}
             </span>
 
-            {/* Selector de Campus (Global para Desarrollador, Fijo en su sede_id para Admin/Usuario) */}
-            <div className="flex items-center gap-1 bg-[#202C33] px-2.5 py-1 rounded-lg border border-slate-700/60">
-              <i data-lucide="map-pin" className="w-3.5 h-3.5 text-amber-400"></i>
+            <div className="flex items-center gap-1 bg-[#202C33] px-2 py-1 rounded-lg border border-slate-700/60 min-w-0 max-w-[165px] sm:max-w-[230px]">
+              <i data-lucide="map-pin" className="w-3.5 h-3.5 text-amber-400 shrink-0"></i>
               {isDesarrollador ? (
                 <select
                   value={selectedCampus}
                   onChange={(e) => handleChangeCampus(e.target.value)}
-                  className="bg-transparent text-xs text-slate-200 font-semibold focus:outline-none cursor-pointer"
+                  className="bg-transparent text-xs text-slate-200 font-semibold focus:outline-none cursor-pointer truncate w-full"
                 >
                   {campusesList.map(c => (
                     <option key={c.id} value={c.id} className="bg-[#111B21] text-slate-200">
@@ -2057,15 +2513,14 @@ function App() {
                   ))}
                 </select>
               ) : (
-                <span className="text-xs text-slate-200 font-semibold" title="Sede asignada a tu cuenta">
+                <span className="text-xs text-slate-200 font-semibold truncate" title="Sede asignada a tu cuenta">
                   {campusesList.find(c => c.id === (authUser?.sede_id || selectedCampus))?.name || `Sede: ${authUser?.sede_id || 'Campeche'}`}
                 </span>
               )}
             </div>
 
-            {/* Selector Rápido de Ciclo Escolar Activo */}
-            <div className="hidden lg:flex items-center gap-1.5 bg-[#202C33] px-2.5 py-1 rounded-lg border border-amber-500/30" title="Ciclo Escolar Activo para nuevos registros y chats">
-              <span className="text-[10px] text-amber-400 font-bold">📅 Ciclo:</span>
+            <div className="hidden xl:flex items-center gap-1.5 bg-[#202C33] px-2.5 py-1 rounded-lg border border-amber-500/30" title="Ciclo Escolar Activo">
+              <span className="text-[10px] text-amber-400 font-bold">📅</span>
               <select
                 value={activeCiclo}
                 onChange={(e) => handleSetActiveCiclo(e.target.value)}
@@ -2082,110 +2537,100 @@ function App() {
                 ))}
               </select>
             </div>
-
-            {/* Selector de Modelo IA (Exclusivo Desarrollador) */}
-            {isDesarrollador && (
-              <div className="hidden md:flex items-center gap-1 bg-[#202C33] px-2.5 py-1 rounded-lg border border-slate-700/60">
-                <i data-lucide="cpu" className="w-3.5 h-3.5 text-sky-400"></i>
-                <select
-                  value={selectedModel}
-                  onChange={(e) => handleChangeModel(e.target.value)}
-                  className="bg-transparent text-xs text-slate-200 font-semibold focus:outline-none cursor-pointer"
-                >
-                  {modelsList.map(m => (
-                    <option key={m.id} value={m.id} className="bg-[#111B21] text-slate-200">
-                      {m.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
           </div>
 
-          {/* Acciones de la TopBar */}
-          <div className="flex items-center gap-2">
-            
-            {/* Si NO está en la bandeja, botón para regresar a WhatsApp con 1 clic */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {activeTab !== 'inbox' && (
               <button
+                type="button"
                 onClick={() => setActiveTab('inbox')}
-                className="px-3 py-1 rounded-lg bg-[#00A884] hover:bg-[#008f6f] text-slate-950 font-black text-xs flex items-center gap-1.5 shadow transition"
+                className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-[#00A884] hover:bg-[#008f6f] text-slate-950 font-black text-xs flex items-center gap-1.5 shadow transition"
               >
-                <i data-lucide="message-square" className="w-3.5 h-3.5"></i>
-                <span>Volver a Chats WhatsApp</span>
+                <span>💬</span>
+                <span className="hidden sm:inline">Chats</span>
               </button>
             )}
 
-            {/* Botón Laboratorio de Pruebas (Exclusivo Desarrollador) */}
-            {isDesarrollador && (
-              <button
-                onClick={() => setShowTestSuiteModal(true)}
-                className="px-2.5 py-1 rounded-lg bg-purple-950/70 hover:bg-purple-900 border border-purple-500/40 text-purple-300 text-xs font-bold flex items-center gap-1.5 transition shadow"
-                title="Abrir Laboratorio de Casos de Prueba"
-              >
-                <i data-lucide="flask-conical" className="w-3.5 h-3.5 text-amber-400"></i>
-                <span className="hidden sm:inline">Laboratorio IA</span>
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => setActiveTab('onboarding')}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold border transition ${
+                activeTab === 'onboarding'
+                  ? 'bg-amber-400/20 border-amber-400 text-amber-200'
+                  : 'bg-[#202C33] hover:bg-[#2A3942] border-slate-700 text-slate-200'
+              }`}
+              title="Centro de Ayuda, Tutorial y FAQ"
+            >
+              <span>❓</span>
+              <span className="hidden lg:inline ml-1">Ayuda</span>
+            </button>
 
-            {/* Exportar CSV autenticado (Desarrollador y Administrador) */}
-            {!isUsuario && (
+            <div className="relative">
               <button
                 type="button"
-                onClick={handleExportExcel}
-                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold flex items-center gap-1 border border-slate-700 transition"
-                title="Descargar Excel / CSV"
+                onClick={() => setShowToolsMenu(v => !v)}
+                className="px-2.5 py-1.5 rounded-lg bg-[#202C33] hover:bg-[#2A3942] border border-slate-700 text-slate-100 text-xs font-bold flex items-center gap-1 transition"
+                title="Herramientas y Configuración"
               >
-                <i data-lucide="download" className="w-3.5 h-3.5"></i>
-                <span className="hidden lg:inline">Excel</span>
+                <span>⚙️</span>
+                <span className="hidden sm:inline">Menú</span>
+                <span className="text-[10px] text-slate-400">▾</span>
               </button>
-            )}
 
-            {/* Botones de Desarrollador: Setup/.env, Vaciar DB + Caché y Poblar DB */}
-            {isDesarrollador && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setShowSetupWizard(true)}
-                  className="px-2.5 py-1 rounded-lg bg-indigo-950/70 hover:bg-indigo-900 text-indigo-200 border border-indigo-500/40 text-xs font-bold flex items-center gap-1 transition"
-                  title="Abrir Asistente de Configuración (.env, API Keys, Ollama y SMTP)"
-                >
-                  <span>⚙️</span>
-                  <span className="hidden xl:inline">Setup / .env</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleTruncateDb}
-                  className="px-2.5 py-1 rounded-lg bg-red-950/70 hover:bg-red-900 text-red-300 border border-red-500/40 text-xs font-bold flex items-center gap-1 transition"
-                  title="Vaciar Base de Datos y Memoria Caché al 100%"
-                >
-                  <span>🗑️</span>
-                  <span className="hidden xl:inline">Vaciar DB + Caché</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSeedDemo}
-                  className="px-2.5 py-1 rounded-lg bg-amber-950/60 hover:bg-amber-900/80 text-amber-300 border border-amber-500/40 text-xs font-bold flex items-center gap-1 transition"
-                  title="Poblar Base de Datos con 5 prospectos institucionales demo"
-                >
-                  <span>🌱</span>
-                  <span className="hidden lg:inline">Poblar DB</span>
-                </button>
-              </>
-            )}
+              {showToolsMenu && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowToolsMenu(false)} />
+                  <div className="absolute right-0 top-10 w-64 rounded-2xl bg-[#111B21] border border-slate-700 shadow-2xl p-2 z-50 space-y-1.5 text-xs">
+                    <div className="px-2.5 py-1.5 border-b border-slate-800 flex items-center justify-between">
+                      <span className="font-bold text-slate-300 truncate">{authUser?.displayName || authUser?.email || 'Sesión UNID'}</span>
+                      <span className="text-[10px] font-mono text-amber-300 uppercase">{currentUserRole}</span>
+                    </div>
+
+                    {isDesarrollador && (
+                      <div className="px-2 py-1.5 rounded-xl bg-slate-900/80 border border-slate-800 space-y-1">
+                        <span className="text-[10px] font-bold text-sky-300 uppercase block">🤖 Motor IA Activo</span>
+                        <select
+                          value={selectedModel}
+                          onChange={(e) => handleChangeModel(e.target.value)}
+                          className="w-full bg-[#111B21] text-xs text-slate-200 font-semibold rounded-lg px-2 py-1.5 border border-slate-700"
+                        >
+                          {modelsList.map(m => (
+                            <option key={m.id} value={m.id}>{m.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    <button type="button" onClick={() => { setShowToolsMenu(false); setShowHealthModal(true); }} className="w-full text-left px-3 py-2 rounded-xl hover:bg-[#202C33] text-emerald-300 font-semibold">🩺 Estado de Salud</button>
+                    {!isUsuario && (
+                      <button type="button" onClick={() => { setShowToolsMenu(false); handleExportExcel(); }} className="w-full text-left px-3 py-2 rounded-xl hover:bg-[#202C33] text-slate-200 font-semibold">📥 Exportar Excel / CSV</button>
+                    )}
+                    {isDesarrollador && (
+                      <>
+                        <div className="h-[1px] bg-slate-800 my-1" />
+                        <button type="button" onClick={() => { setShowToolsMenu(false); setShowTestSuiteModal(true); }} className="w-full text-left px-3 py-2 rounded-xl hover:bg-purple-950/60 text-purple-300 font-semibold">🧪 Laboratorio IA</button>
+                        <button type="button" onClick={() => { setShowToolsMenu(false); setShowSetupWizard(true); }} className="w-full text-left px-3 py-2 rounded-xl hover:bg-indigo-950/60 text-indigo-300 font-semibold">⚙️ Setup / .env</button>
+                        <button type="button" onClick={() => { setShowToolsMenu(false); handleSeedDemo(); }} className="w-full text-left px-3 py-2 rounded-xl hover:bg-amber-950/60 text-amber-300 font-semibold">🌱 Poblar DB Demo</button>
+                        <button type="button" onClick={() => { setShowToolsMenu(false); handleTruncateDb(); }} className="w-full text-left px-3 py-2 rounded-xl hover:bg-red-950/60 text-rose-300 font-semibold">🗑️ Vaciar DB + Caché</button>
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </header>
 
         {/* ========================================================================= */}
-        {/* 3. VISTA PRINCIPAL: BANDEJA DE ENTRADA WHATSAPP (FULL CANVAS)             */}
+        {/* 3. VISTA PRINCIPAL: BANDEJA DE ENTRADA WHATSAPP (RESPONSIVA)              */}
         {/* ========================================================================= */}
         {activeTab === 'inbox' && (
-          <div className="flex-1 flex overflow-hidden relative">
+          <div className="flex-1 flex overflow-hidden relative pb-14 md:pb-0">
             
             {/* ------------------------------------------------------------- */}
-            {/* 3.1. SIDEBAR DE CONTACTOS (ESTILO WHATSAPP WEB ~380px)        */}
+            {/* 3.1. SIDEBAR DE CONTACTOS (RESPONSIVO MÓVIL + DESKTOP)         */}
             {/* ------------------------------------------------------------- */}
-            <div className="w-80 md:w-96 bg-[#111B21] border-r border-[#222E35] flex flex-col shrink-0">
+            <div className={`${mobileShowChat ? 'hidden md:flex' : 'flex'} w-full md:w-80 lg:w-96 bg-[#111B21] border-r border-[#222E35] flex-col shrink-0`}>
               
               {/* Header de la lista de chats */}
               <div className="p-3 bg-[#111B21] border-b border-[#222E35] space-y-2.5 shrink-0">
@@ -2245,61 +2690,28 @@ function App() {
                   )}
                 </div>
 
-                {/* Filter Chips / Pills (Todos, Nuevos, En Seguimiento, Inscritos, IA Pausada) */}
-                <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
-                  <button
-                    onClick={() => setChatFilterTab('all')}
-                    className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition whitespace-nowrap ${
-                      chatFilterTab === 'all'
-                        ? 'bg-[#00A884] text-slate-950 shadow'
-                        : 'bg-[#202C33] text-slate-300 hover:bg-[#2A3942]'
-                    }`}
-                  >
-                    Todos ({conversations.length})
+                {/* Filter Chips / Pills Auditados */}
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+                  <button type="button" onClick={() => setChatFilterTab('all')} className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition whitespace-nowrap ${chatFilterTab === 'all' ? 'bg-[#00A884] text-slate-950 shadow' : 'bg-[#202C33] text-slate-300 hover:bg-[#2A3942]'}`}>
+                    Todos ({inboxCounts.active})
                   </button>
-
-                  <button
-                    onClick={() => setChatFilterTab('nuevo')}
-                    className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition whitespace-nowrap ${
-                      chatFilterTab === 'nuevo'
-                        ? 'bg-[#00A884] text-slate-950 shadow'
-                        : 'bg-[#202C33] text-slate-300 hover:bg-[#2A3942]'
-                    }`}
-                  >
+                  <button type="button" onClick={() => setChatFilterTab('incomplete')} className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition whitespace-nowrap ${chatFilterTab === 'incomplete' ? 'bg-rose-500 text-white shadow' : 'bg-[#202C33] text-rose-300 hover:bg-[#2A3942]'}`}>
+                    ⏳ Inconclusas ({inboxCounts.incomplete})
+                  </button>
+                  <button type="button" onClick={() => setChatFilterTab('inscrito')} className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition whitespace-nowrap ${chatFilterTab === 'inscrito' ? 'bg-amber-400 text-slate-950 shadow' : 'bg-[#202C33] text-amber-300 hover:bg-[#2A3942]'}`}>
+                    🏆 Inscritos ({inboxCounts.golden})
+                  </button>
+                  <button type="button" onClick={() => setChatFilterTab('paused')} className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition whitespace-nowrap ${chatFilterTab === 'paused' ? 'bg-amber-500 text-slate-950 shadow' : 'bg-[#202C33] text-amber-300/80 hover:bg-[#2A3942]'}`}>
+                    ⏸️ Humano ({inboxCounts.paused})
+                  </button>
+                  <button type="button" onClick={() => setChatFilterTab('nuevo')} className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition whitespace-nowrap ${chatFilterTab === 'nuevo' ? 'bg-[#00A884] text-slate-950 shadow' : 'bg-[#202C33] text-slate-300 hover:bg-[#2A3942]'}`}>
                     Nuevos
                   </button>
-
-                  <button
-                    onClick={() => setChatFilterTab('contactado')}
-                    className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition whitespace-nowrap ${
-                      chatFilterTab === 'contactado'
-                        ? 'bg-[#00A884] text-slate-950 shadow'
-                        : 'bg-[#202C33] text-slate-300 hover:bg-[#2A3942]'
-                    }`}
-                  >
+                  <button type="button" onClick={() => setChatFilterTab('contactado')} className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition whitespace-nowrap ${chatFilterTab === 'contactado' ? 'bg-[#00A884] text-slate-950 shadow' : 'bg-[#202C33] text-slate-300 hover:bg-[#2A3942]'}`}>
                     En Proceso
                   </button>
-
-                  <button
-                    onClick={() => setChatFilterTab('inscrito')}
-                    className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition whitespace-nowrap ${
-                      chatFilterTab === 'inscrito'
-                        ? 'bg-[#00A884] text-slate-950 shadow'
-                        : 'bg-[#202C33] text-slate-300 hover:bg-[#2A3942]'
-                    }`}
-                  >
-                    Inscritos 🎉
-                  </button>
-
-                  <button
-                    onClick={() => setChatFilterTab('paused')}
-                    className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition whitespace-nowrap ${
-                      chatFilterTab === 'paused'
-                        ? 'bg-amber-500 text-slate-950 shadow'
-                        : 'bg-[#202C33] text-amber-300/80 hover:bg-[#2A3942]'
-                    }`}
-                  >
-                    ⏸️ Control Humano
+                  <button type="button" onClick={() => setChatFilterTab('archived')} className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition whitespace-nowrap ${chatFilterTab === 'archived' ? 'bg-indigo-500 text-white shadow' : 'bg-[#202C33] text-slate-400 hover:bg-[#2A3942]'}`}>
+                    🗄️ Archivados ({inboxCounts.archived})
                   </button>
                 </div>
               </div>
@@ -2316,10 +2728,11 @@ function App() {
                   </div>
                 ) : (
                   filteredConversations.map((conv) => {
-                    const cleanId = conv.cleanPhone || conv.phone;
+                    const cleanId = conv.canonicalPhone || conv.cleanPhone || conv.phone;
                     const isSelected = selectedChatPhone === cleanId;
+                    const comp = conv.completeness;
                     const initials = conv.name
-                      ? conv.name.split(' ').map(n => n[0]).slice(0, 2).join('').toUpperCase()
+                      ? conv.name.split(' ').filter(Boolean).map(n => n[0]).slice(0, 2).join('').toUpperCase()
                       : 'AS';
 
                     return (
@@ -2330,51 +2743,52 @@ function App() {
                           isSelected ? 'bg-[#2A3942]' : 'hover:bg-[#202C33]'
                         }`}
                       >
-                        {/* Avatar */}
                         <div className="relative shrink-0 mt-0.5">
                           <div className={`w-11 h-11 rounded-full flex items-center justify-center font-black text-sm shadow ${
-                            conv.isPaused
+                            conv.isGoldenCase
+                              ? 'bg-gradient-to-br from-amber-400 via-yellow-500 to-emerald-500 text-slate-950 ring-2 ring-amber-400'
+                              : conv.isPaused
                               ? 'bg-gradient-to-br from-amber-500 to-amber-700 text-slate-950 ring-2 ring-amber-400'
                               : 'bg-gradient-to-br from-slate-700 to-slate-800 text-slate-100 ring-2 ring-emerald-500/60'
                           }`}>
                             {initials}
                           </div>
                           <span className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-[#111B21] ${
-                            conv.isPaused ? 'bg-amber-400' : 'bg-emerald-400'
+                            conv.isGoldenCase ? 'bg-amber-400' : conv.isPaused ? 'bg-amber-400' : 'bg-emerald-400'
                           }`}></span>
                         </div>
 
-                        {/* Info del contacto */}
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between gap-1">
-                            <h3 className="font-bold text-xs text-slate-100 truncate">
-                              {conv.name || conv.phone}
+                            <h3 className="font-bold text-xs text-slate-100 truncate flex items-center gap-1">
+                              {conv.isGoldenCase && <span title="Caso de Éxito">🏆</span>}
+                              <span className="truncate">{conv.name || conv.phone}</span>
                             </h3>
                             <span className="text-[10px] text-slate-400 shrink-0 font-mono">
                               {formatTimeAgo(conv.lastMessageTime)}
                             </span>
                           </div>
 
-                          {/* Carrera e indicador de IA */}
-                          <div className="flex items-center gap-1.5 mt-0.5">
-                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-[#202C33] text-amber-300 font-medium truncate max-w-[170px]">
-                              {conv.carrera || 'Interesado UNID'}
+                          <div className="flex flex-wrap items-center gap-1 mt-1">
+                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-[#202C33] text-amber-300 font-medium truncate max-w-[140px]">
+                              {conv.carrera || 'Por definir'}
                             </span>
-                            {conv.isPaused ? (
-                              <span className="text-[9px] px-1 rounded bg-amber-950 text-amber-300 font-mono">
-                                ⏸️ Humano
+                            {conv.isGoldenCase ? (
+                              <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-950 text-emerald-300 border border-emerald-500/30 font-bold">Inscrito</span>
+                            ) : comp && comp.isIncomplete ? (
+                              <span className={`text-[9px] px-1.5 py-0.2 rounded font-mono font-bold border ${comp.urgency === 'alta' ? 'bg-rose-950 text-rose-300 border-rose-500/40' : 'bg-amber-950 text-amber-300 border-amber-500/30'}`}>
+                                ⏳ {comp.stalledLabel} ({comp.completedCount}/11)
                               </span>
-                            ) : (
-                              <span className="text-[9px] px-1 rounded bg-emerald-950 text-emerald-300 font-mono">
-                                🤖 IA Activa
-                              </span>
-                            )}
+                            ) : null}
+                            {conv.isPaused && <span className="text-[9px] px-1 rounded bg-amber-950 text-amber-300 font-mono">⏸️ Humano</span>}
                           </div>
 
-                          {/* Último mensaje */}
-                          <p className="text-[11px] text-slate-400 truncate mt-1 leading-tight">
-                            {conv.lastMessage}
-                          </p>
+                          <div className="flex items-center justify-between gap-2 mt-1">
+                            <p className="text-[11px] text-slate-400 truncate leading-tight">{conv.lastMessage}</p>
+                            {conv.totalMessages > 0 && (
+                              <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-slate-800 text-slate-300 font-mono shrink-0">{conv.totalMessages}</span>
+                            )}
+                          </div>
                         </div>
                       </div>
                     );
@@ -2395,86 +2809,85 @@ function App() {
             </div>
 
             {/* ------------------------------------------------------------- */}
-            {/* 3.2. ÁREA CENTRAL: CONVERSACIÓN ACTIVA (ESTILO WHATSAPP WEB)   */}
+            {/* 3.2. ÁREA CENTRAL: CONVERSACIÓN ACTIVA (RESPONSIVA)           */}
             {/* ------------------------------------------------------------- */}
-            <div className="flex-1 flex flex-col bg-[#0B141A] relative overflow-hidden" style={{ backgroundImage: "radial-gradient(rgba(255,255,255,0.025) 1px, transparent 0)", backgroundSize: "24px 24px" }}>
+            <div className={`${mobileShowChat ? 'flex' : 'hidden md:flex'} flex-1 flex-col bg-[#0B141A] relative overflow-hidden`} style={{ backgroundImage: "radial-gradient(rgba(255,255,255,0.025) 1px, transparent 0)", backgroundSize: "24px 24px" }}>
               
-              {/* Header del Chat Activo */}
-              <div className="h-14 bg-[#202C33] px-4 flex items-center justify-between border-b border-[#222E35] shrink-0 z-20">
-                
-                {/* Info del Aspirante en el Chat */}
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[#FFC72C] to-red-600 flex items-center justify-center font-black text-sm text-slate-950 shadow shrink-0">
-                    {activeConversation?.name ? activeConversation.name.substring(0, 2).toUpperCase() : 'WA'}
-                  </div>
-
-                  <div className="min-w-0">
-                    <h2 className="font-extrabold text-xs sm:text-sm text-slate-100 flex items-center gap-2 truncate">
-                      <span>{activeConversation?.name || phone}</span>
-                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-900 text-slate-300 font-mono border border-slate-700">
-                        {phone}
-                      </span>
-                    </h2>
-                    <p className="text-[11px] text-slate-400 flex items-center gap-2 truncate">
-                      <span className="text-amber-400 font-medium truncate">
-                        {activeConversation?.carrera || 'Ingeniería en Software'}
-                      </span>
-                      <span>•</span>
-                      <span>{activeConversation?.modalidad || 'Presencial'}</span>
-                    </p>
-                  </div>
-                </div>
-
-                {/* Acciones del Asesor (Pausar IA / Enviar PDF / Ficha 11 Datos) */}
-                <div className="flex items-center gap-1.5">
-                  
-                  {/* Botón Human Handover: Pausar/Reanudar IA */}
+              {/* Header del Chat Activo (Avatar y nombre clickeables estilo WhatsApp) */}
+              <div className="min-h-[56px] bg-[#202C33] px-2.5 sm:px-4 py-1.5 flex items-center justify-between gap-2 border-b border-[#222E35] shrink-0 z-20">
+                <div className="flex items-center gap-2 min-w-0 flex-1">
                   <button
-                    onClick={() => handleToggleAiPause(phone, activeConversation?.isPaused)}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-black flex items-center gap-1.5 transition shadow ${
-                      activeConversation?.isPaused
-                        ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 ring-2 ring-amber-400/50'
-                        : 'bg-[#202C33] hover:bg-[#2A3942] text-emerald-400 border border-emerald-500/40'
-                    }`}
-                    title={activeConversation?.isPaused ? 'La IA está pausada. Clic para reactivar Metal-Uriel.' : 'Pausar la IA y tomar control manual como Asesor.'}
+                    type="button"
+                    onClick={() => setMobileShowChat(false)}
+                    aria-label="Volver a la lista de chats"
+                    className="md:hidden min-h-[40px] min-w-[36px] rounded-xl bg-slate-800/70 text-slate-100 flex items-center justify-center font-black text-base shrink-0"
                   >
-                    <i data-lucide={activeConversation?.isPaused ? 'play' : 'pause'} className="w-3.5 h-3.5"></i>
-                    <span>{activeConversation?.isPaused ? 'Reanudar Metal-Uriel' : 'Pausar IA (Control Asesor)'}</span>
+                    ←
                   </button>
 
-                  {/* Botón Enviar Recurso del Pool (PDF / Imagen / Horario) */}
+                  <button
+                    type="button"
+                    onClick={() => setShowContactProfile(true)}
+                    className="flex items-center gap-2.5 min-w-0 flex-1 text-left rounded-xl px-1.5 py-1 hover:bg-slate-700/40 transition group"
+                    title="Toca para ver perfil, preview IA, mover en Kanban, finalizar a mano o exportar ZIP"
+                  >
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center font-black text-sm shadow shrink-0 ${
+                      activeConversation?.isGoldenCase
+                        ? 'bg-gradient-to-br from-amber-400 via-yellow-500 to-emerald-500 text-slate-950 ring-2 ring-amber-400/70'
+                        : 'bg-gradient-to-br from-[#FFC72C] to-red-600 text-slate-950'
+                    }`}>
+                      {activeConversation?.name ? activeConversation.name.split(' ').filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase() : 'WA'}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <h2 className="font-extrabold text-xs sm:text-sm text-slate-100 flex items-center gap-1.5 truncate">
+                        <span className="truncate">{activeConversation?.name || phone}</span>
+                        {activeConversation?.isGoldenCase && <span className="shrink-0">🏆</span>}
+                        <span className="hidden lg:inline text-[10px] px-1.5 py-0.2 rounded bg-slate-900 text-slate-300 font-mono border border-slate-700 shrink-0">{phone}</span>
+                      </h2>
+                      <p className="text-[11px] text-slate-400 flex items-center gap-1.5 truncate">
+                        <span className="text-amber-400 font-medium truncate">{activeConversation?.carrera || 'Toca para ver expediente'}</span>
+                        <span className="hidden sm:inline text-slate-500">•</span>
+                        <span className="hidden sm:inline text-sky-300 text-[10px] group-hover:underline">Info / Kanban / ZIP</span>
+                      </p>
+                    </div>
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => handleToggleAiPause(phone, activeConversation?.isPaused)}
+                    className={`px-2.5 sm:px-3 py-1.5 rounded-xl text-[11px] sm:text-xs font-black flex items-center gap-1 transition shadow ${
+                      activeConversation?.isPaused
+                        ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 ring-2 ring-amber-400/50'
+                        : 'bg-[#111B21] hover:bg-[#2A3942] text-emerald-400 border border-emerald-500/40'
+                    }`}
+                  >
+                    <span>{activeConversation?.isPaused ? '▶' : '⏸'}</span>
+                    <span className="hidden sm:inline">{activeConversation?.isPaused ? 'Reanudar IA' : 'Pausar IA'}</span>
+                  </button>
+
                   <div className="relative">
                     <button
+                      type="button"
                       onClick={() => setShowBrochurePicker(!showBrochurePicker)}
-                      className="px-2.5 py-1.5 rounded-xl bg-[#202C33] hover:bg-[#2A3942] text-amber-300 border border-amber-500/30 text-xs font-bold flex items-center gap-1.5 transition"
-                      title="Enviar Plan de Estudios, Horario o Imagen del Pool a este aspirante"
+                      className="p-2 sm:px-2.5 sm:py-1.5 rounded-xl bg-[#111B21] hover:bg-[#2A3942] text-amber-300 border border-amber-500/30 text-xs font-bold flex items-center gap-1 transition"
+                      title="Enviar recurso del Pool"
                     >
-                      <i data-lucide="file-text" className="w-3.5 h-3.5 text-amber-400"></i>
-                      <span className="hidden md:inline">Enviar del Pool</span>
+                      <span>📎</span>
+                      <span className="hidden xl:inline">Pool</span>
                     </button>
-
-                    {/* Menú Flotante de Selección de Recurso del Pool */}
                     {showBrochurePicker && (
-                      <div className="absolute right-0 top-11 w-80 bg-[#111B21] border border-[#222E35] rounded-2xl shadow-2xl p-2 z-50 space-y-1">
+                      <div className="absolute right-0 top-11 w-72 sm:w-80 bg-[#111B21] border border-[#222E35] rounded-2xl shadow-2xl p-2 z-50 space-y-1">
                         <div className="px-2 py-1 text-[11px] font-bold text-slate-400 flex items-center justify-between border-b border-slate-800 pb-1.5">
-                          <span>Seleccionar Recurso del Pool Multimedia:</span>
-                          <button onClick={() => setShowBrochurePicker(false)} className="hover:text-white">✕</button>
+                          <span>Seleccionar Recurso del Pool:</span>
+                          <button type="button" onClick={() => setShowBrochurePicker(false)} className="hover:text-white">✕</button>
                         </div>
                         <div className="max-h-64 overflow-y-auto space-y-1 pt-1">
                           {brochures.map(b => (
-                            <button
-                              key={b.id}
-                              onClick={() => handleSendBrochureQuick(b.id)}
-                              className="w-full text-left p-2 rounded-xl hover:bg-[#202C33] text-xs text-slate-200 flex items-center justify-between group transition gap-2"
-                            >
+                            <button key={b.id} type="button" onClick={() => handleSendBrochureQuick(b.id)} className="w-full text-left p-2 rounded-xl hover:bg-[#202C33] text-xs text-slate-200 flex items-center justify-between gap-2">
                               <span className="truncate font-medium">{b.titulo || b.carrera}</span>
-                              <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono shrink-0 ${
-                                b.tipo_archivo === 'imagen'
-                                  ? 'bg-sky-950 text-sky-300 border border-sky-500/30'
-                                  : 'bg-amber-950 text-amber-300 border border-amber-500/30'
-                              }`}>
-                                {b.tipo_archivo === 'imagen' ? 'IMG' : 'PDF'}
-                              </span>
+                              <span className="text-[9px] px-1.5 py-0.5 rounded font-mono bg-amber-950 text-amber-300 shrink-0">{b.tipo_archivo === 'imagen' ? 'IMG' : 'PDF'}</span>
                             </button>
                           ))}
                         </div>
@@ -2482,26 +2895,14 @@ function App() {
                     )}
                   </div>
 
-                  {/* Toggle Ficha 11 Datos IA (Drawer) */}
                   <button
-                    onClick={() => setShowFichaDrawer(!showFichaDrawer)}
-                    className={`p-2 rounded-xl text-xs font-bold transition ${
-                      showFichaDrawer
-                        ? 'bg-purple-600 text-white shadow'
-                        : 'bg-[#202C33] hover:bg-[#2A3942] text-purple-300 border border-purple-500/30'
-                    }`}
-                    title="Ver Ficha de 11 Datos IA y Expediente"
+                    type="button"
+                    onClick={() => setShowContactProfile(true)}
+                    className="p-2 sm:px-2.5 sm:py-1.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/35 text-emerald-300 border border-emerald-500/40 text-xs font-bold flex items-center gap-1 transition"
+                    title="Ver Info del Postulante, Kanban, Finalizar y Exportar ZIP"
                   >
-                    <i data-lucide="list-checks" className="w-4 h-4"></i>
-                  </button>
-
-                  {/* Reiniciar Chat */}
-                  <button
-                    onClick={handleResetSession}
-                    className="p-2 rounded-xl bg-[#202C33] hover:bg-red-950/60 hover:text-red-400 text-slate-400 transition"
-                    title="Reiniciar chat y limpiar memoria"
-                  >
-                    <i data-lucide="rotate-ccw" className="w-4 h-4"></i>
+                    <span>👤</span>
+                    <span className="hidden lg:inline">Perfil & ZIP</span>
                   </button>
                 </div>
               </div>
@@ -2523,83 +2924,50 @@ function App() {
                     <p className="text-[11px]">Escribe un mensaje abajo para interactuar directamente por WhatsApp.</p>
                   </div>
                 ) : (
-                  messages.map((m) => {
+                  messages.map((m, mIdx) => {
+                    const isSystem = m.sender === 'system' || m.roleCode === 'system';
                     const isUser = m.sender === 'user';
                     const isAdvisor = m.sender === 'advisor';
                     const isBot = m.sender === 'bot' || m.role === 'assistant';
 
+                    if (isSystem) {
+                      return (
+                        <div key={m.id || mIdx} className="flex justify-center my-2">
+                          <div className="px-3 py-1.5 rounded-xl bg-slate-900/90 border border-amber-500/30 text-[11px] text-amber-200/90 text-center max-w-[90%]">
+                            <span>{m.text}</span>
+                            <span className="ml-2 text-[9px] font-mono text-slate-400">{m.fullDateTime || m.time}</span>
+                          </div>
+                        </div>
+                      );
+                    }
+
                     return (
-                      <div
-                        key={m.id}
-                        className={`flex flex-col ${isUser ? 'items-start mr-auto' : 'items-end ml-auto'} max-w-[85%] md:max-w-[75%]`}
-                      >
-                        {/* Identificador de remitente para asesores humanos */}
-                        {isAdvisor && (
-                          <span className="text-[10px] text-purple-300 font-bold mb-0.5 flex items-center gap-1">
-                            <i data-lucide="user-check" className="w-3 h-3 text-purple-400"></i>
-                            {m.senderName || 'Asesor de Admisiones'}
-                          </span>
-                        )}
+                      <div key={m.id || mIdx} className={`flex flex-col ${isUser ? 'items-start mr-auto' : 'items-end ml-auto'} max-w-[88%] md:max-w-[75%]`}>
+                        <span className={`text-[10px] font-bold mb-0.5 flex items-center gap-1 ${isUser ? 'text-sky-300' : isAdvisor ? 'text-purple-300' : 'text-emerald-300'}`}>
+                          <span>{isUser ? '👤' : isAdvisor ? '🧑‍💼' : '🤖'}</span>
+                          <span>{m.displayAuthor || m.senderName || (isUser ? 'Aspirante' : isAdvisor ? 'Asesor UNID' : 'Metal-Uriel IA')}</span>
+                          <span className="text-[9px] font-normal text-slate-400">({m.roleLabel || (isUser ? 'Aspirante' : isAdvisor ? 'Asesor Humano' : 'Robot IA')})</span>
+                        </span>
 
-                        <div
-                          className={`rounded-2xl px-3.5 py-2 text-xs shadow-md space-y-1.5 leading-relaxed relative ${
-                            isUser
-                              ? 'bg-[#202C33] text-slate-100 rounded-tl-none border border-slate-700/40'
-                              : isAdvisor
-                              ? 'bg-[#1E293B] text-purple-100 rounded-tr-none border border-purple-500/40'
-                              : 'bg-[#005C4B] text-slate-100 rounded-tr-none shadow-emerald-950/20'
-                          }`}
-                        >
-                          <p className="whitespace-pre-wrap">{m.text}</p>
+                        <div className={`rounded-2xl px-3.5 py-2 text-xs shadow-md space-y-1.5 leading-relaxed relative ${isUser ? 'bg-[#202C33] text-slate-100 rounded-tl-none border border-slate-700/40' : isAdvisor ? 'bg-[#1E293B] text-purple-100 rounded-tr-none border border-purple-500/40' : 'bg-[#005C4B] text-slate-100 rounded-tr-none'}`}>
+                          <p className="whitespace-pre-wrap break-words select-text">{m.text}</p>
 
-                          {/* Card de Documento PDF o Imagen Adjunta del Pool Multimedia */}
                           {m.documentAttachment && (
-                            <div className="mt-2 p-2.5 rounded-xl bg-[#0A192F] border border-amber-500/40 space-y-1.5 shadow-inner">
+                            <div className="mt-2 p-2.5 rounded-xl bg-[#0A192F] border border-amber-500/40 space-y-1.5">
                               <div className="flex items-center justify-between gap-2">
-                                <span className="font-extrabold text-[11px] text-amber-300 flex items-center gap-1.5 truncate">
-                                  <span>{m.documentAttachment.tipo_archivo === 'imagen' ? '🖼️' : '📄'}</span>
-                                  <span className="truncate">{m.documentAttachment.title || 'Recurso Oficial UNID'}</span>
-                                </span>
-                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-950 text-amber-300 font-mono border border-amber-500/30 shrink-0">
-                                  {m.documentAttachment.tipo_archivo === 'imagen' ? 'IMAGEN' : 'PDF SEP'}
-                                </span>
+                                <span className="font-extrabold text-[11px] text-amber-300 truncate">{m.documentAttachment.tipo_archivo === 'imagen' ? '🖼️' : '📄'} {m.documentAttachment.title || 'Recurso Oficial UNID'}</span>
+                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-950 text-amber-300 font-mono shrink-0">{m.documentAttachment.tipo_archivo === 'imagen' ? 'IMAGEN' : 'PDF'}</span>
                               </div>
-                              {m.documentAttachment.tipo_archivo === 'imagen' && (m.documentAttachment.url || m.documentAttachment.pdfUrl || m.documentAttachment.url_recurso) && (
-                                <div className="rounded-lg overflow-hidden border border-slate-700 bg-slate-950">
-                                  <img
-                                    src={m.documentAttachment.url || m.documentAttachment.pdfUrl || m.documentAttachment.url_recurso}
-                                    alt={m.documentAttachment.title || 'Imagen UNID'}
-                                    className="w-full max-h-52 object-cover"
-                                  />
-                                </div>
-                              )}
-                              <p className="text-[10px] text-slate-300 leading-tight line-clamp-2">
-                                {m.documentAttachment.caption || 'Recurso oficial del Pool Multimedia UNID.'}
-                              </p>
-                              <a
-                                href={m.documentAttachment.url || m.documentAttachment.pdfUrl || m.documentAttachment.url_recurso || m.documentAttachment.downloadUrl}
-                                target="_blank"
-                                download={m.documentAttachment.fileName || 'Recurso_UNID'}
-                                className="mt-1 block text-center py-1 rounded-lg bg-gradient-to-r from-[#FFC72C] to-[#F59E0B] hover:from-[#F59E0B] hover:to-[#D97706] text-slate-950 font-black text-[10px] transition shadow"
-                              >
-                                {m.documentAttachment.tipo_archivo === 'imagen'
-                                  ? '🔍 Abrir / Descargar Imagen Oficial'
-                                  : '📥 Descargar / Abrir Documento (PDF)'}
+                              <a href={m.documentAttachment.url || m.documentAttachment.pdfUrl || m.documentAttachment.url_recurso || m.documentAttachment.downloadUrl} target="_blank" rel="noopener noreferrer" download={m.documentAttachment.fileName || 'Recurso_UNID'} className="mt-1 block text-center py-1 rounded-lg bg-gradient-to-r from-[#FFC72C] to-[#F59E0B] text-slate-950 font-black text-[10px]">
+                                📥 Abrir / Descargar Recurso
                               </a>
                             </div>
                           )}
 
-                          {/* Pie de mensaje con hora y palomitas */}
-                          <div className="flex items-center justify-end gap-1 text-[9px] text-slate-300/70 font-mono select-none">
-                            <span>{m.time}</span>
-                            {!isUser && (
-                              <span className="text-sky-300 font-bold ml-0.5">✓✓</span>
-                            )}
-                            {isBot && m.modelUsed && (
-                              <span className="text-[9px] text-amber-300/80 ml-1">
-                                • {m.modelUsed}
-                              </span>
-                            )}
+                          <div className="flex items-center justify-end gap-1.5 text-[9px] text-slate-300/75 font-mono select-none">
+                            <span>{m.fullDateTime || m.time}</span>
+                            {!isUser && <span className="text-sky-300 font-bold">✓✓</span>}
+                            {isBot && m.modelUsed && <span className="text-amber-300/80">• {m.modelUsed}</span>}
                           </div>
                         </div>
                       </div>
@@ -4505,45 +4873,14 @@ function App() {
           </div>
         )}
 
-        {/* ====== TAB 8: SOPORTE & ONBOARDING (TODOS LOS ROLES) ====== */}
+        {/* ====== TAB 8: CENTRO DE AYUDA, TUTORIAL & FAQ ====== */}
         {activeTab === 'onboarding' && (
-          <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="font-extrabold text-sm sm:text-base text-white">
-                  Guía de Onboarding & Soporte Técnico UNID
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Documentación interactiva para administradores y asesores de admisiones.
-                </p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="p-4 rounded-2xl bg-[#0F172A] border border-slate-800 space-y-2">
-                <span className="text-xl">🚀</span>
-                <h3 className="font-extrabold text-xs text-white">1. Inicio Rápido</h3>
-                <p className="text-[11px] text-slate-400">
-                  Abre ngrok con <code>npx ngrok http 3000</code> y vincula el webhook en Meta Developers con el token <code>unid_meta_verify_token_2026</code>.
-                </p>
-              </div>
-
-              <div className="p-4 rounded-2xl bg-[#0F172A] border border-slate-800 space-y-2">
-                <span className="text-xl">💬</span>
-                <h3 className="font-extrabold text-xs text-white">2. Human Handover</h3>
-                <p className="text-[11px] text-slate-400">
-                  En la Bandeja de Entrada, presiona <b>Pausar IA</b> para tomar control humano del chat y responder dudas específicas por WhatsApp.
-                </p>
-              </div>
-
-              <div className="p-4 rounded-2xl bg-[#0F172A] border border-slate-800 space-y-2">
-                <span className="text-xl">🛡️</span>
-                <h3 className="font-extrabold text-xs text-white">3. Multi-Model Failover</h3>
-                <p className="text-[11px] text-slate-400">
-                  El sistema conmuta automáticamente entre Gemini, Claude, OpenAI, DeepSeek y Groq si se agota la cuota, preservando todo el historial.
-                </p>
-              </div>
-            </div>
+          <div className="flex-1 overflow-hidden">
+            <HelpCenterFaq
+              healthFull={healthFull}
+              onNavigateTab={(tab) => setActiveTab(tab)}
+              onToast={showToast}
+            />
           </div>
         )}
       </div>
@@ -4822,6 +5159,69 @@ function App() {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* ================= BARRA INFERIOR RESPONSIVA (MÓVIL / TABLET) ================= */}
+      <nav aria-label="Navegación móvil" className="md:hidden fixed bottom-0 left-0 right-0 h-14 bg-[#111B21]/95 backdrop-blur border-t border-[#222E35] z-40 grid grid-cols-5 items-center px-1">
+        <button type="button" onClick={() => { setActiveTab('inbox'); setMobileShowChat(false); }} className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold ${activeTab === 'inbox' ? 'text-[#00A884]' : 'text-slate-400'}`}>
+          <span className="text-base leading-none">💬</span><span className="mt-0.5">Chats</span>
+        </button>
+        <button type="button" onClick={() => setActiveTab('kanban')} className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold ${activeTab === 'kanban' ? 'text-[#FFC72C]' : 'text-slate-400'}`}>
+          <span className="text-base leading-none">📋</span><span className="mt-0.5">Kanban</span>
+        </button>
+        <button type="button" onClick={() => setActiveTab('analytics')} className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold ${activeTab === 'analytics' ? 'text-sky-400' : 'text-slate-400'}`}>
+          <span className="text-base leading-none">📊</span><span className="mt-0.5">Métricas</span>
+        </button>
+        <button type="button" onClick={() => setActiveTab('onboarding')} className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold ${activeTab === 'onboarding' ? 'text-amber-400' : 'text-slate-400'}`}>
+          <span className="text-base leading-none">❓</span><span className="mt-0.5">Ayuda</span>
+        </button>
+        <button type="button" onClick={() => setShowMobileNavSheet(true)} className="flex flex-col items-center justify-center py-1 text-[10px] font-bold text-slate-300">
+          <span className="text-base leading-none">☰</span><span className="mt-0.5">Más</span>
+        </button>
+      </nav>
+
+      {showMobileNavSheet && (
+        <div className="md:hidden fixed inset-0 z-[60] bg-slate-950/80 backdrop-blur-sm flex items-end" onClick={(e) => { if (e.target === e.currentTarget) setShowMobileNavSheet(false); }}>
+          <div className="w-full rounded-t-3xl bg-[#111B21] border-t border-slate-700 p-5 space-y-3 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-black text-white">Más Secciones UNID</h3>
+              <button type="button" onClick={() => setShowMobileNavSheet(false)} className="min-h-[40px] min-w-[40px] rounded-xl bg-slate-800 text-slate-300 font-bold">✕</button>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <button type="button" onClick={() => { setActiveTab('brochures'); setShowMobileNavSheet(false); }} className="min-h-[44px] px-3 rounded-xl bg-slate-800 text-slate-100 font-bold text-left">📚 Pool Multimedia</button>
+              {isAdmin && (
+                <>
+                  <button type="button" onClick={() => { setActiveTab('database'); setShowMobileNavSheet(false); }} className="min-h-[44px] px-3 rounded-xl bg-slate-800 text-slate-100 font-bold text-left">🗄️ Base de Datos</button>
+                  <button type="button" onClick={() => { setActiveTab('prompt'); setShowMobileNavSheet(false); }} className="min-h-[44px] px-3 rounded-xl bg-slate-800 text-slate-100 font-bold text-left">🧠 Prompt IA</button>
+                  <button type="button" onClick={() => { setActiveTab('tenant_config'); setShowMobileNavSheet(false); }} className="min-h-[44px] px-3 rounded-xl bg-slate-800 text-slate-100 font-bold text-left">🏛️ Multi-Sede</button>
+                </>
+              )}
+              {isDesarrollador && (
+                <button type="button" onClick={() => { setActiveTab('users'); setShowMobileNavSheet(false); }} className="min-h-[44px] px-3 rounded-xl bg-slate-800 text-slate-100 font-bold text-left">👥 Usuarios RBAC</button>
+              )}
+              <button type="button" onClick={() => { setShowMobileNavSheet(false); handleLogout(); }} className="min-h-[44px] px-3 rounded-xl bg-rose-950/60 border border-rose-500/30 text-rose-300 font-bold text-left">🚪 Cerrar Sesión</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <ContactProfileDrawer
+        isOpen={showContactProfile}
+        onClose={() => setShowContactProfile(false)}
+        conversation={activeConversation}
+        authToken={authToken}
+        onRefreshData={async () => {
+          await Promise.all([loadConversations(true), loadAspirantes(true)]);
+          if (selectedChatPhone) loadFullConversationHistory(selectedChatPhone);
+        }}
+        onToast={showToast}
+      />
+
+      {uiToast && (
+        <div role="status" className={`fixed bottom-16 md:bottom-5 right-4 left-4 md:left-auto md:max-w-sm z-[80] px-4 py-3 rounded-2xl shadow-2xl border text-xs font-bold flex items-center justify-between gap-3 ${uiToast.type === 'error' ? 'bg-rose-950/95 border-rose-500/60 text-rose-100' : uiToast.type === 'info' ? 'bg-sky-950/95 border-sky-500/60 text-sky-100' : 'bg-emerald-950/95 border-emerald-500/60 text-emerald-100'}`}>
+          <span>{uiToast.message}</span>
+          <button type="button" onClick={() => setUiToast(null)} className="text-slate-300 hover:text-white shrink-0">✕</button>
         </div>
       )}
 
