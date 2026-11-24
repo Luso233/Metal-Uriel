@@ -336,6 +336,7 @@ describe('Integración HTTP Express — Blindaje RBAC, Helmet y Firma HMAC Webho
             body: statusPayloadStr
         });
         assert.equal(stRes.status, 200);
+        assert.equal(await stRes.text(), 'EVENT_RECEIVED');
         assert.equal(serverMod.whatsappMessageStatuses.get('wamid.TEST_STATUS_READ_001')?.status, 'read');
     });
 
