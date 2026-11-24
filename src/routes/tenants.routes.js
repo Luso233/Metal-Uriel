@@ -9,6 +9,7 @@ const { encryptSecret, decryptSecret, maskSecret } = require('../utils/crypto');
 const { generarCurp } = require('../utils/curp');
 const { authMiddleware, authorizeRoles } = require('../middlewares/auth');
 const { dispararNotificacionCorreo } = require('../services/mail.service');
+const { recordAuditEvent } = require('../services/audit.service');
 
 const router = express.Router();
 
@@ -62,6 +63,17 @@ router.post('/api/settings/smtp', authMiddleware, authorizeRoles('desarrollador'
         upsertEnvVar('SMTP_PASS', cleanPass);
         upsertEnvVar('ADMISSIONS_NOTIFICATION_EMAIL', config.TESTING_NOTIFICATION_EMAIL);
         fs.writeFileSync(ENV_PATH, envContent, 'utf-8');
+
+        await recordAuditEvent({
+            req,
+            categoria: 'API_KEYS',
+            accion: 'SMTP_UPDATE',
+            severidad: 'critical',
+            objetivoTipo: 'smtp_config',
+            objetivoId: cleanUser,
+            resumen: `Credenciales SMTP actualizadas (${cleanHost}:${cleanPort} • ${cleanUser})`,
+            detalle: { host: cleanHost, port: cleanPort, user: cleanUser, passwordRotated: Boolean(pass && String(pass).trim()) }
+        });
 
         res.json({ success: true, message: `Configuración SMTP guardada para ${cleanUser}.`, mode: 'smtp_live' });
     } catch (err) {
@@ -205,6 +217,23 @@ async function handleSaveTenantConfig(req, res) {
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `, [slug, foundBase.name, foundBase.estado, foundBase.region, whatsapp_phone_number_id || null, encryptedWaToken, meta_verify_token || config.VERIFY_TOKEN, email_notificaciones || null, custom_prompt || null, encryptedGeminiKey, encryptedOpenAiKey, activa !== undefined ? (activa ? 1 : 0) : 1]);
         }
+        const rotatedSecrets = [];
+        if (whatsapp_token && !whatsapp_token.includes('••••')) rotatedSecrets.push('WHATSAPP_TOKEN');
+        if (gemini_key && !gemini_key.includes('••••')) rotatedSecrets.push('GEMINI_API_KEY');
+        if (openai_key && !openai_key.includes('••••')) rotatedSecrets.push('OPENAI_API_KEY');
+
+        await recordAuditEvent({
+            req,
+            categoria: rotatedSecrets.length > 0 ? 'API_KEYS' : 'SEDES',
+            accion: 'TENANT_KEYS_UPDATE',
+            severidad: rotatedSecrets.length > 0 ? 'critical' : 'warning',
+            sedeId: slug,
+            objetivoTipo: 'sede',
+            objetivoId: slug,
+            resumen: `Configuración multi-sede guardada para "${slug}"${rotatedSecrets.length ? ` (llaves rotadas: ${rotatedSecrets.join(', ')})` : ''}`,
+            detalle: { slug, phoneIdUpdated: Boolean(whatsapp_phone_number_id), rotatedSecrets, activa: activa !== undefined ? Boolean(activa) : true }
+        });
+
         res.json({ success: true, message: `Configuración para ${slug} guardada y cifrada exitosamente.` });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });

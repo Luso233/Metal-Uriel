@@ -10,6 +10,7 @@ import ServerConnectionModal from './components/ServerConnectionModal.jsx';
 import ContactProfileDrawer from './components/ContactProfileDrawer.jsx';
 import HelpCenterFaq from './components/HelpCenterFaq.jsx';
 import MobilePairQrModal from './components/MobilePairQrModal.jsx';
+import AuditLogViewer from './components/AuditLogViewer.jsx';
 import {
   isNativeCapacitor,
   getServerUrl,
@@ -1506,6 +1507,14 @@ function App() {
   };
 
   const handleLogout = () => {
+    const tok = authToken || localStorage.getItem('metal_uriel_jwt');
+    if (tok) {
+      fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${tok}` },
+        keepalive: true
+      }).catch(() => {});
+    }
     localStorage.removeItem('metal_uriel_jwt');
     localStorage.removeItem('metal_uriel_user');
     setAuthToken(null);
@@ -1770,6 +1779,25 @@ function App() {
                 </svg>
                 <span className="absolute left-16 bg-[#111B21] text-xs px-2.5 py-1 rounded-md border border-[#222E35] text-white opacity-0 group-hover:opacity-100 transition whitespace-nowrap shadow-xl pointer-events-none z-50">
                   🤖 Personalidad Bot
+                </span>
+              </button>
+
+              {/* Bitácora de Auditoría del Sistema (Admin & Desarrollador) */}
+              <button
+                onClick={() => setActiveTab('audit')}
+                className={`w-11 h-11 rounded-xl flex items-center justify-center transition relative group ${
+                  activeTab === 'audit'
+                    ? 'bg-amber-500/20 text-amber-300 border border-amber-400/50 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-100 hover:bg-[#202C33]'
+                }`}
+                title="Bitácora de Auditoría (Logins, Usuarios, API Keys)"
+              >
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                  <path d="m9 12 2 2 4-4" />
+                </svg>
+                <span className="absolute left-16 bg-[#111B21] text-xs px-2.5 py-1 rounded-md border border-[#222E35] text-white opacity-0 group-hover:opacity-100 transition whitespace-nowrap shadow-xl pointer-events-none z-50">
+                  🛡️ Auditoría del Sistema
                 </span>
               </button>
             </>
@@ -2118,13 +2146,22 @@ function App() {
                     </button>
 
                     {!isUsuario && (
-                      <button
-                        type="button"
-                        onClick={() => { setShowToolsMenu(false); handleExportExcel(); }}
-                        className="w-full text-left px-3 py-2 rounded-xl hover:bg-[#202C33] text-slate-200 font-semibold flex items-center gap-2"
-                      >
-                        <span>📥 Exportar Base (Excel / CSV)</span>
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => { setShowToolsMenu(false); setActiveTab('audit'); }}
+                          className="w-full text-left px-3 py-2 rounded-xl hover:bg-[#202C33] text-amber-300 font-semibold flex items-center gap-2"
+                        >
+                          <span>🛡️ Bitácora de Auditoría</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setShowToolsMenu(false); handleExportExcel(); }}
+                          className="w-full text-left px-3 py-2 rounded-xl hover:bg-[#202C33] text-slate-200 font-semibold flex items-center gap-2"
+                        >
+                          <span>📥 Exportar Base (Excel / CSV)</span>
+                        </button>
+                      </>
                     )}
 
                     {isDesarrollador && (
@@ -4600,6 +4637,13 @@ function App() {
             />
           </div>
         )}
+
+        {/* ====== TAB 9: BITÁCORA DE AUDITORÍA DEL SISTEMA (ADMIN & DESARROLLADOR) ====== */}
+        {activeTab === 'audit' && isAdmin && (
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <AuditLogViewer authToken={authToken} onToast={showToast} />
+          </div>
+        )}
         </div>
 
         {/* ================= BARRA INFERIOR RESPONSIVA EN FLUJO FLEX (ZERO OVERLAP) ================= */}
@@ -4971,6 +5015,9 @@ function App() {
               </button>
               {isAdmin && (
                 <>
+                  <button type="button" onClick={() => { setActiveTab('audit'); setShowMobileNavSheet(false); }} className="min-h-[44px] px-3 rounded-xl bg-amber-950/60 border border-amber-500/30 text-amber-200 font-bold text-left">
+                    🛡️ Auditoría Sistema
+                  </button>
                   <button type="button" onClick={() => { setActiveTab('database'); setShowMobileNavSheet(false); }} className="min-h-[44px] px-3 rounded-xl bg-slate-800/80 text-slate-100 font-bold text-left">
                     🗄️ Base de Datos
                   </button>
@@ -4983,7 +5030,7 @@ function App() {
                 </>
               )}
               {isDesarrollador && (
-                <button type="button" onClick={() => { setActiveTab('users'); setShowMobileNavSheet(false); }} className="min-h-[44px] px-3 rounded-xl bg-slate-800/80 text-slate-100 font-bold text-left">
+                <button type="button" onClick={() => { setActiveTab('users_crud'); loadUsers(); setShowMobileNavSheet(false); }} className="min-h-[44px] px-3 rounded-xl bg-slate-800/80 text-slate-100 font-bold text-left">
                   👥 Usuarios RBAC
                 </button>
               )}

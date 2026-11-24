@@ -12,10 +12,11 @@ const { authMiddleware, authorizeRoles } = require('../middlewares/auth');
 const { getBrochures } = require('../services/pool.service');
 const { dispararNotificacionCorreo } = require('../services/mail.service');
 const { seedDemoLeads } = require('../services/admissions.service');
+const { recordAuditEvent } = require('../services/audit.service');
 
 const router = express.Router();
 
-router.post('/api/aspirantes/seed', authMiddleware, authorizeRoles('desarrollador'), async (_req, res) => {
+router.post('/api/aspirantes/seed', authMiddleware, authorizeRoles('desarrollador'), async (req, res) => {
     try {
         const connection = await getPool().getConnection();
         await connection.query('DELETE FROM aspirantes');
@@ -25,13 +26,21 @@ router.post('/api/aspirantes/seed', authMiddleware, authorizeRoles('desarrollado
         conversationMemory.clear();
         userSessionState.clear();
         processedMessageIds.clear();
+        await recordAuditEvent({
+            req,
+            categoria: 'BASE_DATOS',
+            accion: 'DB_SEED_DEMO',
+            severidad: 'warning',
+            objetivoTipo: 'base_datos',
+            resumen: 'Base de datos poblada con 5 prospectos demo institucionales'
+        });
         res.json({ success: true, message: 'Datos demo de alta fidelidad cargados con éxito (5 prospectos).' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-async function handleClearAllDatabaseAndCache(_req, res) {
+async function handleClearAllDatabaseAndCache(req, res) {
     try {
         const connection = await getPool().getConnection();
         await connection.query('DELETE FROM aspirantes');
@@ -45,6 +54,14 @@ async function handleClearAllDatabaseAndCache(_req, res) {
         userSessionState.clear();
         processedMessageIds.clear();
         resetTotalConversationsStarted();
+        await recordAuditEvent({
+            req,
+            categoria: 'BASE_DATOS',
+            accion: 'DB_CLEAR_ALL',
+            severidad: 'critical',
+            objetivoTipo: 'base_datos',
+            resumen: 'Vaciado total de tablas aspirantes, historial_conversaciones y caché RAM (auditoría preservada)'
+        });
         res.json({ success: true, message: 'Base de datos (aspirantes e historial) y memoria caché vaciadas al 100%.' });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -104,6 +121,14 @@ router.get('/api/aspirantes/export', authMiddleware, authorizeRoles('desarrollad
                 r.es_foraneo ? 'SI (Online)' : 'NO (Campeche)'
             ].map(escapeCsv).join(','));
         }
+        await recordAuditEvent({
+            req,
+            categoria: 'ASPIRANTES',
+            accion: 'LEADS_CSV_EXPORT',
+            severidad: 'info',
+            objetivoTipo: 'aspirantes',
+            resumen: `Descarga CSV de base de aspirantes (${rows.length} registros)`
+        });
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', `attachment; filename=aspirantes_unid_${new Date().toISOString().slice(0, 10)}.csv`);
         res.status(200).send('\uFEFF' + csvRows.join('\r\n'));
@@ -152,6 +177,17 @@ router.patch('/api/aspirantes/:id/status', authMiddleware, async (req, res) => {
                 asesor: req.user?.displayName || 'Asesor de Admisiones UNID'
             }).catch(console.error);
         }
+        await recordAuditEvent({
+            req,
+            categoria: 'ASPIRANTES',
+            accion: 'LEAD_STATUS_CHANGE',
+            severidad: estado === 'inscrito' ? 'warning' : 'info',
+            sedeId: prevLead?.sede_id || req.user?.sede_id || null,
+            objetivoTipo: 'aspirante',
+            objetivoId: String(id),
+            resumen: `Etapa Kanban actualizada para ${prevLead?.nombre_completo || '#' + id}: ${prevLead?.estado_prospecto || 'nuevo'} → ${estado}`,
+            detalle: { aspiranteId: Number(id), prevStatus: prevLead?.estado_prospecto || null, nextStatus: estado }
+        });
         res.json({ success: true, id: Number(id), estado, emailTriggered });
     } catch (err) {
         res.status(500).json({ error: 'Error actualizando estado: ' + err.message });
@@ -179,13 +215,23 @@ router.patch('/api/aspirantes/:id/archive', authMiddleware, async (req, res) => 
 router.delete('/api/aspirantes/:id', authMiddleware, authorizeRoles('desarrollador', 'administrador'), async (req, res) => {
     try {
         const { id } = req.params;
-        if (req.user.rol !== 'desarrollador' && req.user.sede_id) {
-            const [rows] = await getPool().query('SELECT sede_id FROM aspirantes WHERE id = ?', [id]);
-            if (rows[0]?.sede_id && rows[0].sede_id !== req.user.sede_id) {
-                return res.status(403).json({ error: 'No tienes permiso para eliminar prospectos de otra sede.' });
-            }
+        const [rows] = await getPool().query('SELECT id, sede_id, nombre_completo, telefono_celular, estado_prospecto FROM aspirantes WHERE id = ? LIMIT 1', [id]);
+        const target = rows[0] || null;
+        if (req.user.rol !== 'desarrollador' && req.user.sede_id && target?.sede_id && target.sede_id !== req.user.sede_id) {
+            return res.status(403).json({ error: 'No tienes permiso para eliminar prospectos de otra sede.' });
         }
         await getPool().execute('DELETE FROM aspirantes WHERE id = ?', [id]);
+        await recordAuditEvent({
+            req,
+            categoria: 'ASPIRANTES',
+            accion: 'LEAD_DELETE',
+            severidad: 'critical',
+            sedeId: target?.sede_id || req.user?.sede_id || null,
+            objetivoTipo: 'aspirante',
+            objetivoId: String(id),
+            resumen: `Expediente de aspirante eliminado: ${target ? `${target.nombre_completo} (${target.telefono_celular})` : `ID #${id}`}`,
+            detalle: target ? { aspiranteId: target.id, nombre: target.nombre_completo, telefono: target.telefono_celular, estadoPrevio: target.estado_prospecto } : { aspiranteId: Number(id) }
+        });
         res.json({ success: true, id: Number(id) });
     } catch (err) {
         res.status(500).json({ error: 'Error eliminando prospecto: ' + err.message });

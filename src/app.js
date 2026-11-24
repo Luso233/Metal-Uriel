@@ -11,6 +11,7 @@ const aspirantesRoutes = require('./routes/aspirantes.routes');
 const chatRoutes = require('./routes/chat.routes');
 const tenantsRoutes = require('./routes/tenants.routes');
 const webhookRoutes = require('./routes/webhook.routes');
+const auditRoutes = require('./routes/audit.routes');
 const { router: setupRoutes } = require('./routes/setup.routes');
 
 const app = express();
@@ -114,6 +115,7 @@ app.use(aspirantesRoutes);
 app.use(chatRoutes);
 app.use(tenantsRoutes);
 app.use(webhookRoutes);
+app.use(auditRoutes);
 app.use(setupRoutes);
 
 // En modo Headless, devolver 404 JSON limpio para rutas web no encontradas

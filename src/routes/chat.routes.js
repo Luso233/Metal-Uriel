@@ -21,6 +21,7 @@ const { getActiveCicloEscolar, getActivePoolItems, getBrochures, buildAttachment
 const { processChatMessage, guardarMensajeHistorialBD } = require('../services/admissions.service');
 const { sendWhatsAppMessage } = require('../services/whatsapp.service');
 const { dispararNotificacionCorreo } = require('../services/mail.service');
+const { recordAuditEvent } = require('../services/audit.service');
 const setupUtils = require('../../lib/setup-utils');
 const {
     normalizePhoneCanonical,
@@ -313,12 +314,23 @@ router.get('/api/models', authMiddleware, (_req, res) => {
     });
 });
 
-router.post('/api/models/active', authMiddleware, authorizeRoles('desarrollador'), (req, res) => {
+router.post('/api/models/active', authMiddleware, authorizeRoles('desarrollador'), async (req, res) => {
     const { modelId } = req.body;
     if (!ALL_SUPPORTED_MODELS.find(m => m.id === modelId)) {
         return res.status(400).json({ error: 'Modelo no reconocido.' });
     }
+    const prevModel = getActiveModelId();
     setActiveModelId(modelId);
+    await recordAuditEvent({
+        req,
+        categoria: 'IA_MODELO',
+        accion: 'MODEL_CHANGE',
+        severidad: 'warning',
+        objetivoTipo: 'modelo_ia',
+        objetivoId: modelId,
+        resumen: `Modelo de IA global actualizado: ${prevModel} → ${modelId}`,
+        detalle: { prevModel, nextModel: modelId }
+    });
     res.json({ success: true, activeModel: getActiveModelId() });
 });
 
@@ -326,17 +338,34 @@ router.get('/api/prompt', authMiddleware, authorizeRoles('desarrollador', 'admin
     res.json({ prompt: getActivePrompt(), presets: PROMPT_PRESETS });
 });
 
-router.post('/api/prompt', authMiddleware, authorizeRoles('desarrollador', 'administrador'), (req, res) => {
+router.post('/api/prompt', authMiddleware, authorizeRoles('desarrollador', 'administrador'), async (req, res) => {
     const { prompt } = req.body;
     if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
         return res.status(400).json({ error: 'El prompt no puede estar vacío.' });
     }
     setActivePrompt(prompt);
+    await recordAuditEvent({
+        req,
+        categoria: 'IA_MODELO',
+        accion: 'PROMPT_UPDATE',
+        severidad: 'warning',
+        objetivoTipo: 'system_prompt',
+        resumen: `Personalidad / System Prompt actualizado (${prompt.trim().length} caracteres)`,
+        detalle: { length: prompt.trim().length, preview: prompt.trim().slice(0, 140) }
+    });
     res.json({ success: true, message: 'Personalidad y prompt actualizados con éxito.', prompt: getActivePrompt() });
 });
 
-router.post('/api/prompt/reset', authMiddleware, authorizeRoles('desarrollador', 'administrador'), (_req, res) => {
+router.post('/api/prompt/reset', authMiddleware, authorizeRoles('desarrollador', 'administrador'), async (req, res) => {
     setActivePrompt(PROMPT_PRESETS[0].prompt);
+    await recordAuditEvent({
+        req,
+        categoria: 'IA_MODELO',
+        accion: 'PROMPT_RESET',
+        severidad: 'warning',
+        objetivoTipo: 'system_prompt',
+        resumen: 'System Prompt restaurado a la versión oficial UNID por defecto'
+    });
     res.json({ success: true, message: 'Prompt restaurado al original.', prompt: getActivePrompt() });
 });
 
@@ -755,6 +784,18 @@ router.post('/api/conversations/:phone/finalize', authMiddleware, async (req, re
             dispararNotificacionCorreo('CIERRE_INSCRITO', { lead: leadRecord, asesor: actor }).catch(() => {});
         }
 
+        await recordAuditEvent({
+            req,
+            categoria: 'ASPIRANTES',
+            accion: 'LEAD_FINALIZE_MANUAL',
+            severidad: isEnrolled ? 'warning' : 'info',
+            sedeId: leadRecord?.sede_id || targetSede,
+            objetivoTipo: 'aspirante',
+            objetivoId: canonical,
+            resumen: `Proceso finalizado manualmente (${estado.toUpperCase()}) para ${leadRecord?.nombre_completo || canonical}`,
+            detalle: { estado, archivar, notasLength: notasAsesor.length }
+        });
+
         res.json({
             success: true,
             message: isEnrolled
@@ -859,6 +900,18 @@ router.get('/api/conversations/:phone/export-zip', authMiddleware, async (req, r
             messages: detail.messages,
             completeness: detail.completeness,
             attachmentFiles
+        });
+
+        await recordAuditEvent({
+            req,
+            categoria: 'ASPIRANTES',
+            accion: 'CHAT_ZIP_EXPORT',
+            severidad: 'info',
+            sedeId: detail.aspirante?.sede_id || req.user?.sede_id || null,
+            objetivoTipo: 'conversacion',
+            objetivoId: detail.canonicalPhone,
+            resumen: `Exportación .ZIP de conversación auditada: ${detail.name} (${detail.messages.length} mensajes)`,
+            detalle: { fileName, totalMessages: detail.messages.length, attachmentsCount: attachmentFiles.length }
         });
 
         res.setHeader('Content-Type', 'application/zip');

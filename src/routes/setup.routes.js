@@ -13,6 +13,7 @@ const { initializeDatabase, reloadRuntimeConfig } = require('../db/init');
 const { maskSecret } = require('../utils/crypto');
 const { normalizeRole, getRoleTitle, authMiddleware, authorizeRoles } = require('../middlewares/auth');
 const { enviarAlertaSistema } = require('../services/mail.service');
+const { recordAuditEvent, diffSensitiveKeys } = require('../services/audit.service');
 const setupUtils = require('../../lib/setup-utils');
 
 const router = express.Router();
@@ -243,15 +244,50 @@ router.post('/api/setup/complete', setupAccessGuard, async (req, res) => {
             return res.status(400).json({ ok: false, error: `Error MariaDB: ${dbErr.message}`, errors: { DB_HOST: dbErr.message } });
         }
 
-        const envContent = setupUtils.buildEnvFileContent({ ...raw, WHATSAPP_PHONE_NUMBER_ID: raw.SKIP_WHATSAPP ? '' : raw.WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_TOKEN: raw.SKIP_WHATSAPP ? '' : raw.WHATSAPP_TOKEN });
+        const envTrackedKeys = [
+            'GEMINI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY',
+            'GROQ_API_KEY', 'WHATSAPP_TOKEN', 'WHATSAPP_PHONE_NUMBER_ID', 'META_APP_SECRET',
+            'META_VERIFY_TOKEN', 'OLLAMA_API_KEY', 'SMTP_PASS', 'JWT_SECRET',
+            'ENCRYPTION_MASTER_KEY', 'DB_PASSWORD'
+        ];
+        const prevEnvSnapshot = {};
+        for (const k of envTrackedKeys) prevEnvSnapshot[k] = process.env[k] || '';
+
+        const effectiveAfter = {
+            ...raw,
+            WHATSAPP_PHONE_NUMBER_ID: raw.SKIP_WHATSAPP ? '' : raw.WHATSAPP_PHONE_NUMBER_ID,
+            WHATSAPP_TOKEN: raw.SKIP_WHATSAPP ? '' : raw.WHATSAPP_TOKEN
+        };
+        const envContent = setupUtils.buildEnvFileContent(effectiveAfter);
         fs.writeFileSync(ENV_PATH, envContent, { encoding: 'utf8', mode: 0o600 });
         reloadRuntimeConfig();
+
+        const keyDiffs = diffSensitiveKeys(prevEnvSnapshot, effectiveAfter, envTrackedKeys);
 
         const primaryCampus = raw.PRIMARY_CAMPUS || 'campeche';
         const customDevUser = (!isReconfigure || (raw.DEV_EMAIL && raw.DEV_PASSWORD)) ? { correo_institucional: String(raw.DEV_EMAIL || req.user?.correo_institucional || '').trim().toLowerCase(), nombre_completo: String(raw.DEV_NAME || req.user?.displayName || 'Desarrollador Metal-Uriel').trim(), matricula: String(raw.DEV_EMAIL || '').split('@')[0], password: raw.DEV_PASSWORD || '' } : null;
         const customAdminUser = (raw.ADMIN_SEDE_EMAIL && raw.ADMIN_SEDE_PASSWORD) ? { correo_institucional: String(raw.ADMIN_SEDE_EMAIL).trim().toLowerCase(), nombre_completo: String(raw.ADMIN_SEDE_NAME || 'Jefatura de Admisiones UNID').trim(), matricula: String(raw.ADMIN_SEDE_EMAIL).split('@')[0], password: raw.ADMIN_SEDE_PASSWORD } : null;
 
         await initializeDatabase({ rebuildPool: true, throwOnError: true, primaryCampus, syncPrimaryCampusCreds: true, customDevUser, customAdminUser });
+
+        await recordAuditEvent({
+            req,
+            categoria: 'API_KEYS',
+            accion: isReconfigure ? 'API_KEYS_UPDATE' : 'INITIAL_SETUP_COMPLETE',
+            severidad: 'critical',
+            sedeId: primaryCampus,
+            objetivoTipo: 'env_config',
+            objetivoId: '.env',
+            resumen: isReconfigure
+                ? `Configuración y API Keys actualizadas (${keyDiffs.length} llaves modificadas: ${keyDiffs.map(d => d.key).join(', ') || 'parámetros generales'})`
+                : `Instalación inicial Plug & Play completada (${keyDiffs.length} credenciales configuradas)`,
+            detalle: {
+                mode: isReconfigure ? 'reconfigure' : 'first_run',
+                primaryCampus,
+                ollamaEnabled: Boolean(raw.OLLAMA_ENABLED),
+                changedKeys: keyDiffs
+            }
+        });
 
         let sessionToken = null;
         let sessionUser = null;
