@@ -624,6 +624,171 @@ function HelpCenterFaq({ healthFull, onNavigateTab, onToast }) {
   );
 }
 
+function MobilePairQrModal({ isOpen, onClose, authToken, onToast }) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [pairData, setPairData] = useState(null);
+  const [selectedUrl, setSelectedUrl] = useState('');
+  const [customUrl, setCustomUrl] = useState('');
+  const [useCustomUrl, setUseCustomUrl] = useState(false);
+  const [remainingSec, setRemainingSec] = useState(0);
+  const [pairStatus, setPairStatus] = useState('idle');
+  const [claimedDevice, setClaimedDevice] = useState('');
+  const pollRef = useRef(null);
+  const tickRef = useRef(null);
+
+  const stopTimers = () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    if (tickRef.current) clearInterval(tickRef.current);
+    pollRef.current = null;
+    tickRef.current = null;
+  };
+
+  const generateQr = async (overrideUrl = '') => {
+    stopTimers();
+    setLoading(true);
+    setError('');
+    setPairStatus('idle');
+    setClaimedDevice('');
+    try {
+      const res = await fetch('/api/auth/mobile-pair/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
+        body: JSON.stringify(overrideUrl ? { serverUrl: overrideUrl } : {})
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'No se pudo generar el código QR.');
+      setPairData(data);
+      setSelectedUrl(data.serverUrl);
+      setRemainingSec(data.expiresInSec || 120);
+      setPairStatus('pending');
+
+      const expMs = new Date(data.expiresAt).getTime();
+      tickRef.current = setInterval(() => {
+        const left = Math.max(0, Math.ceil((expMs - Date.now()) / 1000));
+        setRemainingSec(left);
+        if (left <= 0) { setPairStatus('expired'); stopTimers(); }
+      }, 1000);
+
+      pollRef.current = setInterval(async () => {
+        try {
+          const stRes = await fetch(`/api/auth/mobile-pair/status/${encodeURIComponent(data.code)}`, {
+            headers: authToken ? { Authorization: `Bearer ${authToken}` } : {}
+          });
+          if (!stRes.ok) return;
+          const st = await stRes.json();
+          if (st.status === 'claimed') {
+            setPairStatus('claimed');
+            setClaimedDevice(st.claimedByDevice || 'Celular Android');
+            stopTimers();
+            onToast && onToast('✅ ¡Celular vinculado e iniciado con éxito!');
+          } else if (st.status === 'expired') {
+            setPairStatus('expired');
+            stopTimers();
+          }
+        } catch (_) {}
+      }, 2000);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen) generateQr();
+    else stopTimers();
+    return () => stopTimers();
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e) => { if (e.key === 'Escape' && onClose) onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) return null;
+  const qrDataUri = pairData && pairData.qrSvg ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(pairData.qrSvg)}` : '';
+
+  return (
+    <div className="fixed inset-0 z-[72] bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto" role="dialog" aria-modal="true" onClick={(e) => { if (e.target === e.currentTarget && onClose) onClose(); }}>
+      <div className="w-full max-w-lg rounded-3xl bg-[#0F172A] border border-amber-400/40 shadow-2xl p-5 sm:p-6 space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-[#FFC72C] to-emerald-500 flex items-center justify-center text-xl shadow shrink-0">📱</div>
+            <div>
+              <h2 className="text-base sm:text-lg font-black text-white">Vincular Celular por Código QR</h2>
+              <p className="text-xs text-slate-400">Escanea desde tu app Metal-Uriel Android o cámara del teléfono</p>
+            </div>
+          </div>
+          <button type="button" onClick={onClose} className="min-h-[44px] min-w-[44px] rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm">✕</button>
+        </div>
+
+        <div className="rounded-2xl bg-[#0B1220] border border-slate-800 p-4 flex flex-col items-center text-center space-y-3">
+          {loading ? (
+            <div className="w-56 h-56 rounded-2xl bg-slate-900 flex flex-col items-center justify-center gap-2 text-xs text-slate-300"><span className="text-2xl animate-pulse">📡</span><span>Generando QR...</span></div>
+          ) : pairStatus === 'claimed' ? (
+            <div className="w-full py-8 px-4 rounded-2xl bg-emerald-950/50 border border-emerald-500/40 space-y-2">
+              <div className="text-4xl">✅</div>
+              <h3 className="text-base font-black text-emerald-300">¡Celular Vinculado con Éxito!</h3>
+              <p className="text-xs text-emerald-100/80">Sesión iniciada en <strong>{claimedDevice}</strong>.</p>
+              <button type="button" onClick={() => generateQr(selectedUrl)} className="mt-2 min-h-[42px] px-4 rounded-xl bg-emerald-500 text-slate-950 font-black text-xs">📱 Vincular otro dispositivo</button>
+            </div>
+          ) : qrDataUri ? (
+            <>
+              <div className="relative p-3 rounded-2xl bg-white shadow-xl">
+                <img src={qrDataUri} alt="Código QR Metal-Uriel" className={`w-56 h-56 sm:w-64 sm:h-64 block ${pairStatus === 'expired' ? 'opacity-20 blur-[2px]' : ''}`} />
+                {pairStatus === 'expired' && (
+                  <div className="absolute inset-0 flex items-center justify-center p-4">
+                    <button type="button" onClick={() => generateQr(useCustomUrl ? customUrl : selectedUrl)} className="min-h-[44px] px-4 rounded-xl bg-amber-400 text-slate-950 font-black text-xs shadow-lg">🔄 Generar nuevo QR</button>
+                  </div>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center justify-center gap-2 text-xs">
+                <span className="px-2.5 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-mono font-bold">{pairData.serverUrl}</span>
+                {pairStatus === 'pending' && <span className="px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300 font-mono font-bold">⏳ {remainingSec}s</span>}
+                {pairData.pinFormatted && <span className="px-2.5 py-1 rounded-full bg-sky-500/15 border border-sky-500/30 text-sky-300 font-mono font-bold">PIN: {pairData.pinFormatted}</span>}
+              </div>
+            </>
+          ) : null}
+          {error && <p role="alert" className="text-xs font-bold text-rose-400">❌ {error}</p>}
+        </div>
+
+        <ol className="text-xs text-slate-300 space-y-1 bg-slate-900/70 rounded-2xl p-3.5 border border-slate-800 list-decimal list-inside">
+          <li>Abre <strong className="text-white">Metal-Uriel UNID</strong> en tu celular (o la cámara nativa).</li>
+          <li>Toca <strong className="text-amber-300">📷 Escanear QR en Vivo</strong>.</li>
+          <li>Apunta a este código para iniciar sesión sin teclear IP ni clave.</li>
+        </ol>
+
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-bold text-slate-300">Dirección en el QR</span>
+            <button type="button" onClick={() => setUseCustomUrl(v => !v)} className="text-[11px] font-bold text-sky-300 hover:underline">
+              {useCustomUrl ? 'Usar IP LAN detectada' : 'Usar túnel HTTPS'}
+            </button>
+          </div>
+          {useCustomUrl ? (
+            <div className="flex gap-2">
+              <input type="url" value={customUrl} onChange={e => setCustomUrl(e.target.value)} placeholder="https://tu-tunel.trycloudflare.com" className="flex-1 min-h-[42px] rounded-xl bg-[#0B1220] border border-slate-700 px-3 text-xs font-mono text-white" />
+              <button type="button" onClick={() => generateQr(customUrl)} className="min-h-[42px] px-3 rounded-xl bg-amber-400 text-slate-950 font-black text-xs">Actualizar</button>
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <select value={selectedUrl} onChange={e => { setSelectedUrl(e.target.value); generateQr(e.target.value); }} className="flex-1 min-h-[42px] rounded-xl bg-[#0B1220] border border-slate-700 px-3 text-xs font-mono text-emerald-300">
+                {(pairData && pairData.availableUrls && pairData.availableUrls.length ? pairData.availableUrls : [selectedUrl || 'http://192.168.1.70:3000']).map(u => (
+                  <option key={u} value={u}>{u}</option>
+                ))}
+              </select>
+              <button type="button" disabled={loading} onClick={() => generateQr(selectedUrl)} className="min-h-[42px] px-3 rounded-xl bg-slate-800 border border-slate-600 text-slate-100 font-bold text-xs">🔄</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   // ================= ESTADOS PRINCIPALES =================
   const [activeTab, setActiveTab] = useState('inbox'); // 'inbox' (default) | 'kanban' | 'analytics' | 'brochures' | 'database' | 'inspector' | 'prompt' | 'tenant_config' | 'onboarding'
@@ -640,6 +805,7 @@ function App() {
   const [mobileShowChat, setMobileShowChat] = useState(false);
   const [showToolsMenu, setShowToolsMenu] = useState(false);
   const [showMobileNavSheet, setShowMobileNavSheet] = useState(false);
+  const [showPairQrModal, setShowPairQrModal] = useState(false);
   const [uiToast, setUiToast] = useState(null);
   const toastTimerRef = useRef(null);
   const showToast = (message, type = 'success') => {
@@ -647,6 +813,37 @@ function App() {
     setUiToast({ message, type });
     toastTimerRef.current = setTimeout(() => setUiToast(null), 4200);
   };
+
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const pairCode = params.get('pair');
+      if (!pairCode) return;
+      params.delete('pair');
+      const qs = params.toString();
+      window.history.replaceState({}, '', `${window.location.pathname}${qs ? `?${qs}` : ''}${window.location.hash}`);
+      fetch('/api/auth/mobile-pair/claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: pairCode, deviceLabel: 'Navegador Móvil (QR)' })
+      })
+        .then(r => r.json().then(d => ({ ok: r.ok, data: d })))
+        .then(({ ok, data }) => {
+          if (ok && data.success && data.token && data.user) {
+            localStorage.setItem('metal_uriel_jwt', data.token);
+            localStorage.setItem('metal_uriel_user', JSON.stringify(data.user));
+            setAuthToken(data.token);
+            setAuthUser(data.user);
+            setShowLoginModal(false);
+            setActiveTab('inbox');
+            showToast(`✅ Sesión vinculada como ${data.user.displayName || data.user.correo_institucional}`);
+          } else {
+            showToast(data.error || 'El código QR expiró.', 'error');
+          }
+        })
+        .catch(() => {});
+    } catch (_) {}
+  }, []);
 
   // Estados del Chat Activo
   const [phone, setPhone] = useState('+529811581001');
@@ -2030,13 +2227,11 @@ function App() {
           setSelectedCampus(data.user.sede_id);
           localStorage.setItem('metal_uriel_campus', data.user.sede_id);
         }
-        // BGM exclusivo para Desarrollador
+        // Música BGM siempre apagada por defecto (manual desde el botón de audio)
+        setIsPlayingBgm(false);
         if (userRol === 'desarrollador') {
-          setIsPlayingBgm(true);
           loadUsers();
           loadEmailHistory();
-        } else {
-          setIsPlayingBgm(false);
         }
         setActiveTab('inbox');
       } else {
@@ -2141,7 +2336,7 @@ function App() {
   }, [conversations, selectedChatPhone]);
 
   return (
-    <div className="h-screen w-screen flex bg-[#0A1014] text-slate-100 font-sans overflow-hidden select-none">
+    <div className="h-[100dvh] w-full flex bg-[#0A1014] text-slate-100 font-sans overflow-hidden select-none">
       
       {/* ================= REPRODUCTOR DE BANDA SONORA (METAL SONIC) ================= */}
       {isPlayingBgm && (
@@ -2468,10 +2663,10 @@ function App() {
       {/* ========================================================================= */}
       {/* 2. ÁREA PRINCIPAL (BANDEJA WHATSAPP O TABS SECUNDARIOS)                   */}
       {/* ========================================================================= */}
-      <div className="flex-1 flex flex-col h-full bg-[#0C1317] overflow-hidden">
+      <div className="flex-1 flex flex-col min-h-0 h-full bg-[#0C1317] overflow-hidden">
         
         {/* TOP BAR SIMPLIFICADA & RESPONSIVA */}
-        <header className="h-12 bg-[#111B21] border-b border-[#222E35] px-3 sm:px-4 flex items-center justify-between gap-2 shrink-0 z-30">
+        <header className="min-h-[52px] safe-top bg-[#111B21] border-b border-[#222E35] px-3 sm:px-4 py-1.5 flex items-center justify-between gap-2 shrink-0 z-30">
           <div className="flex items-center gap-2 sm:gap-3 min-w-0">
             <button
               type="button"
@@ -2540,21 +2735,33 @@ function App() {
           </div>
 
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            {authToken && (
+              <button
+                type="button"
+                onClick={() => setShowPairQrModal(true)}
+                className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-gradient-to-r from-[#FFC72C]/20 to-emerald-500/20 hover:from-[#FFC72C]/30 hover:to-emerald-500/30 border border-amber-400/40 text-amber-200 text-xs font-black transition"
+                title="Mostrar código QR para vincular tu celular sin escribir IP ni clave"
+              >
+                <span>📱</span>
+                <span>Vincular Celular (QR)</span>
+              </button>
+            )}
+
             {activeTab !== 'inbox' && (
               <button
                 type="button"
                 onClick={() => setActiveTab('inbox')}
-                className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-[#00A884] hover:bg-[#008f6f] text-slate-950 font-black text-xs flex items-center gap-1.5 shadow transition"
+                className="hidden sm:flex px-2.5 sm:px-3 py-1.5 rounded-lg bg-[#00A884] hover:bg-[#008f6f] text-slate-950 font-black text-xs items-center gap-1.5 shadow transition"
               >
                 <span>💬</span>
-                <span className="hidden sm:inline">Chats</span>
+                <span>Chats</span>
               </button>
             )}
 
             <button
               type="button"
               onClick={() => setActiveTab('onboarding')}
-              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold border transition ${
+              className={`hidden md:flex items-center px-2.5 py-1.5 rounded-lg text-xs font-bold border transition ${
                 activeTab === 'onboarding'
                   ? 'bg-amber-400/20 border-amber-400 text-amber-200'
                   : 'bg-[#202C33] hover:bg-[#2A3942] border-slate-700 text-slate-200'
@@ -2569,7 +2776,7 @@ function App() {
               <button
                 type="button"
                 onClick={() => setShowToolsMenu(v => !v)}
-                className="px-2.5 py-1.5 rounded-lg bg-[#202C33] hover:bg-[#2A3942] border border-slate-700 text-slate-100 text-xs font-bold flex items-center gap-1 transition"
+                className="min-h-[38px] px-2.5 py-1.5 rounded-lg bg-[#202C33] hover:bg-[#2A3942] border border-slate-700 text-slate-100 text-xs font-bold flex items-center gap-1 transition"
                 title="Herramientas y Configuración"
               >
                 <span>⚙️</span>
@@ -2580,11 +2787,17 @@ function App() {
               {showToolsMenu && (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setShowToolsMenu(false)} />
-                  <div className="absolute right-0 top-10 w-64 rounded-2xl bg-[#111B21] border border-slate-700 shadow-2xl p-2 z-50 space-y-1.5 text-xs">
+                  <div className="absolute right-0 top-11 w-64 rounded-2xl bg-[#111B21] border border-slate-700 shadow-2xl p-2 z-50 space-y-1.5 text-xs">
                     <div className="px-2.5 py-1.5 border-b border-slate-800 flex items-center justify-between">
                       <span className="font-bold text-slate-300 truncate">{authUser?.displayName || authUser?.email || 'Sesión UNID'}</span>
                       <span className="text-[10px] font-mono text-amber-300 uppercase">{currentUserRole}</span>
                     </div>
+
+                    {authToken && (
+                      <button type="button" onClick={() => { setShowToolsMenu(false); setShowPairQrModal(true); }} className="w-full text-left px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-400/30 text-amber-200 font-bold">
+                        📱 Vincular Celular (QR)
+                      </button>
+                    )}
 
                     {isDesarrollador && (
                       <div className="px-2 py-1.5 rounded-xl bg-slate-900/80 border border-slate-800 space-y-1">
@@ -2621,11 +2834,9 @@ function App() {
           </div>
         </header>
 
-        {/* ========================================================================= */}
-        {/* 3. VISTA PRINCIPAL: BANDEJA DE ENTRADA WHATSAPP (RESPONSIVA)              */}
-        {/* ========================================================================= */}
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden relative">
         {activeTab === 'inbox' && (
-          <div className="flex-1 flex overflow-hidden relative pb-14 md:pb-0">
+          <div className="flex-1 min-h-0 flex overflow-hidden relative">
             
             {/* ------------------------------------------------------------- */}
             {/* 3.1. SIDEBAR DE CONTACTOS (RESPONSIVO MÓVIL + DESKTOP)         */}
@@ -4875,7 +5086,7 @@ function App() {
 
         {/* ====== TAB 8: CENTRO DE AYUDA, TUTORIAL & FAQ ====== */}
         {activeTab === 'onboarding' && (
-          <div className="flex-1 overflow-hidden">
+          <div className="flex-1 min-h-0 overflow-hidden">
             <HelpCenterFaq
               healthFull={healthFull}
               onNavigateTab={(tab) => setActiveTab(tab)}
@@ -4883,6 +5094,26 @@ function App() {
             />
           </div>
         )}
+        </div>
+
+        {/* BARRA INFERIOR EN FLUJO FLEX (ZERO OVERLAP EN CELULAR) */}
+        <nav aria-label="Navegación móvil" className="md:hidden shrink-0 bg-[#111B21] border-t border-[#222E35] safe-bottom z-30 grid grid-cols-5 items-center px-1 py-1">
+          <button type="button" onClick={() => { setActiveTab('inbox'); setMobileShowChat(false); }} className={`min-h-[48px] flex flex-col items-center justify-center rounded-xl text-[11px] font-bold ${activeTab === 'inbox' ? 'text-[#00A884] bg-[#00A884]/10' : 'text-slate-400'}`}>
+            <span className="text-lg leading-none">💬</span><span className="mt-0.5">Chats</span>
+          </button>
+          <button type="button" onClick={() => setActiveTab('kanban')} className={`min-h-[48px] flex flex-col items-center justify-center rounded-xl text-[11px] font-bold ${activeTab === 'kanban' ? 'text-[#FFC72C] bg-[#FFC72C]/10' : 'text-slate-400'}`}>
+            <span className="text-lg leading-none">📋</span><span className="mt-0.5">Kanban</span>
+          </button>
+          <button type="button" onClick={() => setActiveTab('analytics')} className={`min-h-[48px] flex flex-col items-center justify-center rounded-xl text-[11px] font-bold ${activeTab === 'analytics' ? 'text-sky-400 bg-sky-500/10' : 'text-slate-400'}`}>
+            <span className="text-lg leading-none">📊</span><span className="mt-0.5">Métricas</span>
+          </button>
+          <button type="button" onClick={() => setActiveTab('onboarding')} className={`min-h-[48px] flex flex-col items-center justify-center rounded-xl text-[11px] font-bold ${activeTab === 'onboarding' ? 'text-amber-400 bg-amber-500/10' : 'text-slate-400'}`}>
+            <span className="text-lg leading-none">❓</span><span className="mt-0.5">Ayuda</span>
+          </button>
+          <button type="button" onClick={() => setShowMobileNavSheet(true)} className="min-h-[48px] flex flex-col items-center justify-center rounded-xl text-[11px] font-bold text-slate-200">
+            <span className="text-lg leading-none">☰</span><span className="mt-0.5">Más</span>
+          </button>
+        </nav>
       </div>
 
       {/* ================= MODAL: LABORATORIO DE PRUEBAS IA ================= */}
@@ -5162,25 +5393,6 @@ function App() {
         </div>
       )}
 
-      {/* ================= BARRA INFERIOR RESPONSIVA (MÓVIL / TABLET) ================= */}
-      <nav aria-label="Navegación móvil" className="md:hidden fixed bottom-0 left-0 right-0 h-14 bg-[#111B21]/95 backdrop-blur border-t border-[#222E35] z-40 grid grid-cols-5 items-center px-1">
-        <button type="button" onClick={() => { setActiveTab('inbox'); setMobileShowChat(false); }} className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold ${activeTab === 'inbox' ? 'text-[#00A884]' : 'text-slate-400'}`}>
-          <span className="text-base leading-none">💬</span><span className="mt-0.5">Chats</span>
-        </button>
-        <button type="button" onClick={() => setActiveTab('kanban')} className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold ${activeTab === 'kanban' ? 'text-[#FFC72C]' : 'text-slate-400'}`}>
-          <span className="text-base leading-none">📋</span><span className="mt-0.5">Kanban</span>
-        </button>
-        <button type="button" onClick={() => setActiveTab('analytics')} className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold ${activeTab === 'analytics' ? 'text-sky-400' : 'text-slate-400'}`}>
-          <span className="text-base leading-none">📊</span><span className="mt-0.5">Métricas</span>
-        </button>
-        <button type="button" onClick={() => setActiveTab('onboarding')} className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold ${activeTab === 'onboarding' ? 'text-amber-400' : 'text-slate-400'}`}>
-          <span className="text-base leading-none">❓</span><span className="mt-0.5">Ayuda</span>
-        </button>
-        <button type="button" onClick={() => setShowMobileNavSheet(true)} className="flex flex-col items-center justify-center py-1 text-[10px] font-bold text-slate-300">
-          <span className="text-base leading-none">☰</span><span className="mt-0.5">Más</span>
-        </button>
-      </nav>
-
       {showMobileNavSheet && (
         <div className="md:hidden fixed inset-0 z-[60] bg-slate-950/80 backdrop-blur-sm flex items-end" onClick={(e) => { if (e.target === e.currentTarget) setShowMobileNavSheet(false); }}>
           <div className="w-full rounded-t-3xl bg-[#111B21] border-t border-slate-700 p-5 space-y-3 shadow-2xl">
@@ -5205,6 +5417,13 @@ function App() {
           </div>
         </div>
       )}
+
+      <MobilePairQrModal
+        isOpen={showPairQrModal}
+        onClose={() => setShowPairQrModal(false)}
+        authToken={authToken}
+        onToast={showToast}
+      />
 
       <ContactProfileDrawer
         isOpen={showContactProfile}

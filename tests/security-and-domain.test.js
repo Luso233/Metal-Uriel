@@ -312,6 +312,33 @@ describe('Integración HTTP Express — Blindaje RBAC, Helmet y Firma HMAC Webho
         const buf = Buffer.from(await zipRes.arrayBuffer());
         assert.equal(buf[0], 0x50);
         assert.equal(buf[1], 0x4b);
+
+        // Flujo QR PC -> Celular (create -> status -> claim -> anti-replay)
+        const qrCreate = await fetch(`${baseUrl}/api/auth/mobile-pair/create`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${devTok}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ serverUrl: 'http://192.168.1.70:3000' })
+        });
+        assert.equal(qrCreate.status, 200);
+        const qrJson = await qrCreate.json();
+        assert.match(qrJson.qrSvg, /<svg/);
+        assert.ok(qrJson.code && qrJson.pin);
+
+        const qrClaim = await fetch(`${baseUrl}/api/auth/mobile-pair/claim`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: qrJson.code })
+        });
+        assert.equal(qrClaim.status, 200);
+        assert.ok((await qrClaim.json()).token);
+
+        // Segundo uso bloqueado (anti-replay)
+        const qrReplay = await fetch(`${baseUrl}/api/auth/mobile-pair/claim`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: qrJson.code })
+        });
+        assert.equal(qrReplay.status, 401);
     });
 });
 

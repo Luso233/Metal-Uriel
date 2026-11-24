@@ -10,7 +10,7 @@
     "prod:logs": "pm2 logs metal-uriel",
     "prod:restart": "pm2 restart metal-uriel",
     "prod:stop": "pm2 stop metal-uriel",
-    "check": "node --check index.js && node --check lib/setup-utils.js && node --check lib/security-utils.js && node --check lib/chat-audit-utils.js && node --check lib/zip-builder.js",
+    "check": "node --check index.js && node --check lib/setup-utils.js && node --check lib/security-utils.js && node --check lib/chat-audit-utils.js && node --check lib/zip-builder.js && node --check lib/mobile-pair-utils.js",
     "test": "node --test tests/*.test.js"
   },
   "keywords": [
@@ -43,6 +43,7 @@
     "jsonwebtoken": "^9.0.3",
     "mysql2": "^3.11.3",
     "nodemailer": "^10.0.10",
-    "openai": "^4.63.0"
+    "openai": "^4.63.0",
+    "qrcode": "^1.5.4"
   }
 }
