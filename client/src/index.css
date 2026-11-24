@@ -82,3 +82,18 @@
 :is(.wizard-input:user-valid, .wizard-input.user-valid-fallback) {
   border-color: #10b981 !important;
 }
+
+/* Safe-Area Insets para navegadores móviles (iOS/Android) + altura real 100dvh */
+html, body, #root {
+  height: 100%;
+  height: 100dvh;
+  overscroll-behavior: none;
+}
+
+.safe-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}

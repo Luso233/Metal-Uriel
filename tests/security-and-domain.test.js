@@ -12,6 +12,7 @@ const securityUtils = require('../lib/security-utils');
 const setupUtils = require('../lib/setup-utils');
 const chatAuditUtils = require('../lib/chat-audit-utils');
 const zipBuilder = require('../lib/zip-builder');
+const mobilePairUtils = require('../lib/mobile-pair-utils');
 const { getPool } = require('../src/db/pool');
 const serverMod = require('../index');
 
@@ -341,6 +342,62 @@ describe('Integración HTTP Express — Blindaje RBAC, Helmet y Firma HMAC Webho
         assert.equal(buf[1], 0x4b); // 'K'
         assert.equal(buf[2], 0x03);
         assert.equal(buf[3], 0x04);
+    });
+
+    it('vincula un celular por código QR de un solo uso (create -> status -> claim -> anti-replay)', async () => {
+        // Sin JWT no se puede crear QR
+        const unauth = await fetch(`${baseUrl}/api/auth/mobile-pair/create`, { method: 'POST' });
+        assert.equal(unauth.status, 401);
+
+        const devTok = signToken('desarrollador', null);
+        const createRes = await fetch(`${baseUrl}/api/auth/mobile-pair/create`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${devTok}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ serverUrl: 'http://192.168.1.70:3000' })
+        });
+        assert.equal(createRes.status, 200);
+        const created = await createRes.json();
+        assert.equal(created.success, true);
+        assert.ok(created.code && created.pin);
+        assert.match(created.qrSvg, /<svg/);
+        assert.match(created.pairUrl, /^http:\/\/192\.168\.1\.70:3000\/\?pair=/);
+
+        // Parseo del payload escaneado
+        const parsed = mobilePairUtils.parsePairingPayload(created.pairUrl);
+        assert.equal(parsed.serverUrl, 'http://192.168.1.70:3000');
+        assert.equal(parsed.code, created.code);
+
+        // Estado inicial = pending
+        const st1 = await (await fetch(`${baseUrl}/api/auth/mobile-pair/status/${encodeURIComponent(created.code)}`, {
+            headers: { Authorization: `Bearer ${devTok}` }
+        })).json();
+        assert.equal(st1.status, 'pending');
+
+        // Primer reclamo desde celular -> éxito con JWT válido
+        const claimRes = await fetch(`${baseUrl}/api/auth/mobile-pair/claim`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: created.code, deviceLabel: 'Xiaomi Test APK' })
+        });
+        assert.equal(claimRes.status, 200);
+        const claimed = await claimRes.json();
+        assert.equal(claimed.success, true);
+        assert.ok(claimed.token);
+        assert.equal(claimed.user.rol, 'desarrollador');
+
+        // Segundo reclamo del mismo QR -> bloqueado (401 anti-replay)
+        const replayRes = await fetch(`${baseUrl}/api/auth/mobile-pair/claim`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: created.code })
+        });
+        assert.equal(replayRes.status, 401);
+
+        // Estado posterior en PC = claimed
+        const st2 = await (await fetch(`${baseUrl}/api/auth/mobile-pair/status/${encodeURIComponent(created.code)}`, {
+            headers: { Authorization: `Bearer ${devTok}` }
+        })).json();
+        assert.equal(st2.status, 'claimed');
     });
 });
 

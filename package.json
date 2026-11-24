@@ -52,9 +52,11 @@
     "express-rate-limit": "^8.7.5",
     "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
+    "jsqr": "^1.4.0",
     "mysql2": "^3.11.3",
     "nodemailer": "^10.0.10",
-    "openai": "^4.63.0"
+    "openai": "^4.63.0",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.6.2",

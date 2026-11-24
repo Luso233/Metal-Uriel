@@ -11,6 +11,8 @@ const {
     authorizeRoles,
     authLimiter
 } = require('../middlewares/auth');
+const setupUtils = require('../../lib/setup-utils');
+const mobilePairUtils = require('../../lib/mobile-pair-utils');
 
 const router = express.Router();
 
@@ -107,6 +109,60 @@ router.post('/api/auth/microsoft', authLimiter, async (req, res) => {
 
 router.get('/api/auth/me', authMiddleware, (req, res) => {
     res.json({ success: true, user: req.user });
+});
+
+// =========================================================================
+// Vinculación Móvil por Código QR (WhatsApp Web Inverso: PC -> Celular)
+// =========================================================================
+router.post('/api/auth/mobile-pair/create', authMiddleware, async (req, res) => {
+    try {
+        const hw = setupUtils.getSystemHardwareReport(config.PORT);
+        const reqOrigin = (req.headers.origin && /^https?:\/\//i.test(req.headers.origin) && !/localhost|127\.0\.0\.1|192\.168\.56\./i.test(req.headers.origin))
+            ? req.headers.origin
+            : null;
+        const availableUrls = Array.from(new Set([
+            ...(hw.lanUrls || []),
+            ...(reqOrigin ? [reqOrigin] : [])
+        ])).filter(Boolean);
+
+        const requestedUrl = mobilePairUtils.sanitizeServerUrl(req.body?.serverUrl);
+        const targetServerUrl = requestedUrl || hw.primaryLanUrl || availableUrls[0] || `http://localhost:${config.PORT}`;
+
+        const session = await mobilePairUtils.createPairingSession({
+            user: req.user,
+            serverUrl: targetServerUrl
+        });
+
+        res.json({
+            success: true,
+            ...session,
+            availableUrls,
+            virtualUrls: hw.virtualUrls || [],
+            firewallCommand: hw.firewallCommand
+        });
+    } catch (err) {
+        res.status(400).json({ success: false, error: err.message });
+    }
+});
+
+router.get('/api/auth/mobile-pair/status/:code', authMiddleware, (req, res) => {
+    const status = mobilePairUtils.getPairingStatus(req.params.code, req.user?.id);
+    res.json({ success: true, ...status });
+});
+
+router.post('/api/auth/mobile-pair/claim', authLimiter, (req, res) => {
+    const { code, pin, deviceLabel } = req.body || {};
+    const claimed = mobilePairUtils.claimPairingSession({ code, pin, deviceLabel });
+    if (!claimed.ok) {
+        return res.status(401).json({ success: false, error: claimed.error });
+    }
+    const token = jwt.sign(claimed.user, config.JWT_SECRET, { expiresIn: '7d' });
+    return res.json({
+        success: true,
+        token,
+        user: claimed.user,
+        serverUrl: claimed.serverUrl
+    });
 });
 
 router.get('/api/users', authMiddleware, authorizeRoles('desarrollador'), async (req, res) => {

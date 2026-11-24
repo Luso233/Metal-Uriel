@@ -9,6 +9,7 @@ import {
 import ServerConnectionModal from './components/ServerConnectionModal.jsx';
 import ContactProfileDrawer from './components/ContactProfileDrawer.jsx';
 import HelpCenterFaq from './components/HelpCenterFaq.jsx';
+import MobilePairQrModal from './components/MobilePairQrModal.jsx';
 import {
   isNativeCapacitor,
   getServerUrl,
@@ -101,6 +102,54 @@ function App() {
   // Conexión a Servidor Remoto / Headless (Capacitor Android APK & Clientes Externos)
   const [serverUrl, setServerUrl] = useState(() => getServerUrl());
   const [showServerModal, setShowServerModal] = useState(() => isNativeCapacitor() && !getServerUrl());
+  const [showPairQrModal, setShowPairQrModal] = useState(false);
+
+  const applyPairedLogin = ({ token, user, serverUrl: pairedUrl }) => {
+    if (pairedUrl) setServerUrl(pairedUrl);
+    if (token && user) {
+      localStorage.setItem('metal_uriel_jwt', token);
+      localStorage.setItem('metal_uriel_user', JSON.stringify(user));
+      setAuthToken(token);
+      setAuthUser(user);
+      setShowLoginModal(false);
+      setShowServerModal(false);
+      const userRol = (user.rol || user.role || 'usuario').toLowerCase();
+      if (userRol !== 'desarrollador' && user.sede_id) {
+        setSelectedCampus(user.sede_id);
+        localStorage.setItem('metal_uriel_campus', user.sede_id);
+      }
+      setActiveTab('inbox');
+      showToast(`✅ ¡Sesión vinculada como ${user.displayName || user.correo_institucional}!`);
+    }
+  };
+
+  // Auto-reclamar ?pair=<CODE> si el usuario escaneó el QR de la PC con la cámara nativa del celular
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const pairCode = params.get('pair');
+      if (!pairCode) return;
+      params.delete('pair');
+      const cleanSearch = params.toString();
+      const nextUrl = `${window.location.pathname}${cleanSearch ? `?${cleanSearch}` : ''}${window.location.hash}`;
+      window.history.replaceState({}, '', nextUrl);
+
+      fetch('/api/auth/mobile-pair/claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: pairCode, deviceLabel: 'Navegador Móvil (QR)' })
+      })
+        .then(r => r.json().then(d => ({ ok: r.ok, data: d })))
+        .then(({ ok, data }) => {
+          if (ok && data.success && data.token && data.user) {
+            applyPairedLogin({ token: data.token, user: data.user, serverUrl: '' });
+          } else {
+            showToast(data.error || 'El código QR expiró. Genera uno nuevo en la PC.', 'error');
+          }
+        })
+        .catch(() => {});
+    } catch (_) {}
+  }, []);
 
   // Detectar al arranque si el servidor está virgen (Plug & Play First-Run Setup)
   useEffect(() => {
@@ -1439,13 +1488,11 @@ function App() {
           setSelectedCampus(data.user.sede_id);
           localStorage.setItem('metal_uriel_campus', data.user.sede_id);
         }
-        // BGM exclusivo para Desarrollador
+        // Música BGM siempre apagada por defecto (el usuario la activa manualmente desde el botón de audio)
+        setIsPlayingBgm(false);
         if (userRol === 'desarrollador') {
-          setIsPlayingBgm(true);
           loadUsers();
           loadEmailHistory();
-        } else {
-          setIsPlayingBgm(false);
         }
         setActiveTab('inbox');
       } else {
@@ -1560,7 +1607,7 @@ function App() {
   }, [conversations, selectedChatPhone]);
 
   return (
-    <div className="h-screen w-screen flex bg-[#0A1014] text-slate-100 font-sans overflow-hidden select-none">
+    <div className="h-[100dvh] w-full flex bg-[#0A1014] text-slate-100 font-sans overflow-hidden select-none">
       
       {/* ================= REPRODUCTOR DE BANDA SONORA (METAL SONIC) ================= */}
       {isPlayingBgm && (
@@ -1887,10 +1934,10 @@ function App() {
       {/* ========================================================================= */}
       {/* 2. ÁREA PRINCIPAL (BANDEJA WHATSAPP O TABS SECUNDARIOS)                   */}
       {/* ========================================================================= */}
-      <div className="flex-1 flex flex-col h-full bg-[#0C1317] overflow-hidden">
+      <div className="flex-1 flex flex-col min-h-0 h-full bg-[#0C1317] overflow-hidden">
         
-        {/* TOP BAR SIMPLIFICADA & RESPONSIVA */}
-        <header className="h-12 bg-[#111B21] border-b border-[#222E35] px-3 sm:px-4 flex items-center justify-between gap-2 shrink-0 z-30">
+        {/* TOP BAR SIMPLIFICADA & RESPONSIVA (CON SAFE-AREA SUPERIOR) */}
+        <header className="min-h-[52px] safe-top bg-[#111B21] border-b border-[#222E35] px-3 sm:px-4 py-1.5 flex items-center justify-between gap-2 shrink-0 z-30">
           <div className="flex items-center gap-2 sm:gap-3 min-w-0">
             {/* Logo táctil en móvil */}
             <button
@@ -1964,22 +2011,35 @@ function App() {
 
           {/* Acciones Limpias de la TopBar (sin saturación) */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            {/* Botón QR WhatsApp-Web Inverso (visible en PC / Tablet para vincular celular) */}
+            {authToken && (
+              <button
+                type="button"
+                onClick={() => setShowPairQrModal(true)}
+                className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-gradient-to-r from-[#FFC72C]/20 to-emerald-500/20 hover:from-[#FFC72C]/30 hover:to-emerald-500/30 border border-amber-400/40 text-amber-200 text-xs font-black transition"
+                title="Mostrar código QR para vincular tu celular sin escribir IP ni contraseña"
+              >
+                <span>📱</span>
+                <span>Vincular Celular (QR)</span>
+              </button>
+            )}
+
             {activeTab !== 'inbox' && (
               <button
                 type="button"
                 onClick={() => setActiveTab('inbox')}
-                className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-[#00A884] hover:bg-[#008f6f] text-slate-950 font-black text-xs flex items-center gap-1.5 shadow transition"
+                className="hidden sm:flex px-2.5 sm:px-3 py-1.5 rounded-lg bg-[#00A884] hover:bg-[#008f6f] text-slate-950 font-black text-xs items-center gap-1.5 shadow transition"
               >
                 <span>💬</span>
-                <span className="hidden sm:inline">Chats</span>
+                <span>Chats</span>
               </button>
             )}
 
-            {/* Acceso rápido a FAQ / Ayuda */}
+            {/* Acceso rápido a FAQ / Ayuda (solo escritorio; en móvil vive en la barra inferior) */}
             <button
               type="button"
               onClick={() => setActiveTab('onboarding')}
-              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold border transition ${
+              className={`hidden md:flex items-center px-2.5 py-1.5 rounded-lg text-xs font-bold border transition ${
                 activeTab === 'onboarding'
                   ? 'bg-amber-400/20 border-amber-400 text-amber-200'
                   : 'bg-[#202C33] hover:bg-[#2A3942] border-slate-700 text-slate-200'
@@ -1990,12 +2050,12 @@ function App() {
               <span className="hidden lg:inline ml-1">Ayuda</span>
             </button>
 
-            {/* Menú Compacto de Herramientas (agrupa Modelo IA, Lab, Excel, Servidor, Setup y DB) */}
+            {/* Menú Compacto de Herramientas (agrupa QR, Modelo IA, Lab, Excel, Servidor, Setup y DB) */}
             <div className="relative">
               <button
                 type="button"
                 onClick={() => setShowToolsMenu((v) => !v)}
-                className="px-2.5 py-1.5 rounded-lg bg-[#202C33] hover:bg-[#2A3942] border border-slate-700 text-slate-100 text-xs font-bold flex items-center gap-1 transition"
+                className="min-h-[38px] px-2.5 py-1.5 rounded-lg bg-[#202C33] hover:bg-[#2A3942] border border-slate-700 text-slate-100 text-xs font-bold flex items-center gap-1 transition"
                 title="Herramientas y Configuración"
               >
                 <span>⚙️</span>
@@ -2006,11 +2066,21 @@ function App() {
               {showToolsMenu && (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setShowToolsMenu(false)} />
-                  <div className="absolute right-0 top-10 w-64 rounded-2xl bg-[#111B21] border border-slate-700 shadow-2xl p-2 z-50 space-y-1.5 text-xs">
+                  <div className="absolute right-0 top-11 w-64 rounded-2xl bg-[#111B21] border border-slate-700 shadow-2xl p-2 z-50 space-y-1.5 text-xs">
                     <div className="px-2.5 py-1.5 border-b border-slate-800 flex items-center justify-between">
                       <span className="font-bold text-slate-300 truncate">{authUser?.displayName || authUser?.email || 'Sesión UNID'}</span>
                       <span className="text-[10px] font-mono text-amber-300 uppercase">{currentUserRole}</span>
                     </div>
+
+                    {authToken && (
+                      <button
+                        type="button"
+                        onClick={() => { setShowToolsMenu(false); setShowPairQrModal(true); }}
+                        className="w-full text-left px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-400/30 text-amber-200 font-bold flex items-center gap-2"
+                      >
+                        <span>📱 Vincular Celular (QR)</span>
+                      </button>
+                    )}
 
                     {isDesarrollador && (
                       <div className="px-2 py-1.5 rounded-xl bg-slate-900/80 border border-slate-800 space-y-1">
@@ -2098,10 +2168,11 @@ function App() {
         </header>
 
         {/* ========================================================================= */}
-        {/* 3. VISTA PRINCIPAL: BANDEJA DE ENTRADA WHATSAPP (FULL CANVAS)             */}
+        {/* CONTENEDOR FLEX DE VISTAS (NUNCA SE SOLAPA CON HEADER NI BOTTOM NAV)      */}
         {/* ========================================================================= */}
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden relative">
         {activeTab === 'inbox' && (
-          <div className="flex-1 flex overflow-hidden relative pb-14 md:pb-0">
+          <div className="flex-1 min-h-0 flex overflow-hidden relative">
             
             {/* ------------------------------------------------------------- */}
             {/* 3.1. SIDEBAR DE CONTACTOS (RESPONSIVO MÓVIL + DESKTOP)         */}
@@ -4519,15 +4590,76 @@ function App() {
 
         {/* ====== TAB 8: CENTRO DE AYUDA, TUTORIAL & FAQ PARA EL USUARIO FINAL ====== */}
         {activeTab === 'onboarding' && (
-          <div className="flex-1 overflow-hidden">
+          <div className="flex-1 min-h-0 overflow-hidden">
             <HelpCenterFaq
               healthFull={healthFull}
               onNavigateTab={(tab) => setActiveTab(tab)}
               onOpenServerModal={() => setShowServerModal(true)}
+              onOpenPairQr={() => setShowPairQrModal(true)}
               onToast={showToast}
             />
           </div>
         )}
+        </div>
+
+        {/* ================= BARRA INFERIOR RESPONSIVA EN FLUJO FLEX (ZERO OVERLAP) ================= */}
+        <nav
+          aria-label="Navegación móvil"
+          className="md:hidden shrink-0 bg-[#111B21] border-t border-[#222E35] safe-bottom z-30 grid grid-cols-5 items-center px-1 py-1"
+        >
+          <button
+            type="button"
+            onClick={() => { setActiveTab('inbox'); setMobileShowChat(false); }}
+            className={`min-h-[48px] flex flex-col items-center justify-center rounded-xl text-[11px] font-bold transition ${
+              activeTab === 'inbox' ? 'text-[#00A884] bg-[#00A884]/10' : 'text-slate-400 active:bg-slate-800'
+            }`}
+          >
+            <span className="text-lg leading-none">💬</span>
+            <span className="mt-0.5">Chats</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('kanban')}
+            className={`min-h-[48px] flex flex-col items-center justify-center rounded-xl text-[11px] font-bold transition ${
+              activeTab === 'kanban' ? 'text-[#FFC72C] bg-[#FFC72C]/10' : 'text-slate-400 active:bg-slate-800'
+            }`}
+          >
+            <span className="text-lg leading-none">📋</span>
+            <span className="mt-0.5">Kanban</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('analytics')}
+            className={`min-h-[48px] flex flex-col items-center justify-center rounded-xl text-[11px] font-bold transition ${
+              activeTab === 'analytics' ? 'text-sky-400 bg-sky-500/10' : 'text-slate-400 active:bg-slate-800'
+            }`}
+          >
+            <span className="text-lg leading-none">📊</span>
+            <span className="mt-0.5">Métricas</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('onboarding')}
+            className={`min-h-[48px] flex flex-col items-center justify-center rounded-xl text-[11px] font-bold transition ${
+              activeTab === 'onboarding' ? 'text-amber-400 bg-amber-500/10' : 'text-slate-400 active:bg-slate-800'
+            }`}
+          >
+            <span className="text-lg leading-none">❓</span>
+            <span className="mt-0.5">Ayuda</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowMobileNavSheet(true)}
+            className="min-h-[48px] flex flex-col items-center justify-center rounded-xl text-[11px] font-bold text-slate-200 active:bg-slate-800"
+          >
+            <span className="text-lg leading-none">☰</span>
+            <span className="mt-0.5">Más</span>
+          </button>
+        </nav>
       </div>
 
       {/* ================= MODAL: LABORATORIO DE PRUEBAS IA ================= */}
@@ -4762,10 +4894,10 @@ function App() {
               <button
                 type="button"
                 onClick={() => setShowServerModal(true)}
-                className="w-full py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-sky-300 font-bold text-[11px] transition flex items-center justify-center gap-1.5"
+                className="w-full min-h-[44px] py-2 px-3 rounded-xl bg-emerald-950/60 hover:bg-emerald-900/70 border border-emerald-500/40 text-emerald-200 font-bold text-xs transition flex items-center justify-center gap-1.5"
               >
-                <span>📡</span>
-                <span>{serverUrl ? `Servidor: ${serverUrl}` : 'Configurar URL de Servidor Headless / LAN'}</span>
+                <span>📷</span>
+                <span>{serverUrl ? `Escanear QR / Cambiar (${serverUrl})` : 'Escanear QR de la PC (Sin escribir IP ni clave)'}</span>
               </button>
             </form>
 
@@ -4815,65 +4947,6 @@ function App() {
           </div>
         </div>
       )}
-
-      {/* ================= BARRA INFERIOR RESPONSIVA (MÓVIL / APK) ================= */}
-      <nav
-        aria-label="Navegación móvil"
-        className="md:hidden fixed bottom-0 left-0 right-0 h-14 bg-[#111B21]/95 backdrop-blur border-t border-[#222E35] z-40 grid grid-cols-5 items-center px-1"
-      >
-        <button
-          type="button"
-          onClick={() => { setActiveTab('inbox'); setMobileShowChat(false); }}
-          className={`flex flex-col items-center justify-center py-1 rounded-xl text-[10px] font-bold transition ${
-            activeTab === 'inbox' ? 'text-[#00A884]' : 'text-slate-400'
-          }`}
-        >
-          <span className="text-base leading-none">💬</span>
-          <span className="mt-0.5">Chats</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('kanban')}
-          className={`flex flex-col items-center justify-center py-1 rounded-xl text-[10px] font-bold transition ${
-            activeTab === 'kanban' ? 'text-[#FFC72C]' : 'text-slate-400'
-          }`}
-        >
-          <span className="text-base leading-none">📋</span>
-          <span className="mt-0.5">Kanban</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('analytics')}
-          className={`flex flex-col items-center justify-center py-1 rounded-xl text-[10px] font-bold transition ${
-            activeTab === 'analytics' ? 'text-sky-400' : 'text-slate-400'
-          }`}
-        >
-          <span className="text-base leading-none">📊</span>
-          <span className="mt-0.5">Métricas</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('onboarding')}
-          className={`flex flex-col items-center justify-center py-1 rounded-xl text-[10px] font-bold transition ${
-            activeTab === 'onboarding' ? 'text-amber-400' : 'text-slate-400'
-          }`}
-        >
-          <span className="text-base leading-none">❓</span>
-          <span className="mt-0.5">Ayuda</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setShowMobileNavSheet(true)}
-          className="flex flex-col items-center justify-center py-1 rounded-xl text-[10px] font-bold text-slate-300"
-        >
-          <span className="text-base leading-none">☰</span>
-          <span className="mt-0.5">Más</span>
-        </button>
-      </nav>
 
       {/* Hoja móvil de secciones secundarias */}
       {showMobileNavSheet && (
@@ -4955,10 +5028,18 @@ function App() {
         </div>
       )}
 
+      <MobilePairQrModal
+        isOpen={showPairQrModal}
+        onClose={() => setShowPairQrModal(false)}
+        authToken={authToken}
+        onToast={showToast}
+      />
+
       <ServerConnectionModal
         isOpen={showServerModal}
         forceRequired={isNativeCapacitor() && !serverUrl}
         onClose={() => setShowServerModal(false)}
+        onPairedAuth={applyPairedLogin}
         onConnected={(newUrl) => {
           setServerUrl(newUrl);
           loadCampuses();

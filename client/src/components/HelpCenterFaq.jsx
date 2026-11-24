@@ -83,6 +83,7 @@ export default function HelpCenterFaq({
   healthFull,
   onNavigateTab,
   onOpenServerModal,
+  onOpenPairQr,
   onToast
 }) {
   const [search, setSearch] = useState('');
@@ -141,12 +142,21 @@ export default function HelpCenterFaq({
               >
                 💬 Ir a Bandeja de Chats
               </button>
+              {onOpenPairQr && (
+                <button
+                  type="button"
+                  onClick={() => onOpenPairQr()}
+                  className="min-h-[44px] px-4 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/50 text-emerald-200 font-black text-xs transition"
+                >
+                  📱 Mostrar QR para Celular
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => onOpenServerModal?.()}
                 className="min-h-[44px] px-4 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-100 font-bold text-xs transition"
               >
-                📡 Conectar Servidor / Móvil
+                📡 Conectar Servidor / QR
               </button>
             </div>
           </div>

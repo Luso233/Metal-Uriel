@@ -20,9 +20,10 @@ window.lucide = {
 window.MetalUrielSetupWizard = SetupWizard;
 window.MetalUrielRandomPassword = browserRandomPassword;
 
-// 3. Configurar barra de estado y botón Atrás nativo en Android (Capacitor)
+// 3. Configurar barra de estado (sin solapar WebView) y botón Atrás nativo en Android (Capacitor)
 if (isNativeCapacitor()) {
-    StatusBar.setBackgroundColor({ color: '#0A192F' }).catch(() => {});
+    StatusBar.setOverlaysWebView({ overlay: false }).catch(() => {});
+    StatusBar.setBackgroundColor({ color: '#111B21' }).catch(() => {});
     StatusBar.setStyle({ style: Style.Dark }).catch(() => {});
     CapApp.addListener('backButton', ({ canGoBack }) => {
         if (canGoBack) {

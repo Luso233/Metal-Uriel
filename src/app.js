@@ -57,6 +57,7 @@ app.use(helmet({
             styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
             fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
             imgSrc: ["'self'", 'data:', 'blob:', 'https:', 'http:'],
+            mediaSrc: ["'self'", 'blob:', 'mediastream:'],
             frameSrc: ["'self'", 'https://www.youtube.com'],
             connectSrc: ["'self'", 'https:', 'http:']
         }
