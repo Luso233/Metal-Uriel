@@ -123,6 +123,8 @@ router.get('/api/health', async (_req, res) => {
     res.json({
         status: 'online',
         botName: 'Metal-Uriel',
+        apiVersion: '3.0.0',
+        mode: config.HEADLESS_MODE ? 'headless' : 'full',
         dbConnected: dbStatus,
         webhookSignatureEnabled: Boolean(config.META_APP_SECRET && !setupUtils.isPlaceholderValue(config.META_APP_SECRET))
     });

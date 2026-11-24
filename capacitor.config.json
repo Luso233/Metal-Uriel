@@ -1,0 +1,21 @@
+{
+  "appId": "mx.unid.metaluriel",
+  "appName": "Metal-Uriel UNID",
+  "webDir": "public/dist",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true,
+    "backgroundColor": "#0A192F",
+    "captureInput": true,
+    "webContentsDebuggingEnabled": true
+  },
+  "plugins": {
+    "StatusBar": {
+      "style": "DARK",
+      "backgroundColor": "#0A192F"
+    }
+  }
+}

@@ -40,6 +40,8 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 3000
+      HEADLESS_MODE: ${HEADLESS_MODE:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
       DB_HOST: mariadb
       DB_PORT: 3306
       DB_USER: ${DB_USER:-root}

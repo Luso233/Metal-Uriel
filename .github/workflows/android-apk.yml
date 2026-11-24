@@ -1,0 +1,88 @@
+name: Build & Publish Android APK (Capacitor)
+
+on:
+  push:
+    branches: [ "refactor/v3-modular", "main" ]
+    tags: [ "v*" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-android-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Instalar dependencias Node + Capacitor
+        run: npm install
+
+      - name: Compilar Frontend Offline (Vite + React 18 + Tailwind CSS)
+        run: npm run build
+
+      - name: Sincronizar assets web hacia proyecto nativo Android (Capacitor)
+        run: npx cap sync android
+
+      - name: Configurar JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Configurar Android SDK (API 36)
+        uses: android-actions/setup-android@v3
+
+      - name: Instalar plataforma Android 36 y Build Tools
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Compilar APK Android con Gradle (assembleDebug instalable)
+        working-directory: android
+        run: |
+          sed -i 's/\r$//' gradlew
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Preparar archivo APK final
+        run: |
+          mkdir -p dist-apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk dist-apk/Metal-Uriel-UNID-v3.apk
+          ls -lh dist-apk/Metal-Uriel-UNID-v3.apk
+
+      - name: Subir APK como Artifact de GitHub Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: Metal-Uriel-UNID-v3-APK
+          path: dist-apk/Metal-Uriel-UNID-v3.apk
+          retention-days: 90
+
+      - name: Publicar/Actualizar APK en GitHub Releases (apk-latest)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="apk-latest"
+          NOTES="📱 **Metal-Uriel UNID v3.0 — APK Android (Capacitor + Headless API Ready)**
+
+          - Conéctate a tu servidor Headless (`npm run start:headless`) o servidor LAN/Túnel Cloudflare al abrir la app.
+          - Incluye soporte para LAN HTTP local (`http://192.168.x.x:3000`) y HTTPS (`https://...`), Live Inbox, Kanban, Pool Multimedia, Analítica y Setup Wizard.
+          - Commit compilado: \`${{ github.sha }}\` (rama \`${{ github.ref_name }}\`).
+
+          **Instalación en Android:** Descarga \`Metal-Uriel-UNID-v3.apk\`, ábrelo en tu teléfono y permite *Instalar apps desconocidas*."
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist-apk/Metal-Uriel-UNID-v3.apk --clobber
+            gh release edit "$TAG" --notes "$NOTES" --target "${{ github.sha }}"
+          else
+            gh release create "$TAG" dist-apk/Metal-Uriel-UNID-v3.apk \
+              --title "Metal-Uriel UNID v3 — Android APK (Latest)" \
+              --notes "$NOTES" \
+              --target "${{ github.sha }}"
+          fi

@@ -64,6 +64,13 @@ const config = {
     ENV_PATH,
     get HOST() { return process.env.HOST || '0.0.0.0'; },
     get PORT() { return Number(process.env.PORT) || 3000; },
+    get HEADLESS_MODE() { return String(process.env.HEADLESS_MODE || '').toLowerCase() === 'true'; },
+    get CORS_ORIGINS() {
+        return String(process.env.CORS_ORIGINS || '')
+            .split(',')
+            .map(s => s.trim())
+            .filter(Boolean);
+    },
     get JWT_SECRET() { return process.env.JWT_SECRET || 'unid_metal_uriel_jwt_secret_key_2026'; },
     get ENCRYPTION_MASTER_KEY() { return process.env.ENCRYPTION_MASTER_KEY || process.env.JWT_SECRET || 'unid_metal_uriel_saas_encryption_key_2026'; },
     get CRYPTO_KEY() { return crypto.createHash('sha256').update(this.ENCRYPTION_MASTER_KEY).digest(); },

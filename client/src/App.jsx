@@ -6,6 +6,12 @@ import {
   TEST_SUITE_CATEGORIES,
   formatTimeAgo
 } from './constants/dashboardData.js';
+import ServerConnectionModal from './components/ServerConnectionModal.jsx';
+import {
+  isNativeCapacitor,
+  getServerUrl,
+  resolveApiUrl
+} from './utils/serverConnection.js';
 
 function App() {
   // ================= ESTADOS PRINCIPALES =================
@@ -79,8 +85,13 @@ function App() {
   const [o365Name, setO365Name] = useState('');
   const [loginForm, setLoginForm] = useState({ username: '', password: '', error: '', loading: false });
 
+  // Conexión a Servidor Remoto / Headless (Capacitor Android APK & Clientes Externos)
+  const [serverUrl, setServerUrl] = useState(() => getServerUrl());
+  const [showServerModal, setShowServerModal] = useState(() => isNativeCapacitor() && !getServerUrl());
+
   // Detectar al arranque si el servidor está virgen (Plug & Play First-Run Setup)
   useEffect(() => {
+    if (isNativeCapacitor() && !serverUrl) return;
     fetch('/api/setup/status')
       .then(r => r.ok ? r.json() : null)
       .then(data => {
@@ -92,7 +103,7 @@ function App() {
         }
       })
       .catch(() => {});
-  }, []);
+  }, [serverUrl]);
 
   // Banda Sonora Cibernética de Metal Sonic
   const [isPlayingBgm, setIsPlayingBgm] = useState(false);
@@ -1919,6 +1930,17 @@ function App() {
               </button>
             )}
 
+            {/* Botón Conectar / Cambiar Servidor Headless (APK Android / Remoto) */}
+            <button
+              type="button"
+              onClick={() => setShowServerModal(true)}
+              className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 text-xs font-bold flex items-center gap-1 transition"
+              title={serverUrl ? `Conectado a ${serverUrl}` : 'Configurar URL de servidor Metal-Uriel Headless / LAN'}
+            >
+              <span>📡</span>
+              <span className="hidden xl:inline">{serverUrl ? 'Remoto' : 'Servidor'}</span>
+            </button>
+
             {/* Exportar CSV autenticado (Desarrollador y Administrador) */}
             {!isUsuario && (
               <button
@@ -3417,9 +3439,11 @@ function App() {
 
                   const itemCode = b.codigo_recurso || b.id || b.db_id;
                   const rawUrl = b.url_recurso || b.pdfUrl || '';
-                  const resourceUrl = (rawUrl && (rawUrl.startsWith('/uploads/') || rawUrl.startsWith('/api/')))
-                    ? rawUrl
-                    : `/api/brochures/${encodeURIComponent(itemCode)}/download`;
+                  const resourceUrl = resolveApiUrl(
+                    (rawUrl && (rawUrl.startsWith('/uploads/') || rawUrl.startsWith('/api/')))
+                      ? rawUrl
+                      : `/api/brochures/${encodeURIComponent(itemCode)}/download`
+                  );
 
                   return (
                     <div
@@ -4567,6 +4591,15 @@ function App() {
               >
                 {loginForm.loading ? 'Iniciando Sesión...' : 'Ingresar al Centro de Mando'}
               </button>
+
+              <button
+                type="button"
+                onClick={() => setShowServerModal(true)}
+                className="w-full py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-sky-300 font-bold text-[11px] transition flex items-center justify-center gap-1.5"
+              >
+                <span>📡</span>
+                <span>{serverUrl ? `Servidor: ${serverUrl}` : 'Configurar URL de Servidor Headless / LAN'}</span>
+              </button>
             </form>
 
             {setupStatus?.isDemoMode && (
@@ -4615,6 +4648,16 @@ function App() {
           </div>
         </div>
       )}
+
+      <ServerConnectionModal
+        isOpen={showServerModal}
+        forceRequired={isNativeCapacitor() && !serverUrl}
+        onClose={() => setShowServerModal(false)}
+        onConnected={(newUrl) => {
+          setServerUrl(newUrl);
+          loadCampuses();
+        }}
+      />
 
     </div>
   );

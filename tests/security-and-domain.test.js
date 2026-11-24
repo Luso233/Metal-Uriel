@@ -275,4 +275,38 @@ describe('Integración HTTP Express — Blindaje RBAC, Helmet y Firma HMAC Webho
         assert.equal(okRes.status, 200);
         assert.equal(await okRes.text(), 'EVENT_RECEIVED');
     });
+
+    it('permite peticiones CORS desde Capacitor APK (http/https/capacitor://localhost) y soporta modo Headless', async () => {
+        for (const origin of ['http://localhost', 'https://localhost', 'capacitor://localhost']) {
+            const preflight = await fetch(`${baseUrl}/api/health`, {
+                method: 'OPTIONS',
+                headers: {
+                    Origin: origin,
+                    'Access-Control-Request-Method': 'GET',
+                    'Access-Control-Request-Headers': 'Authorization, Content-Type'
+                }
+            });
+            assert.ok([200, 204].includes(preflight.status), `Preflight falló para ${origin}: ${preflight.status}`);
+            assert.equal(preflight.headers.get('access-control-allow-origin'), origin);
+        }
+
+        // Verificar modo Headless dinámico (GET / devuelve JSON API en lugar de HTML)
+        const prevHeadless = process.env.HEADLESS_MODE;
+        try {
+            process.env.HEADLESS_MODE = 'true';
+            const rootRes = await fetch(`${baseUrl}/`);
+            assert.equal(rootRes.status, 200);
+            const rootJson = await rootRes.json();
+            assert.equal(rootJson.mode, 'headless');
+            assert.equal(rootJson.uiServed, false);
+
+            const healthRes = await fetch(`${baseUrl}/api/health`);
+            const healthJson = await healthRes.json();
+            assert.equal(healthJson.mode, 'headless');
+            assert.equal(healthJson.apiVersion, '3.0.0');
+        } finally {
+            if (prevHeadless === undefined) delete process.env.HEADLESS_MODE;
+            else process.env.HEADLESS_MODE = prevHeadless;
+        }
+    });
 });

@@ -321,6 +321,43 @@ flowchart TD
 
 ---
 
+## 📱 Modo Headless (Solo API) y App Android APK con Capacitor (v3 Modular)
+
+La rama `refactor/v3-modular` incorpora una arquitectura modular (`src/` + frontend compilado con Vite/React 18/Tailwind CSS local) con soporte nativo para operar **sin interfaz web (Headless)** y conectarse desde la **APK Android oficial de Capacitor**:
+
+### 1. Arrancar el Servidor en Modo Headless (Cero UI Web, menor consumo de RAM)
+Ideal para dejar el servidor dedicado corriendo solo **REST API + Webhook Meta + Bot Multi-LLM + MariaDB**:
+```bash
+# Arranque directo Headless
+npm run start:headless
+
+# O en segundo plano 24/7 con PM2 (perfil optimizado 350 MB max)
+npm run prod:headless
+
+# O mediante variable de entorno / Docker Compose
+HEADLESS_MODE=true npm start
+```
+En modo Headless, `GET /` devuelve metadatos JSON del servicio (`mode: "headless"`), los archivos de `/uploads` y `/api/brochures/:id/download` siguen disponibles para WhatsApp/APK, y CORS permite automáticamente la app Android Capacitor, tu red LAN (`192.168.x.x`) y túneles Cloudflare (`*.trycloudflare.com`). Si usas dominio propio, agrégalo a `CORS_ORIGINS` en `.env`.
+
+### 2. App Android APK (Capacitor 8)
+- **Descarga directa (compilada automáticamente en la nube vía GitHub Actions):**
+  Cada push a `refactor/v3-modular` o `main` compila el bundle offline de Vite, sincroniza Capacitor y genera el instalador Android (`Metal-Uriel-UNID-v3.apk`) disponible en:
+  - Pestaña **Releases** del repositorio (`apk-latest`): `https://github.com/Luso233/Metal-Uriel/releases/tag/apk-latest`
+  - Pestaña **Actions** → workflow *Build & Publish Android APK (Capacitor)* → Artifact `Metal-Uriel-UNID-v3-APK`.
+- **Primer uso en tu teléfono Android:**
+  1. Instala `Metal-Uriel-UNID-v3.apk` (habilita *Instalar apps desconocidas*).
+  2. Al abrir la app, aparece automáticamente la pantalla **📡 Conectar a Servidor Metal-Uriel**.
+  3. Ingresa tu URL de túnel HTTPS (`https://admisiones.tudominio.mx`) o la IP LAN del campus (`http://192.168.x.x:3000`), pulsa **Probar Conexión** y guarda.
+  4. Inicia sesión con tu cuenta institucional RBAC. Puedes cambiar de servidor en cualquier momento con el botón **📡 Servidor**.
+- **Compilación local opcional (si tienes JDK 21 y Android SDK / Android Studio):**
+  ```bash
+  npm run cap:sync            # Compila Vite -> public/dist y sincroniza android/
+  cd android && ./gradlew assembleDebug
+  # APK generada en: android/app/build/outputs/apk/debug/app-debug.apk
+  ```
+
+---
+
 ## 🛡️ Blindaje de Producción, Docker y Pruebas Automatizadas (v2.1)
 
 - **Seguridad P0 Activada por Defecto:**

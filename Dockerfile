@@ -21,7 +21,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
 
-COPY index.js schema.sql brochures.json system_prompt.txt .env.example ./
+COPY index.js headless.js schema.sql brochures.json system_prompt.txt .env.example ./
 COPY lib ./lib
 COPY src ./src
 COPY public/uploads ./public/uploads

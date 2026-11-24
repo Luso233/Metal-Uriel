@@ -17,18 +17,17 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Instalar dependencias
-        run: npm ci
+        run: npm install
 
-      - name: Verificación de sintaxis Backend (index.js, lib/, src/)
+      - name: Verificación de sintaxis Backend (index.js, headless.js, lib/, src/)
         run: npm run check
 
       - name: Build de producción Frontend Offline (Vite + React 18 + Tailwind CSS)
         run: npm run build
 
-      - name: Suite de pruebas automatizadas (RBAC, HMAC, CURP, Guardrails, RAM GC)
+      - name: Suite de pruebas automatizadas (RBAC, HMAC, CORS, Headless, CURP, Guardrails, RAM GC)
         run: npm test
 
       - name: Escaneo anti-fuga de secretos en archivos versionados

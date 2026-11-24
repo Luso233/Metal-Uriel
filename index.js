@@ -54,15 +54,16 @@ function startServer(port = config.PORT, host = config.HOST) {
         const setupInfo = await computeSetupStatus().catch(() => ({ needsSetup: false }));
         const hmacActive = Boolean(config.META_APP_SECRET && !setupUtils.isPlaceholderValue(config.META_APP_SECRET));
         console.log(`====================================================`);
-        console.log(`🐺 :UNID Centro de Mando • Metal-Uriel v3.0 (Modular + Vite)`);
+        console.log(`🐺 :UNID Centro de Mando • Metal-Uriel v3.0 (${config.HEADLESS_MODE ? 'HEADLESS API' : 'Modular + Vite'})`);
         console.log(`💻 Hardware: ${hw.cpuCores} núcleos | RAM: ${hw.freeMemGB}/${hw.totalMemGB} GB libre`);
+        console.log(`🧩 Modo Servidor: ${config.HEADLESS_MODE ? 'HEADLESS (Sin UI Web — ideal para APK Capacitor / API)' : 'FULL (API + Panel Web Vite Offline)'}`);
         console.log(`🛡️ Modo de Inferencia: ${getActiveModelId()} ${isOllamaConfigured() ? '(+ Ollama Local último recurso)' : ''}`);
-        console.log(`🔐 Seguridad: Helmet CSP + Rate Limit + RBAC 100% + HMAC ${hmacActive ? 'ACTIVO ✅' : 'SANDBOX'}`);
+        console.log(`🔐 Seguridad: Helmet CSP + CORS Capacitor + Rate Limit + RBAC 100% + HMAC ${hmacActive ? 'ACTIVO ✅' : 'SANDBOX'}`);
         console.log(`🌐 Acceso Local: http://localhost:${port}`);
-        hw.lanUrls.forEach(u => console.log(`🏢 Acceso Red Local (LAN Admisiones): ${u}`));
+        hw.lanUrls.forEach(u => console.log(`🏢 Acceso Red Local (LAN / APK Android): ${u}`));
         console.log(`🔗 Webhook de WhatsApp: http://localhost:${port}/webhook`);
         if (setupInfo.needsSetup) {
-            console.log(`🧩 PRIMER USO DETECTADO: Abre http://localhost:${port} en tu navegador para el Setup Wizard.`);
+            console.log(`🧩 PRIMER USO DETECTADO: ${config.HEADLESS_MODE ? 'Conecta la APK Android o abre con HEADLESS_MODE=false para completar el Setup Wizard.' : `Abre http://localhost:${port} en tu navegador para el Setup Wizard.`}`);
         }
         console.log(`====================================================`);
     });
