@@ -36,13 +36,19 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Configurar Android SDK (API 36)
-        uses: android-actions/setup-android@v3
-
-      - name: Instalar plataforma Android 36 y Build Tools
+      - name: Configurar Android SDK preinstalado e instalar API 36
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-36" "build-tools;36.0.0"
+          SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_DIR" >> "$GITHUB_ENV"
+          SDKMAN="$(find "$SDK_DIR/cmdline-tools" -name sdkmanager 2>/dev/null | head -n 1)"
+          if [ -n "$SDKMAN" ]; then
+            echo "Usando sdkmanager: $SDKMAN"
+            yes | "$SDKMAN" --sdk_root="$SDK_DIR" --licenses >/dev/null 2>&1 || true
+            "$SDKMAN" --sdk_root="$SDK_DIR" "platforms;android-36" "build-tools;36.0.0"
+          else
+            echo "sdkmanager no encontrado en $SDK_DIR; Gradle descargará componentes automáticamente."
+          fi
 
       - name: Compilar APK Android con Gradle (assembleDebug instalable)
         working-directory: android
