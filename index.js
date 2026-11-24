@@ -12,6 +12,12 @@ const {
     setProviderCooldown,
     isProviderInCooldown,
     getProviderCooldownRemaining,
+    setModelCooldown,
+    isModelInCooldown,
+    withTimeout,
+    enqueuePhoneTask,
+    metaMediaIdCache,
+    whatsappMessageStatuses,
     runMemoryCleanup,
     startMemoryGcScheduler
 } = require('./src/state/memory');
@@ -105,6 +111,13 @@ module.exports = {
     setProviderCooldown,
     isProviderInCooldown,
     getProviderCooldownRemaining,
+    setModelCooldown,
+    isModelInCooldown,
+    withTimeout,
+    enqueuePhoneTask,
+    metaMediaIdCache,
+    whatsappMessageStatuses,
+    getMetaGraphVersion: () => config.META_GRAPH_VERSION,
     verifyMetaWebhookSignature,
     runMemoryCleanup
 };

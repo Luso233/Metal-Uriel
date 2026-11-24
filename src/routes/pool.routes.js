@@ -11,6 +11,8 @@ const {
     getBrochures,
     saveBrochuresToDisk,
     getActiveCicloEscolar,
+    invalidateCicloCache,
+    invalidatePoolCache,
     getActivePoolItems,
     saveUploadedBase64File,
     generateOfficialPdfBuffer
@@ -82,6 +84,7 @@ router.post('/api/ciclos', authMiddleware, async (req, res) => {
         `, [sedeId, cleanCiclo, JSON.stringify(list), req.user?.correo_institucional || 'Admin']);
 
         activeSchoolCyclesMemory.set(sedeId, cleanCiclo);
+        invalidateCicloCache(sedeId);
         res.json({
             success: true,
             message: `Ciclo escolar activo actualizado a ${cleanCiclo}`,
@@ -227,6 +230,7 @@ async function handleCreatePoolResource(req, res) {
         const idx = brochures.findIndex(b => b.id === codigoRecurso);
         if (idx >= 0) brochures[idx] = item; else brochures.push(item);
         saveBrochuresToDisk();
+        invalidatePoolCache();
         return res.status(201).json({ success: true, item, brochure: item });
     } catch (err) {
         return res.status(500).json({ success: false, error: err.message });
@@ -272,6 +276,7 @@ async function handleUpdatePoolResource(req, res) {
         const updatedObj = { id: codigoRecurso, codigo_recurso: codigoRecurso, ciclo_escolar: finalCiclo, categoria: finalCategoria, titulo: finalTitle, carrera: finalTitle, descripcion_ia: finalDescripcionIa, scope: finalScope, scopeLabel, modalidad: finalModalidad, duracion: finalDuracion, rvoe: finalRvoe, tipo_archivo: finalTipoArchivo, fileName: finalFileName, pdfUrl: finalUrl, url_recurso: finalUrl, size: finalSize, tags: parsedTags };
         const bIndex = brochures.findIndex(b => b.id === codigoRecurso);
         if (bIndex !== -1) { brochures[bIndex] = { ...brochures[bIndex], ...updatedObj }; saveBrochuresToDisk(); }
+        invalidatePoolCache();
         return res.json({ success: true, item: updatedObj, brochure: updatedObj });
     } catch (err) {
         return res.status(500).json({ success: false, error: err.message });
@@ -285,6 +290,7 @@ async function handleDeletePoolResource(req, res) {
         const brochures = getBrochures();
         const idx = brochures.findIndex(b => b.id === id);
         if (idx !== -1) { brochures.splice(idx, 1); saveBrochuresToDisk(); }
+        invalidatePoolCache();
         return res.json({ success: true, message: 'Recurso eliminado exitosamente del Pool.' });
     } catch (err) {
         return res.status(500).json({ success: false, error: err.message });

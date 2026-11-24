@@ -5,10 +5,60 @@ const conversationMemory = new Map();
 const userSessionState = new Map();
 const processedMessageIds = new Set();
 const providerCooldowns = new Map();
+const modelCooldowns = new Map();
+const metaMediaIdCache = new Map();
+const whatsappMessageStatuses = new Map();
+const phoneProcessingQueues = new Map();
 const activeSchoolCyclesMemory = new Map([['campeche', '2026-3 Septiembre']]);
 const emailNotificationHistory = [];
 const systemAlertCooldowns = new Map();
 const llmTelemetryBuffer = [];
+
+function withTimeout(promise, timeoutMs, label = 'operación') {
+    let timer = null;
+    return Promise.race([
+        promise,
+        new Promise((_, reject) => {
+            timer = setTimeout(() => {
+                const err = new Error(`Timeout excedido (${timeoutMs}ms) en ${label}`);
+                err.code = 'ETIMEDOUT';
+                err.status = 504;
+                reject(err);
+            }, timeoutMs);
+            if (typeof timer.unref === 'function') timer.unref();
+        })
+    ]).finally(() => {
+        if (timer) clearTimeout(timer);
+    });
+}
+
+function enqueuePhoneTask(canonicalKey, taskFn) {
+    const key = canonicalKey || 'global';
+    const prev = phoneProcessingQueues.get(key) || Promise.resolve();
+    const next = prev.then(() => taskFn(), () => taskFn()).finally(() => {
+        if (phoneProcessingQueues.get(key) === next) {
+            phoneProcessingQueues.delete(key);
+        }
+    });
+    phoneProcessingQueues.set(key, next);
+    return next;
+}
+
+function isModelInCooldown(modelId) {
+    const expiresAt = modelCooldowns.get(modelId);
+    if (!expiresAt) return false;
+    if (Date.now() > expiresAt) {
+        modelCooldowns.delete(modelId);
+        return false;
+    }
+    return true;
+}
+
+function setModelCooldown(modelId, durationMinutes = 3, reason = 'Congestión/503') {
+    const expiresAt = Date.now() + (durationMinutes * 60 * 1000);
+    modelCooldowns.set(modelId, expiresAt);
+    console.warn(`⏳ [MODEL COOLDOWN] Modelo '${modelId}' en pausa por ${durationMinutes} min (${reason}).`);
+}
 
 let totalConversationsStarted = 0;
 let lastMemoryCleanupStats = {
@@ -71,6 +121,9 @@ module.exports = {
     userSessionState,
     processedMessageIds,
     providerCooldowns,
+    modelCooldowns,
+    metaMediaIdCache,
+    whatsappMessageStatuses,
     activeSchoolCyclesMemory,
     emailNotificationHistory,
     systemAlertCooldowns,
@@ -78,6 +131,10 @@ module.exports = {
     isProviderInCooldown,
     setProviderCooldown,
     getProviderCooldownRemaining,
+    isModelInCooldown,
+    setModelCooldown,
+    withTimeout,
+    enqueuePhoneTask,
     touchUserSession,
     runMemoryCleanup,
     startMemoryGcScheduler,

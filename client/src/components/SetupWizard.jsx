@@ -110,7 +110,7 @@ import React, { useState, useEffect, useRef } from 'react';
     id, name, label, hint, value, onChange, onBlur, error, required,
     type = 'text', inputMode, pattern, minLength, maxLength, autoComplete,
     enterKeyHint = 'next', isSecret = false, placeholder = '', extraAction = null,
-    keepExistingHint = ''
+    keepExistingHint = '', portalUrl = '', portalLabel = '', portalBadge = ''
   }) {
     const [revealed, setRevealed] = useState(false);
     const inputType = isSecret ? (revealed ? 'text' : 'password') : type;
@@ -178,6 +178,26 @@ import React, { useState, useEffect, useRef } from 'react';
             </button>
           )}
         </div>
+
+        {portalUrl && (
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5 text-[11px]">
+            <a
+              href={portalUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-sky-300 hover:text-amber-300 font-semibold underline decoration-sky-500/40 hover:decoration-amber-400 transition break-all"
+            >
+              <span>🔗 {portalLabel || 'Obtener credencial aquí'}:</span>
+              <span className="font-mono">{portalUrl.replace(/^https?:\/\//, '')}</span>
+              <span aria-hidden="true">↗</span>
+            </a>
+            {portalBadge && (
+              <span className="px-2 py-0.5 rounded-full bg-amber-400/15 border border-amber-400/30 text-amber-200 text-[10px] font-bold">
+                {portalBadge}
+              </span>
+            )}
+          </div>
+        )}
 
         {error && (
           <div id={errId} className="text-xs font-semibold text-red-400 flex items-start gap-1.5 mt-0.5">
@@ -678,11 +698,14 @@ import React, { useState, useEffect, useRef } from 'react';
                 )}
 
                 <WizardField
-                  id="GEMINI_API_KEY" name="GEMINI_API_KEY" label="1. Google Gemini API Key (Principal — Gemini 3.8 Flash)" isSecret
+                  id="GEMINI_API_KEY" name="GEMINI_API_KEY" label="1. Google Gemini API Key (Principal — Ultra Rápido ~1.4s)" isSecret
                   hint={CLIENT_RULES.GEMINI_API_KEY.hint} value={form.GEMINI_API_KEY}
                   pattern={CLIENT_RULES.GEMINI_API_KEY.pattern} minLength={35} maxLength={55}
                   placeholder="AIzaSy..."
                   keepExistingHint={existingFlags.hasGeminiKey ? `(${existingFlags.maskedGeminiKey})` : ''}
+                  portalUrl="https://aistudio.google.com/api-keys"
+                  portalLabel="Obtener API Key en Google AI Studio"
+                  portalBadge="⭐ Recomendado • Descuento + Tier Gratis"
                   onChange={handleFieldChange} onBlur={handleFieldBlur} error={errors.GEMINI_API_KEY}
                   extraAction={
                     <button
@@ -697,40 +720,17 @@ import React, { useState, useEffect, useRef } from 'react';
                 />
                 {renderTestBadge('google')}
 
-                <div className="pt-2 pb-1 border-t border-slate-800">
-                  <p className="text-xs font-bold text-slate-300 mb-3">Respaldos en la Nube (Opcionales — Circuit Breaker automático):</p>
-                  <WizardField
-                    id="OPENAI_API_KEY" name="OPENAI_API_KEY" label="2. OpenAI API Key (Respaldo GPT-4o-mini)" isSecret
-                    hint={CLIENT_RULES.OPENAI_API_KEY.hint} value={form.OPENAI_API_KEY}
-                    pattern={CLIENT_RULES.OPENAI_API_KEY.pattern} placeholder="sk-proj-..."
-                    keepExistingHint={existingFlags.hasOpenAiKey ? '(Configurada)' : ''}
-                    onChange={handleFieldChange} onBlur={handleFieldBlur} error={errors.OPENAI_API_KEY}
-                    extraAction={
-                      <button
-                        type="button"
-                        disabled={testingKey === 'openai'}
-                        onClick={() => runLiveTest('openai', '/api/setup/test-ai', { provider: 'openai', apiKey: form.OPENAI_API_KEY })}
-                        className="wizard-btn px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 text-[11px] font-bold"
-                      >
-                        {testingKey === 'openai' ? '⏳...' : 'Probar OpenAI'}
-                      </button>
-                    }
-                  />
-                  {renderTestBadge('openai')}
+                <div className="pt-3 pb-1 border-t border-slate-800">
+                  <p className="text-xs font-bold text-slate-300 mb-3">Respaldos en la Nube (Opcionales — Agrega más proveedores cuando tu sede lo necesite; Circuit Breaker automático):</p>
 
                   <WizardField
-                    id="ANTHROPIC_API_KEY" name="ANTHROPIC_API_KEY" label="3. Anthropic Claude API Key (Opcional)" isSecret
-                    hint={CLIENT_RULES.ANTHROPIC_API_KEY.hint} value={form.ANTHROPIC_API_KEY}
-                    pattern={CLIENT_RULES.ANTHROPIC_API_KEY.pattern} placeholder="sk-ant-api03-..."
-                    keepExistingHint={existingFlags.hasAnthropicKey ? '(Configurada)' : ''}
-                    onChange={handleFieldChange} onBlur={handleFieldBlur} error={errors.ANTHROPIC_API_KEY}
-                  />
-
-                  <WizardField
-                    id="GROQ_API_KEY" name="GROQ_API_KEY" label="4. Groq Cloud API Key (Opcional — Tier gratuito ultra rápido)" isSecret
+                    id="GROQ_API_KEY" name="GROQ_API_KEY" label="2. Groq Cloud API Key (Respaldo #1 — Tier gratuito ultra rápido)" isSecret
                     hint={CLIENT_RULES.GROQ_API_KEY.hint} value={form.GROQ_API_KEY}
                     pattern={CLIENT_RULES.GROQ_API_KEY.pattern} placeholder="gsk_..."
                     keepExistingHint={existingFlags.hasGroqKey ? '(Configurada)' : ''}
+                    portalUrl="https://console.groq.com/keys"
+                    portalLabel="Obtener API Key gratis en Groq Console"
+                    portalBadge="⚡ Respaldo <1s"
                     onChange={handleFieldChange} onBlur={handleFieldBlur} error={errors.GROQ_API_KEY}
                     extraAction={
                       <button
@@ -746,28 +746,93 @@ import React, { useState, useEffect, useRef } from 'react';
                   {renderTestBadge('groq')}
 
                   <WizardField
-                    id="DEEPSEEK_API_KEY" name="DEEPSEEK_API_KEY" label="5. DeepSeek API Key (Opcional)" isSecret
+                    id="OPENAI_API_KEY" name="OPENAI_API_KEY" label="3. OpenAI API Key (Respaldo GPT-4o-mini / GPT-4o)" isSecret
+                    hint={CLIENT_RULES.OPENAI_API_KEY.hint} value={form.OPENAI_API_KEY}
+                    pattern={CLIENT_RULES.OPENAI_API_KEY.pattern} placeholder="sk-proj-..."
+                    keepExistingHint={existingFlags.hasOpenAiKey ? '(Configurada)' : ''}
+                    portalUrl="https://platform.openai.com/api-keys"
+                    portalLabel="Obtener API Key en OpenAI Platform"
+                    onChange={handleFieldChange} onBlur={handleFieldBlur} error={errors.OPENAI_API_KEY}
+                    extraAction={
+                      <button
+                        type="button"
+                        disabled={testingKey === 'openai'}
+                        onClick={() => runLiveTest('openai', '/api/setup/test-ai', { provider: 'openai', apiKey: form.OPENAI_API_KEY })}
+                        className="wizard-btn px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 text-[11px] font-bold"
+                      >
+                        {testingKey === 'openai' ? '⏳...' : 'Probar OpenAI'}
+                      </button>
+                    }
+                  />
+                  {renderTestBadge('openai')}
+
+                  <WizardField
+                    id="ANTHROPIC_API_KEY" name="ANTHROPIC_API_KEY" label="4. Anthropic Claude API Key (Opcional — Claude 3.5 Haiku / Sonnet)" isSecret
+                    hint={CLIENT_RULES.ANTHROPIC_API_KEY.hint} value={form.ANTHROPIC_API_KEY}
+                    pattern={CLIENT_RULES.ANTHROPIC_API_KEY.pattern} placeholder="sk-ant-api03-..."
+                    keepExistingHint={existingFlags.hasAnthropicKey ? '(Configurada)' : ''}
+                    portalUrl="https://console.anthropic.com/settings/keys"
+                    portalLabel="Obtener API Key en Anthropic Console"
+                    onChange={handleFieldChange} onBlur={handleFieldBlur} error={errors.ANTHROPIC_API_KEY}
+                    extraAction={
+                      <button
+                        type="button"
+                        disabled={testingKey === 'anthropic'}
+                        onClick={() => runLiveTest('anthropic', '/api/setup/test-ai', { provider: 'anthropic', apiKey: form.ANTHROPIC_API_KEY })}
+                        className="wizard-btn px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 text-[11px] font-bold"
+                      >
+                        {testingKey === 'anthropic' ? '⏳...' : 'Probar Claude'}
+                      </button>
+                    }
+                  />
+                  {renderTestBadge('anthropic')}
+
+                  <WizardField
+                    id="DEEPSEEK_API_KEY" name="DEEPSEEK_API_KEY" label="5. DeepSeek API Key (Opcional — Ultra Low Cost)" isSecret
                     hint={CLIENT_RULES.DEEPSEEK_API_KEY.hint} value={form.DEEPSEEK_API_KEY}
                     pattern={CLIENT_RULES.DEEPSEEK_API_KEY.pattern} placeholder="sk-..."
                     keepExistingHint={existingFlags.hasDeepSeekKey ? '(Configurada)' : ''}
+                    portalUrl="https://platform.deepseek.com/api_keys"
+                    portalLabel="Obtener API Key en DeepSeek Platform"
                     onChange={handleFieldChange} onBlur={handleFieldBlur} error={errors.DEEPSEEK_API_KEY}
+                    extraAction={
+                      <button
+                        type="button"
+                        disabled={testingKey === 'deepseek'}
+                        onClick={() => runLiveTest('deepseek', '/api/setup/test-ai', { provider: 'deepseek', apiKey: form.DEEPSEEK_API_KEY })}
+                        className="wizard-btn px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 text-[11px] font-bold"
+                      >
+                        {testingKey === 'deepseek' ? '⏳...' : 'Probar DeepSeek'}
+                      </button>
+                    }
                   />
+                  {renderTestBadge('deepseek')}
                 </div>
 
                 {/* Sección Ollama Local Opcional */}
                 <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-700 space-y-3 mt-4">
-                  <div className="flex items-start gap-3">
-                    <input
-                      id="OLLAMA_ENABLED"
-                      name="OLLAMA_ENABLED"
-                      type="checkbox"
-                      checked={Boolean(form.OLLAMA_ENABLED)}
-                      onChange={(e) => handleFieldChange('OLLAMA_ENABLED', e.target.checked)}
-                      className="mt-1 w-5 h-5 accent-[#FFC72C] rounded cursor-pointer"
-                    />
-                    <label htmlFor="OLLAMA_ENABLED" className="text-sm font-bold text-white cursor-pointer">
-                      🦙 Habilitar Ollama Local como ÚLTIMO recurso en la cascada (Opcional)
-                    </label>
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="flex items-start gap-3">
+                      <input
+                        id="OLLAMA_ENABLED"
+                        name="OLLAMA_ENABLED"
+                        type="checkbox"
+                        checked={Boolean(form.OLLAMA_ENABLED)}
+                        onChange={(e) => handleFieldChange('OLLAMA_ENABLED', e.target.checked)}
+                        className="mt-1 w-5 h-5 accent-[#FFC72C] rounded cursor-pointer"
+                      />
+                      <label htmlFor="OLLAMA_ENABLED" className="text-sm font-bold text-white cursor-pointer">
+                        🦙 Habilitar Ollama Local como ÚLTIMO recurso en la cascada (Opcional, $0)
+                      </label>
+                    </div>
+                    <a
+                      href="https://ollama.com/download"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[11px] font-semibold text-sky-300 hover:text-amber-300 underline"
+                    >
+                      🔗 Descargar Ollama gratis (ollama.com/download) ↗
+                    </a>
                   </div>
 
                   <div className={`p-3 rounded-xl border text-xs leading-relaxed ${hwBannerStyle}`}>
@@ -869,6 +934,8 @@ import React, { useState, useEffect, useRef } from 'react';
                       inputMode="numeric" pattern={CLIENT_RULES.WHATSAPP_PHONE_NUMBER_ID.pattern}
                       minLength={10} maxLength={20} placeholder="1332834883256423"
                       hint={CLIENT_RULES.WHATSAPP_PHONE_NUMBER_ID.hint} value={form.WHATSAPP_PHONE_NUMBER_ID}
+                      portalUrl="https://developers.facebook.com/apps/"
+                      portalLabel="Ver Phone Number ID en Meta for Developers → WhatsApp → Configuración de la API"
                       onChange={handleFieldChange} onBlur={handleFieldBlur} error={errors.WHATSAPP_PHONE_NUMBER_ID}
                     />
                     <WizardField
@@ -876,6 +943,9 @@ import React, { useState, useEffect, useRef } from 'react';
                       pattern={CLIENT_RULES.WHATSAPP_TOKEN.pattern} minLength={80} maxLength={500} placeholder="EAAG..."
                       hint={CLIENT_RULES.WHATSAPP_TOKEN.hint} value={form.WHATSAPP_TOKEN}
                       keepExistingHint={existingFlags.hasWhatsAppToken ? `(${existingFlags.maskedWhatsAppToken})` : ''}
+                      portalUrl="https://business.facebook.com/settings/system-users"
+                      portalLabel="Generar Token Permanente (Usuario del Sistema) en Meta Business Suite"
+                      portalBadge="🔐 No expira cada 24h"
                       onChange={handleFieldChange} onBlur={handleFieldBlur} error={errors.WHATSAPP_TOKEN}
                     />
 
@@ -917,6 +987,8 @@ import React, { useState, useEffect, useRef } from 'react';
                   pattern={CLIENT_RULES.META_APP_SECRET.pattern} minLength={32} maxLength={64} placeholder="32 caracteres hexadecimales (ej. a1b2c3...)"
                   hint={CLIENT_RULES.META_APP_SECRET.hint} value={form.META_APP_SECRET}
                   keepExistingHint={existingFlags.hasMetaAppSecret ? `(${existingFlags.maskedMetaAppSecret})` : ''}
+                  portalUrl="https://developers.facebook.com/apps/"
+                  portalLabel="Obtener Clave Secreta en Meta Developers → Configuración de la app → Básica"
                   onChange={handleFieldChange} onBlur={handleFieldBlur} error={errors.META_APP_SECRET}
                 />
               </fieldset>
@@ -1080,6 +1152,8 @@ import React, { useState, useEffect, useRef } from 'react';
                     id="SMTP_PASS" name="SMTP_PASS" label="Contraseña / App Password SMTP" isSecret enterKeyHint="done"
                     hint={CLIENT_RULES.SMTP_PASS.hint} value={form.SMTP_PASS}
                     keepExistingHint={existingFlags.hasSmtpPass ? '(Guardada actualmente)' : ''}
+                    portalUrl="https://myaccount.google.com/apppasswords"
+                    portalLabel="Crear Contraseña de Aplicación (16 letras) en Cuenta de Google"
                     onChange={handleFieldChange} onBlur={handleFieldBlur} error={errors.SMTP_PASS}
                   />
 
@@ -1106,10 +1180,10 @@ import React, { useState, useEffect, useRef } from 'react';
                   <div>• Base de datos: <span className="font-mono">{form.DB_USER}@{form.DB_HOST}:{form.DB_PORT}/{form.DB_NAME}</span> (auto-creación de 8 tablas)</div>
                   <div>• Motores IA activos: <span className="font-mono">
                     {[
-                      form.GEMINI_API_KEY ? 'Gemini 3.8 Flash' : null,
-                      form.ANTHROPIC_API_KEY ? 'Claude' : null,
-                      form.OPENAI_API_KEY ? 'OpenAI' : null,
+                      form.GEMINI_API_KEY ? 'Gemini 3.5 Flash Lite / 4 Hydrogen' : null,
                       form.GROQ_API_KEY ? 'Groq' : null,
+                      form.OPENAI_API_KEY ? 'OpenAI' : null,
+                      form.ANTHROPIC_API_KEY ? 'Claude' : null,
                       form.DEEPSEEK_API_KEY ? 'DeepSeek' : null,
                       form.OLLAMA_ENABLED ? `Ollama (${form.OLLAMA_MODEL})` : null
                     ].filter(Boolean).join(' → ') || 'Ninguno'}

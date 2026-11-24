@@ -78,6 +78,7 @@ const config = {
     get META_APP_SECRET() { return process.env.META_APP_SECRET || ''; },
     get WHATSAPP_TOKEN() { return process.env.WHATSAPP_TOKEN || ''; },
     get WHATSAPP_PHONE_NUMBER_ID() { return process.env.WHATSAPP_PHONE_NUMBER_ID || ''; },
+    get META_GRAPH_VERSION() { return process.env.META_GRAPH_VERSION || 'v22.0'; },
     get ADMIN_USERNAME() { return process.env.ADMIN_USERNAME || 'admin'; },
     get ADMIN_PASSWORD() { return process.env.ADMIN_PASSWORD || 'unid2026'; },
     get TESTING_NOTIFICATION_EMAIL() { return process.env.ADMISSIONS_NOTIFICATION_EMAIL || 'Luisquintero2001@gmail.com'; }

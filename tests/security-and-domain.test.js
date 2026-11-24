@@ -160,11 +160,37 @@ describe('Dominio Metal-Uriel — CURP RENAPO, Criptografía AES/scrypt y Circui
         assert.equal(serverMod.verifyPassword('wrong-password', hashed), false);
     });
 
-    it('activa y consulta el Circuit Breaker de proveedores IA', () => {
+    it('activa y consulta el Circuit Breaker de proveedores IA y por modelo individual + timeout estricto', async () => {
         assert.equal(serverMod.isProviderInCooldown('test-provider'), false);
         serverMod.setProviderCooldown('test-provider', 1, 'HTTP 429 test');
         assert.equal(serverMod.isProviderInCooldown('test-provider'), true);
         assert.ok(serverMod.getProviderCooldownRemaining('test-provider') > 0);
+
+        assert.equal(serverMod.isModelInCooldown('gemini-3.8-flash-test'), false);
+        serverMod.setModelCooldown('gemini-3.8-flash-test', 1, 'HTTP 503 test');
+        assert.equal(serverMod.isModelInCooldown('gemini-3.8-flash-test'), true);
+
+        await assert.rejects(
+            () => serverMod.withTimeout(new Promise(() => {}), 35, 'test-timeout'),
+            /Timeout excedido/
+        );
+        assert.equal(serverMod.getMetaGraphVersion(), 'v22.0');
+
+        const order = [];
+        await Promise.all([
+            serverMod.enqueuePhoneTask('9811111111', async () => {
+                await new Promise(r => setTimeout(r, 25));
+                order.push('A1');
+            }),
+            serverMod.enqueuePhoneTask('9811111111', async () => {
+                order.push('A2');
+            }),
+            serverMod.enqueuePhoneTask('9812222222', async () => {
+                order.push('B1');
+            })
+        ]);
+        assert.equal(order.indexOf('A1') < order.indexOf('A2'), true);
+        assert.equal(order.indexOf('B1') < order.indexOf('A2'), true);
     });
 });
 
@@ -284,6 +310,34 @@ describe('Integración HTTP Express — Blindaje RBAC, Helmet y Firma HMAC Webho
         });
         assert.equal(okRes.status, 200);
         assert.equal(await okRes.text(), 'EVENT_RECEIVED');
+
+        // Verificar rastreo real de webhook statuses (read / failed)
+        const statusPayloadStr = JSON.stringify({
+            object: 'whatsapp_business_account',
+            entry: [{
+                changes: [{
+                    value: {
+                        statuses: [{
+                            id: 'wamid.TEST_STATUS_READ_V3',
+                            status: 'read',
+                            recipient_id: '5219818194049',
+                            timestamp: String(Math.floor(Date.now() / 1000))
+                        }]
+                    }
+                }]
+            }]
+        });
+        const statusSig = 'sha256=' + crypto
+            .createHmac('sha256', process.env.META_APP_SECRET)
+            .update(Buffer.from(statusPayloadStr, 'utf8'))
+            .digest('hex');
+        const stRes = await fetch(`${baseUrl}/webhook`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Hub-Signature-256': statusSig },
+            body: statusPayloadStr
+        });
+        assert.equal(stRes.status, 200);
+        assert.equal(serverMod.whatsappMessageStatuses.get('wamid.TEST_STATUS_READ_V3')?.status, 'read');
     });
 
     it('permite peticiones CORS desde Capacitor APK (http/https/capacitor://localhost) y soporta modo Headless', async () => {

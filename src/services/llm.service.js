@@ -6,9 +6,14 @@ const { isValidApiKey, isOllamaConfigured, getActivePrompt } = require('../confi
 const {
     conversationMemory,
     userSessionState,
+    modelCooldowns,
+    metaMediaIdCache,
     isProviderInCooldown,
     setProviderCooldown,
     getProviderCooldownRemaining,
+    isModelInCooldown,
+    setModelCooldown,
+    withTimeout,
     touchUserSession,
     incrementTotalConversations
 } = require('../state/memory');
@@ -32,27 +37,37 @@ const ALL_SUPPORTED_MODELS = [
         providerName: 'Auto-Fallback',
         icon: '🛡️',
         badge: 'Recomendado',
-        description: 'Enruta automáticamente al mejor modelo disponible. Si uno agota su cuota (429/403), salta en milisegundos al siguiente sin interrupciones.',
+        description: 'Enruta automáticamente al motor más veloz disponible (Gemini 3.5 Flash Lite ~1.4s -> Gemini 4 Hydrogen -> Groq -> OpenAI). Si un modelo tiene congestión (503/429), salta al instante sin perder contexto.',
         isConfigured: true
-    },
-    {
-        id: 'gemini-3.8-flash',
-        name: 'Google Gemini 3.8 Flash',
-        provider: 'google',
-        providerName: 'Google Gemini',
-        icon: '⚡',
-        badge: 'Estándar Oficial',
-        description: 'Motor cognitivo principal de última generación, baja latencia y alta comprensión contextual.',
-        isConfigured: isValidApiKey(process.env.GEMINI_API_KEY)
     },
     {
         id: 'gemini-3.5-flash-lite',
         name: 'Google Gemini 3.5 Flash Lite',
         provider: 'google',
         providerName: 'Google Gemini',
+        icon: '⚡',
+        badge: 'Ultra Rápido (~1.4s)',
+        description: 'Motor principal recomendado para WhatsApp: respuesta en ~1.4s sin latencia de pensamiento, costo mínimo y máxima cuota.',
+        isConfigured: isValidApiKey(process.env.GEMINI_API_KEY)
+    },
+    {
+        id: 'gemini-4-hydrogen',
+        name: 'Google Gemini 4 Hydrogen',
+        provider: 'google',
+        providerName: 'Google Gemini',
+        icon: '🚀',
+        badge: 'Gemini 4 Equilibrado',
+        description: 'Modelo rápido de nueva generación Gemini 4 con excelente comprensión multimodal y razonamiento ligero.',
+        isConfigured: isValidApiKey(process.env.GEMINI_API_KEY)
+    },
+    {
+        id: 'gemini-3.8-flash',
+        name: 'Google Gemini 3.8 Flash',
+        provider: 'google',
+        providerName: 'Google Gemini',
         icon: '✨',
-        badge: 'Ultra Rápido',
-        description: 'Ultra rápido y de alta capacidad de cuota para atención masiva en WhatsApp.',
+        badge: 'Flash Avanzado',
+        description: 'Motor cognitivo avanzado con razonamiento profundo (respaldo automático a Flash Lite ante picos 503).',
         isConfigured: isValidApiKey(process.env.GEMINI_API_KEY)
     },
     {
@@ -61,7 +76,7 @@ const ALL_SUPPORTED_MODELS = [
         provider: 'google',
         providerName: 'Google Gemini',
         icon: '🧠',
-        badge: 'Avanzado',
+        badge: 'Frontera',
         description: 'Máxima capacidad de razonamiento lógico institucional de frontera.',
         isConfigured: isValidApiKey(process.env.GEMINI_API_KEY)
     },
@@ -138,6 +153,8 @@ const ALL_SUPPORTED_MODELS = [
 ];
 
 function initAiClients() {
+    modelCooldowns.clear();
+    metaMediaIdCache.clear();
     geminiClient = isValidApiKey(process.env.GEMINI_API_KEY) ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY.trim() }) : null;
     anthropicClient = isValidApiKey(process.env.ANTHROPIC_API_KEY) ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY.trim() }) : null;
     openaiClient = isValidApiKey(process.env.OPENAI_API_KEY) ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY.trim() }) : null;
@@ -168,33 +185,69 @@ async function llamarAPI_Gemini(modelId, prompt, history) {
         throw new Error('Google Gemini no tiene API Key configurada.');
     }
     const legacyMap = {
-        'gemini-2.5-flash': 'gemini-3.8-flash',
+        'gemini-2.5-flash': 'gemini-3.5-flash-lite',
         'gemini-2.5-flash-lite': 'gemini-3.5-flash-lite',
-        'gemini-2.5-pro': 'gemini-4-argon',
-        'gemini-3.5-flash': 'gemini-3.8-flash',
-        'gemini-3.6-flash': 'gemini-3.8-flash',
+        'gemini-2.5-pro': 'gemini-4-hydrogen',
+        'gemini-3.5-flash': 'gemini-3.5-flash-lite',
+        'gemini-3.6-flash': 'gemini-4-hydrogen',
         'gemini-3.1-pro-preview': 'gemini-4-argon'
     };
     const normalizedId = legacyMap[modelId] || modelId;
-    const primaryModel = (normalizedId && normalizedId.startsWith('gemini')) ? normalizedId : 'gemini-3.8-flash';
-    const candidateModels = Array.from(new Set([primaryModel, 'gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-4-argon']));
+    const primaryModel = (normalizedId && normalizedId.startsWith('gemini')) ? normalizedId : 'gemini-3.5-flash-lite';
+    const rawCandidates = Array.from(new Set([primaryModel, 'gemini-3.5-flash-lite', 'gemini-4-hydrogen', 'gemini-3.8-flash', 'gemini-4-argon']));
+    const activeCandidates = rawCandidates.filter(m => !isModelInCooldown(m));
+    const candidateModels = activeCandidates.length > 0 ? activeCandidates : rawCandidates;
+
     const geminiContents = history
         .filter(h => h.role !== 'system')
         .map(h => ({ role: (h.role === 'assistant' || h.role === 'human_advisor') ? 'model' : 'user', parts: [{ text: h.content }] }));
 
     let lastErr = null;
     for (const targetModel of candidateModels) {
+        const isLite = /flash-lite/i.test(targetModel);
+        const timeoutMs = isLite ? 9500 : 13000;
+        const modelConfig = {
+            systemInstruction: prompt,
+            temperature: 0.7,
+            maxOutputTokens: isLite ? 1024 : 2048,
+            thinkingConfig: { thinkingLevel: isLite ? 'minimal' : 'low' }
+        };
         try {
-            const response = await geminiClient.models.generateContent({
-                model: targetModel,
-                contents: geminiContents,
-                config: { systemInstruction: prompt, temperature: 0.7 }
-            });
+            const response = await withTimeout(
+                geminiClient.models.generateContent({ model: targetModel, contents: geminiContents, config: modelConfig }),
+                timeoutMs,
+                `Gemini (${targetModel})`
+            );
             const replyText = response.text ? response.text.trim() : '';
             if (replyText) return { reply: replyText, modelUsed: targetModel, provider: 'Google Gemini' };
         } catch (err) {
             lastErr = err;
-            console.warn(`⚠️ [GEMINI SUB-FALLBACK] Modelo ${targetModel} no disponible (${err.message?.slice(0, 80)})`);
+            const status = err.status || err.response?.status || err.statusCode;
+            const msg = String(err.message || '');
+            if (status === 401 || status === 403 || /api key not valid|invalid api key|permission_denied/i.test(msg)) {
+                throw err;
+            }
+            if (status === 400 && /thinking/i.test(msg)) {
+                try {
+                    const retryResp = await withTimeout(
+                        geminiClient.models.generateContent({
+                            model: targetModel,
+                            contents: geminiContents,
+                            config: { systemInstruction: prompt, temperature: 0.7, maxOutputTokens: 1500 }
+                        }),
+                        timeoutMs,
+                        `Gemini-retry (${targetModel})`
+                    );
+                    const retryText = retryResp.text ? retryResp.text.trim() : '';
+                    if (retryText) return { reply: retryText, modelUsed: targetModel, provider: 'Google Gemini' };
+                } catch (retryErr) {
+                    lastErr = retryErr;
+                }
+            }
+            if (status === 503 || status === 504 || status === 429 || err.code === 'ETIMEDOUT' || /high demand|overloaded|timeout|unavailable/i.test(msg)) {
+                setModelCooldown(targetModel, 3, `${status || err.code || 'saturado'}`);
+            }
+            console.warn(`⚠️ [GEMINI SUB-FALLBACK] Modelo ${targetModel} no disponible (${msg.slice(0, 80)})`);
         }
     }
     throw lastErr || new Error('Respuesta vacía de Google Gemini.');
@@ -205,15 +258,19 @@ async function llamarAPI_Claude(modelId, prompt, history) {
         throw new Error('Anthropic Claude no tiene API Key configurada.');
     }
     const targetModel = modelId && modelId.startsWith('claude') ? modelId : 'claude-3-5-haiku-20241022';
-    const response = await anthropicClient.messages.create({
-        model: targetModel,
-        max_tokens: 1000,
-        system: prompt,
-        messages: history
-            .filter(h => h.role !== 'system')
-            .map(h => ({ role: (h.role === 'assistant' || h.role === 'human_advisor') ? 'assistant' : 'user', content: h.content })),
-        temperature: 0.7
-    });
+    const response = await withTimeout(
+        anthropicClient.messages.create({
+            model: targetModel,
+            max_tokens: 1000,
+            system: prompt,
+            messages: history
+                .filter(h => h.role !== 'system')
+                .map(h => ({ role: (h.role === 'assistant' || h.role === 'human_advisor') ? 'assistant' : 'user', content: h.content })),
+            temperature: 0.7
+        }),
+        12000,
+        `Anthropic (${targetModel})`
+    );
     const replyText = response.content?.[0]?.type === 'text' ? response.content[0].text.trim() : '';
     if (!replyText) throw new Error('Respuesta vacía de Anthropic Claude.');
     return { reply: replyText, modelUsed: targetModel, provider: 'Anthropic Claude' };
@@ -224,18 +281,22 @@ async function llamarAPI_OpenAI(modelId, prompt, history) {
         throw new Error('OpenAI no tiene API Key configurada.');
     }
     const targetModel = modelId && modelId.startsWith('gpt') ? modelId : 'gpt-4o-mini';
-    const response = await openaiClient.chat.completions.create({
-        model: targetModel,
-        messages: [
-            { role: 'system', content: prompt },
-            ...history.filter(h => h.role !== 'system').map(h => ({
-                role: (h.role === 'assistant' || h.role === 'human_advisor') ? 'assistant' : 'user',
-                content: h.content
-            }))
-        ],
-        temperature: 0.7,
-        max_tokens: 800
-    });
+    const response = await withTimeout(
+        openaiClient.chat.completions.create({
+            model: targetModel,
+            messages: [
+                { role: 'system', content: prompt },
+                ...history.filter(h => h.role !== 'system').map(h => ({
+                    role: (h.role === 'assistant' || h.role === 'human_advisor') ? 'assistant' : 'user',
+                    content: h.content
+                }))
+            ],
+            temperature: 0.7,
+            max_tokens: 800
+        }),
+        12000,
+        `OpenAI (${targetModel})`
+    );
     const replyText = response.choices[0]?.message?.content?.trim() || '';
     if (!replyText) throw new Error('Respuesta vacía de OpenAI.');
     return { reply: replyText, modelUsed: targetModel, provider: 'OpenAI' };
@@ -245,18 +306,22 @@ async function llamarAPI_DeepSeek(_modelId, prompt, history) {
     if (!deepseekClient || !isValidApiKey(process.env.DEEPSEEK_API_KEY)) {
         throw new Error('DeepSeek no tiene API Key configurada.');
     }
-    const response = await deepseekClient.chat.completions.create({
-        model: 'deepseek-chat',
-        messages: [
-            { role: 'system', content: prompt },
-            ...history.filter(h => h.role !== 'system').map(h => ({
-                role: (h.role === 'assistant' || h.role === 'human_advisor') ? 'assistant' : 'user',
-                content: h.content
-            }))
-        ],
-        temperature: 0.7,
-        max_tokens: 800
-    });
+    const response = await withTimeout(
+        deepseekClient.chat.completions.create({
+            model: 'deepseek-chat',
+            messages: [
+                { role: 'system', content: prompt },
+                ...history.filter(h => h.role !== 'system').map(h => ({
+                    role: (h.role === 'assistant' || h.role === 'human_advisor') ? 'assistant' : 'user',
+                    content: h.content
+                }))
+            ],
+            temperature: 0.7,
+            max_tokens: 800
+        }),
+        13000,
+        'DeepSeek (deepseek-chat)'
+    );
     const replyText = response.choices[0]?.message?.content?.trim() || '';
     if (!replyText) throw new Error('Respuesta vacía de DeepSeek.');
     return { reply: replyText, modelUsed: 'deepseek-chat', provider: 'DeepSeek' };
@@ -266,18 +331,22 @@ async function llamarAPI_Groq(_modelId, prompt, history) {
     if (!groqClient || !isValidApiKey(process.env.GROQ_API_KEY)) {
         throw new Error('Groq no tiene API Key configurada.');
     }
-    const response = await groqClient.chat.completions.create({
-        model: 'llama-3.3-70b-versatile',
-        messages: [
-            { role: 'system', content: prompt },
-            ...history.filter(h => h.role !== 'system').map(h => ({
-                role: (h.role === 'assistant' || h.role === 'human_advisor') ? 'assistant' : 'user',
-                content: h.content
-            }))
-        ],
-        temperature: 0.7,
-        max_tokens: 800
-    });
+    const response = await withTimeout(
+        groqClient.chat.completions.create({
+            model: 'llama-3.3-70b-versatile',
+            messages: [
+                { role: 'system', content: prompt },
+                ...history.filter(h => h.role !== 'system').map(h => ({
+                    role: (h.role === 'assistant' || h.role === 'human_advisor') ? 'assistant' : 'user',
+                    content: h.content
+                }))
+            ],
+            temperature: 0.7,
+            max_tokens: 800
+        }),
+        9500,
+        'Groq (llama-3.3-70b-versatile)'
+    );
     const replyText = response.choices[0]?.message?.content?.trim() || '';
     if (!replyText) throw new Error('Respuesta vacía de Groq.');
     return { reply: replyText, modelUsed: 'llama-3.3-70b-versatile', provider: 'Groq Cloud' };
@@ -314,11 +383,11 @@ async function llamarAPI_Ollama(modelId, prompt, history) {
 }
 
 const FALLBACK_PROVIDER_PIPELINE = [
-    { provider: 'google', fn: llamarAPI_Gemini, defaultModel: 'gemini-3.8-flash', check: () => isValidApiKey(process.env.GEMINI_API_KEY) },
-    { provider: 'anthropic', fn: llamarAPI_Claude, defaultModel: 'claude-3-5-haiku-20241022', check: () => isValidApiKey(process.env.ANTHROPIC_API_KEY) },
-    { provider: 'openai', fn: llamarAPI_OpenAI, defaultModel: 'gpt-4o-mini', check: () => isValidApiKey(process.env.OPENAI_API_KEY) },
-    { provider: 'deepseek', fn: llamarAPI_DeepSeek, defaultModel: 'deepseek-chat', check: () => isValidApiKey(process.env.DEEPSEEK_API_KEY) },
+    { provider: 'google', fn: llamarAPI_Gemini, defaultModel: 'gemini-3.5-flash-lite', check: () => isValidApiKey(process.env.GEMINI_API_KEY) },
     { provider: 'groq', fn: llamarAPI_Groq, defaultModel: 'llama-3.3-70b-versatile', check: () => isValidApiKey(process.env.GROQ_API_KEY) },
+    { provider: 'openai', fn: llamarAPI_OpenAI, defaultModel: 'gpt-4o-mini', check: () => isValidApiKey(process.env.OPENAI_API_KEY) },
+    { provider: 'anthropic', fn: llamarAPI_Claude, defaultModel: 'claude-3-5-haiku-20241022', check: () => isValidApiKey(process.env.ANTHROPIC_API_KEY) },
+    { provider: 'deepseek', fn: llamarAPI_DeepSeek, defaultModel: 'deepseek-chat', check: () => isValidApiKey(process.env.DEEPSEEK_API_KEY) },
     { provider: 'ollama', fn: llamarAPI_Ollama, defaultModel: 'ollama-local', check: () => isOllamaConfigured() }
 ];
 
@@ -334,8 +403,10 @@ async function callMetalUrielLLM(senderPhone, userMessage, requestedModelId = nu
     if (history.length > 24) history.splice(0, history.length - 24);
 
     let currentPrompt = getActivePrompt();
-    const cicloActivo = await getActiveCicloEscolar(sedeId);
-    const poolItems = await getActivePoolItems(sedeId);
+    const [cicloActivo, poolItems] = await Promise.all([
+        getActiveCicloEscolar(sedeId),
+        getActivePoolItems(sedeId)
+    ]);
     const poolCatalogSummary = poolItems.map(item =>
         `• [Código: ${item.codigo_recurso}] (${item.categoria.toUpperCase()} | ${item.tipo_archivo.toUpperCase()}) "${item.titulo}" — Modalidad: ${item.modalidad || 'Presencial'}. Info: ${item.descripcion_ia || ''}`
     ).join('\n');
@@ -425,6 +496,7 @@ NUNCA vuelvas a solicitarle los 11 datos ni a reiniciar el cuestionario.`;
             touchUserSession(canonicalKey);
             result.isFallbackSwitch = i > 0;
             result.latencyMs = latencyMs;
+            result.poolItems = poolItems;
             if (i > 0) result.switchedFrom = providersToTry[0].provider;
             return result;
         } catch (error) {

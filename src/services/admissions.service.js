@@ -197,25 +197,8 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
     const canonical = normalizePhoneCanonical(senderPhone);
     const dialPhone = pickBestDialPhone([senderPhone]);
 
-    // Hidratar desde MariaDB si el servidor se reinició (CERO pérdida de contexto)
+    // 1. Hidratar desde MariaDB solo en arranque en frío de este teléfono (CERO pérdida de contexto)
     await hydrateConversationFromDb(canonical);
-
-    // Registrar o actualizar timestamp del lead en MariaDB (deduplicado por telefono_canonico)
-    const regResult = await registrarLeadInicialEnBD(dialPhone, messageText, sedeId);
-    if (regResult.isNew) {
-        dispararNotificacionCorreo('NUEVO_CONTACTO', {
-            telefono_celular: dialPhone,
-            mensaje_inicial: messageText,
-            sede_id: sedeId,
-            insertId: regResult.insertId
-        }).catch(console.error);
-    }
-
-    // Guardar SIEMPRE el mensaje entrante en la bóveda SQL antes de llamar a la IA
-    await guardarMensajeHistorialBD(dialPhone, 'user', messageText, sedeId, {
-        senderName: regResult.existingLead?.nombre_completo || null,
-        whatsappMessageId: meta.whatsappMessageId || null
-    });
 
     // Asegurar que la sesión conozca el número marcable real
     const sess = userSessionState.get(canonical) || { isRegistered: false, isPaused: false };
@@ -223,9 +206,28 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
     sess.lastActivityAt = Date.now();
     userSessionState.set(canonical, sess);
 
-    const { reply: llmReply, modelUsed } = await callMetalUrielLLM(canonical, messageText, requestedModelId, sedeId);
+    // 2. Registrar lead inicial + persistir mensaje entrante EN PARALELO con la inferencia IA (cero espera DB)
+    const preDbPromises = [
+        registrarLeadInicialEnBD(dialPhone, messageText, sedeId).then((regResult) => {
+            if (regResult.isNew) {
+                dispararNotificacionCorreo('NUEVO_CONTACTO', {
+                    telefono_celular: dialPhone,
+                    mensaje_inicial: messageText,
+                    sede_id: sedeId,
+                    insertId: regResult.insertId
+                }).catch(console.error);
+            }
+        }).catch(() => {}),
+        guardarMensajeHistorialBD(dialPhone, 'user', messageText, sedeId, {
+            senderName: sess.leadData?.nombre_completo || meta.senderName || null,
+            whatsappMessageId: meta.whatsappMessageId || null
+        }).catch(() => {})
+    ];
+
+    const llmResult = await callMetalUrielLLM(canonical, messageText, requestedModelId, sedeId);
+    const { reply: llmReply, modelUsed, latencyMs } = llmResult;
     const { cleanReply, jsonData } = extractJsonFromLlmReply(llmReply);
-    const poolItems = await getActivePoolItems(sedeId);
+    const poolItems = Array.isArray(llmResult.poolItems) ? llmResult.poolItems : await getActivePoolItems(sedeId);
     const brochureDetected = detectBrochureRequest(messageText, canonical, llmReply, poolItems);
     const formattedAttachment = buildAttachmentObject(brochureDetected);
 
@@ -269,11 +271,15 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
             `He registrado exitosamente tu ficha para la carrera de *${validatedJson.carrera_interes || 'tu carrera de interés'}* en la modalidad *${validatedJson.modalidad_estudios || 'Presencial'}* (Campus: ${validatedJson.campus_interes || 'Campeche'}).\n\n` +
             `¡Bienvenido a la familia UNID! 🔴🐾`
         );
-        await guardarMensajeHistorialBD(dialPhone, 'assistant', finalReply, sedeId, {
-            senderName: 'Metal-Uriel IA',
-            modelUsed,
-            documentAttachment: formattedAttachment
-        });
+        const persistPromise = Promise.allSettled([
+            ...preDbPromises,
+            guardarMensajeHistorialBD(dialPhone, 'assistant', finalReply, sedeId, {
+                senderName: 'Metal-Uriel IA',
+                modelUsed,
+                documentAttachment: formattedAttachment
+            })
+        ]);
+        if (!meta.deferPersist) await persistPromise;
         return {
             reply: finalReply,
             completed: true,
@@ -282,16 +288,22 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
             partialFields: validatedJson,
             insertId,
             modelUsed,
-            documentAttachment: formattedAttachment
+            latencyMs,
+            documentAttachment: formattedAttachment,
+            persistPromise
         };
     }
 
     const replyToSend = cleanReply || llmReply;
-    await guardarMensajeHistorialBD(dialPhone, 'assistant', replyToSend, sedeId, {
-        senderName: 'Metal-Uriel IA',
-        modelUsed,
-        documentAttachment: formattedAttachment
-    });
+    const persistPromise = Promise.allSettled([
+        ...preDbPromises,
+        guardarMensajeHistorialBD(dialPhone, 'assistant', replyToSend, sedeId, {
+            senderName: 'Metal-Uriel IA',
+            modelUsed,
+            documentAttachment: formattedAttachment
+        })
+    ]);
+    if (!meta.deferPersist) await persistPromise;
     return {
         reply: replyToSend,
         completed: false,
@@ -299,7 +311,9 @@ async function processChatMessage(senderPhone, messageText, requestedModelId = n
         leadData: null,
         partialFields,
         modelUsed,
-        documentAttachment: formattedAttachment
+        latencyMs,
+        documentAttachment: formattedAttachment,
+        persistPromise
     };
 }
 

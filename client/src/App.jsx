@@ -331,11 +331,12 @@ function App() {
       loadUsers();
     }
 
-    // Polling en vivo para sincronización de WhatsApp en tiempo real (cada 3.5 segundos)
+    // Polling inteligente en vivo para WhatsApp (cada 2.5s mientras la pestaña está visible)
     const liveInterval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
       loadConversations(true);
       loadAspirantes(true);
-    }, 3500);
+    }, 2500);
 
     const healthInterval = setInterval(fetchHealthFull, 12000);
     return () => {
@@ -452,6 +453,7 @@ function App() {
   }, [activeTab, analyticsData]);
 
   // ================= MÉTODOS DE BANDEJA Y API =================
+  const lastConvSigRef = useRef({});
   const loadFullConversationHistory = async (targetPhone) => {
     if (!targetPhone) return;
     try {
@@ -485,16 +487,24 @@ function App() {
           setPhone(first.phone);
           setMessages(first.messages || []);
           if (first.leadData) setLiveExtractedFields(first.leadData);
+          const sig = `${first.totalMessages || 0}:${first.lastMessageTime || ''}`;
+          lastConvSigRef.current[firstId] = sig;
           if (first.hasMoreHistory) loadFullConversationHistory(firstId);
         } else if (selectedChatPhone) {
-          // Sincronizar mensajes del chat actual sin truncar historial completo
+          // Sincronizar mensajes del chat actual sin truncar historial completo (evitando re-fetch redundante)
           const current = data.conversations.find(
             c => (c.canonicalPhone || c.cleanPhone || c.phone) === selectedChatPhone
           );
           if (current) {
+            const sig = `${current.totalMessages || 0}:${current.lastMessageTime || ''}`;
+            const changed = lastConvSigRef.current[selectedChatPhone] !== sig;
             if (current.hasMoreHistory) {
-              loadFullConversationHistory(current.canonicalPhone || current.phone);
+              if (changed || !silent) {
+                lastConvSigRef.current[selectedChatPhone] = sig;
+                loadFullConversationHistory(current.canonicalPhone || current.phone);
+              }
             } else if (current.messages) {
+              lastConvSigRef.current[selectedChatPhone] = sig;
               setMessages(current.messages);
             }
             if (current.leadData) setLiveExtractedFields(current.leadData);
@@ -2707,11 +2717,21 @@ function App() {
                             </div>
                           )}
 
-                          {/* Pie de mensaje con fecha/hora auditada y modelo */}
+                          {/* Pie de mensaje con fecha/hora auditada, estado real Meta y modelo */}
                           <div className="flex items-center justify-end gap-1.5 text-[9px] text-slate-300/75 font-mono select-none">
                             <span>{m.fullDateTime || m.time}</span>
                             {!isUser && (
-                              <span className="text-sky-300 font-bold">✓✓</span>
+                              m.deliveryStatus === 'failed' ? (
+                                <span className="text-rose-400 font-bold" title={m.deliveryError || 'Error de entrega en Meta WhatsApp'}>❌ Error WA</span>
+                              ) : m.deliveryStatus === 'read' ? (
+                                <span className="text-sky-400 font-bold" title="Leído en WhatsApp">✓✓</span>
+                              ) : m.deliveryStatus === 'delivered' ? (
+                                <span className="text-slate-300 font-bold" title="Entregado en WhatsApp">✓✓</span>
+                              ) : m.deliveryStatus === 'sent' ? (
+                                <span className="text-slate-400 font-bold" title="Enviado a Meta Cloud API">✓</span>
+                              ) : (
+                                <span className="text-sky-300/80 font-bold">✓✓</span>
+                              )
                             )}
                             {isBot && m.modelUsed && (
                               <span className="text-[9px] text-amber-300/80">
@@ -4097,6 +4117,9 @@ function App() {
                       placeholder="Ej. 1385138271342842"
                       className="w-full bg-[#1E293B] text-xs text-slate-200 rounded-xl px-3 py-2 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400 font-mono"
                     />
+                    <a href="https://developers.facebook.com/apps/" target="_blank" rel="noopener noreferrer" className="inline-block text-[11px] text-sky-300 hover:text-amber-300 underline">
+                      🔗 Ver Phone Number ID en Meta for Developers ↗
+                    </a>
                   </div>
 
                   <div className="space-y-1">
@@ -4120,6 +4143,14 @@ function App() {
                     placeholder={tenantForm.hasWhatsAppToken ? 'Token guardado (dejar en blanco para mantener)' : 'Pegar token de Meta'}
                     className="w-full bg-[#1E293B] text-xs text-slate-200 rounded-xl px-3 py-2 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400 font-mono"
                   />
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5 text-[11px]">
+                    <a href="https://business.facebook.com/settings/system-users" target="_blank" rel="noopener noreferrer" className="text-sky-300 hover:text-amber-300 underline">
+                      🔗 Generar Token Permanente (Usuario del Sistema) en Meta Business Suite ↗
+                    </a>
+                    <button type="button" onClick={() => setShowSetupWizard(true)} className="text-amber-300 hover:underline font-bold">
+                      🔑 Configurar API Keys de IA (.env) →
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex items-center gap-3 pt-2">
@@ -4470,7 +4501,11 @@ function App() {
                     </span>
                   </h3>
                   <p className="text-[11px] text-slate-400">
-                    Para recibir los correos reales en <strong>Luisquintero2001@gmail.com</strong>: ve a tu Cuenta de Google → Seguridad → Verificación en 2 pasos → <strong>Contraseñas de aplicaciones</strong>, genera una clave de 16 letras y pégala aquí.
+                    Para recibir los correos reales: abre{' '}
+                    <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener noreferrer" className="text-sky-300 hover:text-amber-300 underline font-semibold">
+                      myaccount.google.com/apppasswords ↗
+                    </a>
+                    , genera una clave de 16 letras y pégala aquí.
                   </p>
                 </div>
               </div>

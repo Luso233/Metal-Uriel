@@ -175,8 +175,32 @@ router.post('/api/setup/test-ai', setupAccessGuard, async (req, res) => {
         const t0 = Date.now();
         if (provider === 'google') {
             const client = new GoogleGenAI({ apiKey: effectiveKey });
-            const resp = await client.models.generateContent({ model: 'gemini-3.8-flash', contents: 'Responde solo OK' });
-            if (!resp.text) throw new Error('Sin texto devuelto por Gemini.');
+            const testCandidates = [
+                { model: 'gemini-3.5-flash-lite', thinkingLevel: 'minimal' },
+                { model: 'gemini-4-hydrogen', thinkingLevel: 'low' }
+            ];
+            let verifiedModel = null;
+            let lastTestErr = null;
+            for (const c of testCandidates) {
+                try {
+                    const resp = await Promise.race([
+                        client.models.generateContent({
+                            model: c.model,
+                            contents: 'Responde solo OK',
+                            config: {
+                                maxOutputTokens: c.thinkingLevel === 'minimal' ? 32 : 512,
+                                thinkingConfig: { thinkingLevel: c.thinkingLevel }
+                            }
+                        }),
+                        new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout 8000ms')), 8000))
+                    ]);
+                    if (resp.text) { verifiedModel = c.model; break; }
+                } catch (gErr) {
+                    lastTestErr = gErr;
+                }
+            }
+            if (!verifiedModel) throw lastTestErr || new Error('Sin texto devuelto por Gemini.');
+            return res.json({ ok: true, latencyMs: Date.now() - t0, message: `Google Gemini (${verifiedModel}) verificado (${Date.now() - t0} ms).` });
         } else if (provider === 'openai') {
             await new OpenAI({ apiKey: effectiveKey }).models.list();
         } else if (provider === 'deepseek') {
@@ -199,7 +223,7 @@ router.post('/api/setup/test-whatsapp', setupAccessGuard, async (req, res) => {
     const err = setupUtils.validateField('WHATSAPP_PHONE_NUMBER_ID', phoneId, { forceRequired: true }) || setupUtils.validateField('WHATSAPP_TOKEN', token, { forceRequired: true });
     if (err) return res.status(400).json({ ok: false, error: err });
     try {
-        const r = await axios.get(`https://graph.facebook.com/v20.0/${phoneId}?fields=display_phone_number,verified_name,quality_rating`, { headers: { Authorization: `Bearer ${token}` }, timeout: 8000 });
+        const r = await axios.get(`https://graph.facebook.com/${config.META_GRAPH_VERSION}/${phoneId}?fields=display_phone_number,verified_name,quality_rating`, { headers: { Authorization: `Bearer ${token}` }, timeout: 8000 });
         res.json({ ok: true, displayPhone: r.data?.display_phone_number || phoneId, verifiedName: r.data?.verified_name || 'WhatsApp Business', qualityRating: r.data?.quality_rating || 'GREEN', message: `Conectado a "${r.data?.verified_name || 'Meta Business'}".` });
     } catch (e) {
         res.status(400).json({ ok: false, error: `Meta Graph API rechazó las credenciales: ${e.response?.data?.error?.message || e.message}` });

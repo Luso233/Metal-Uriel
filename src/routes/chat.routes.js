@@ -9,6 +9,7 @@ const {
     userSessionState,
     processedMessageIds,
     providerCooldowns,
+    whatsappMessageStatuses,
     isProviderInCooldown,
     getProviderCooldownRemaining,
     getLastMemoryCleanupStats,
@@ -59,6 +60,8 @@ function formatAuditedMessage(m, idx, aspiranteNombre) {
     const audit = formatSenderAudit(rol, remitenteNombre, modeloIa, aspiranteNombre);
     const ts = m.timestamp ? new Date(m.timestamp) : new Date();
     const validTs = isNaN(ts.getTime()) ? new Date() : ts;
+    const wamid = m.whatsapp_message_id || m.whatsappMessageId || null;
+    const statusMeta = wamid ? (whatsappMessageStatuses.get(wamid) || null) : null;
     return {
         id: m.id || `mem_${idx + 1}`,
         seq: idx + 1,
@@ -68,7 +71,9 @@ function formatAuditedMessage(m, idx, aspiranteNombre) {
         senderName: audit.displayAuthor,
         displayAuthor: audit.displayAuthor,
         modelUsed: modeloIa,
-        whatsappMessageId: m.whatsapp_message_id || m.whatsappMessageId || null,
+        whatsappMessageId: wamid,
+        deliveryStatus: statusMeta ? statusMeta.status : null,
+        deliveryError: statusMeta ? statusMeta.error : null,
         text: String(m.mensaje ?? m.content ?? m.text ?? ''),
         time: validTs.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         fullDateTime: formatFullDateTimeEsMx(validTs),
@@ -941,10 +946,6 @@ router.post('/api/conversations/send-message', authMiddleware, async (req, res) 
         };
         conversationMemory.get(canonical).push(msgObj);
         const targetSede = (req.user.rol !== 'desarrollador' && req.user.sede_id) ? req.user.sede_id : 'campeche';
-        await guardarMensajeHistorialBD(dialPhone, 'human_advisor', message.trim(), targetSede, {
-            senderName: advisorName
-        });
-
         if (!userSessionState.has(canonical)) {
             userSessionState.set(canonical, { isRegistered: false, isPaused: false, lastActivityAt: Date.now() });
         } else {
@@ -952,8 +953,12 @@ router.post('/api/conversations/send-message', authMiddleware, async (req, res) 
         }
         if (pauseAi !== undefined) userSessionState.get(canonical).isPaused = Boolean(pauseAi);
 
-        await sendWhatsAppMessage(dialPhone, message.trim());
-        res.json({ success: true, message: msgObj, isPaused: userSessionState.get(canonical).isPaused, canonicalPhone: canonical });
+        const [waRes] = await Promise.all([
+            sendWhatsAppMessage(dialPhone, message.trim()),
+            guardarMensajeHistorialBD(dialPhone, 'human_advisor', message.trim(), targetSede, { senderName: advisorName }).catch(() => {})
+        ]);
+        if (waRes?.textMessageId) msgObj.whatsappMessageId = waRes.textMessageId;
+        res.json({ success: true, message: msgObj, isPaused: userSessionState.get(canonical).isPaused, canonicalPhone: canonical, whatsappMessageId: waRes?.textMessageId || null });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

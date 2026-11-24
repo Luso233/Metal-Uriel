@@ -34,15 +34,34 @@ function saveBrochuresToDisk() {
 
 loadBrochuresFromDisk();
 
+const activeSchoolCyclesFetchedAt = new Map();
+const poolItemsCache = new Map();
+const POOL_AND_CICLO_CACHE_TTL_MS = 60 * 1000;
+
+function invalidateCicloCache(sedeId = null) {
+    if (sedeId) activeSchoolCyclesFetchedAt.delete(sedeId);
+    else activeSchoolCyclesFetchedAt.clear();
+}
+
+function invalidatePoolCache() {
+    poolItemsCache.clear();
+}
+
 async function getActiveCicloEscolar(sedeId = 'campeche') {
     const cleanSede = sedeId || 'campeche';
+    const lastFetched = activeSchoolCyclesFetchedAt.get(cleanSede) || 0;
+    if (Date.now() - lastFetched < POOL_AND_CICLO_CACHE_TTL_MS && activeSchoolCyclesMemory.has(cleanSede)) {
+        return activeSchoolCyclesMemory.get(cleanSede);
+    }
     try {
         const [rows] = await getPool().query('SELECT ciclo_activo FROM ciclos_escolares_sede WHERE sede_id = ? LIMIT 1', [cleanSede]);
         if (rows.length > 0 && rows[0].ciclo_activo) {
             activeSchoolCyclesMemory.set(cleanSede, rows[0].ciclo_activo);
+            activeSchoolCyclesFetchedAt.set(cleanSede, Date.now());
             return rows[0].ciclo_activo;
         }
     } catch (_) {}
+    activeSchoolCyclesFetchedAt.set(cleanSede, Date.now());
     return activeSchoolCyclesMemory.get(cleanSede) || '2026-3 Septiembre';
 }
 
@@ -210,6 +229,11 @@ async function materializeAllPoolPdfsOnDisk(connection = null) {
 }
 
 async function getActivePoolItems(sedeId = null) {
+    const cacheKey = (sedeId && sedeId !== 'all' && sedeId !== 'todas') ? String(sedeId) : '__all__';
+    const cached = poolItemsCache.get(cacheKey);
+    if (cached && (Date.now() - cached.fetchedAt) < POOL_AND_CICLO_CACHE_TTL_MS) {
+        return cached.items;
+    }
     try {
         let query = 'SELECT * FROM pool_recursos_multimedia WHERE activo = 1';
         const params = [];
@@ -220,7 +244,7 @@ async function getActivePoolItems(sedeId = null) {
         query += ' ORDER BY id ASC';
         const [rows] = await getPool().query(query, params);
         if (rows && rows.length > 0) {
-            return rows.map(r => {
+            const mapped = rows.map(r => {
                 let parsedTags = [];
                 try {
                     parsedTags = typeof r.tags === 'string' ? JSON.parse(r.tags) : (Array.isArray(r.tags) ? r.tags : []);
@@ -250,10 +274,12 @@ async function getActivePoolItems(sedeId = null) {
                     tags: parsedTags
                 };
             });
+            poolItemsCache.set(cacheKey, { items: mapped, fetchedAt: Date.now() });
+            return mapped;
         }
     } catch (_) {}
 
-    return UNID_BROCHURES.map(b => ({
+    const fallbackItems = UNID_BROCHURES.map(b => ({
         ...b,
         codigo_recurso: b.id,
         categoria: b.id === 'becas' ? 'becas_costos' : 'plan_estudios',
@@ -262,6 +288,8 @@ async function getActivePoolItems(sedeId = null) {
         tipo_archivo: 'pdf',
         url_recurso: b.pdfUrl
     }));
+    poolItemsCache.set(cacheKey, { items: fallbackItems, fetchedAt: Date.now() });
+    return fallbackItems;
 }
 
 function detectBrochureRequest(userMessage, senderPhone = null, llmReply = '', poolItems = null) {
@@ -422,6 +450,8 @@ module.exports = {
     loadBrochuresFromDisk,
     saveBrochuresToDisk,
     getActiveCicloEscolar,
+    invalidateCicloCache,
+    invalidatePoolCache,
     generateOfficialPdfBuffer,
     seedInitialPoolResources,
     materializeAllPoolPdfsOnDisk,
