@@ -1076,18 +1076,18 @@ const ALL_SUPPORTED_MODELS = [
     },
     // Google Gemini (Versiones Comerciales Oficiales Google GenAI SDK)
     {
-        id: 'gemini-2.5-flash',
-        name: 'Google Gemini 2.5 Flash',
+        id: 'gemini-3.8-flash',
+        name: 'Google Gemini 3.8 Flash',
         provider: 'google',
         providerName: 'Google Gemini',
         icon: '⚡',
         badge: 'Estándar Oficial',
-        description: 'Motor cognitivo principal de baja latencia y alta comprensión contextual.',
+        description: 'Motor cognitivo principal de última generación, baja latencia y alta comprensión contextual.',
         isConfigured: isValidApiKey(process.env.GEMINI_API_KEY)
     },
     {
-        id: 'gemini-2.5-flash-lite',
-        name: 'Google Gemini 2.5 Flash Lite',
+        id: 'gemini-3.5-flash-lite',
+        name: 'Google Gemini 3.5 Flash Lite',
         provider: 'google',
         providerName: 'Google Gemini',
         icon: '✨',
@@ -1096,13 +1096,13 @@ const ALL_SUPPORTED_MODELS = [
         isConfigured: isValidApiKey(process.env.GEMINI_API_KEY)
     },
     {
-        id: 'gemini-2.5-pro',
-        name: 'Google Gemini 2.5 Pro',
+        id: 'gemini-4-argon',
+        name: 'Google Gemini 4 Argon',
         provider: 'google',
         providerName: 'Google Gemini',
         icon: '🧠',
         badge: 'Avanzado',
-        description: 'Máxima capacidad de razonamiento lógico institucional.',
+        description: 'Máxima capacidad de razonamiento lógico institucional de frontera.',
         isConfigured: isValidApiKey(process.env.GEMINI_API_KEY)
     },
     // Anthropic Claude
@@ -1531,30 +1531,45 @@ async function llamarAPI_Gemini(modelId, prompt, history) {
     }
 
     const legacyMap = {
-        'gemini-3.5-flash': 'gemini-2.5-flash',
-        'gemini-3.5-flash-lite': 'gemini-2.5-flash-lite',
-        'gemini-3.6-flash': 'gemini-2.5-flash',
-        'gemini-3.1-pro-preview': 'gemini-2.5-pro'
+        'gemini-2.5-flash': 'gemini-3.8-flash',
+        'gemini-2.5-flash-lite': 'gemini-3.5-flash-lite',
+        'gemini-2.5-pro': 'gemini-4-argon',
+        'gemini-3.5-flash': 'gemini-3.8-flash',
+        'gemini-3.6-flash': 'gemini-3.8-flash',
+        'gemini-3.1-pro-preview': 'gemini-4-argon'
     };
     const normalizedId = legacyMap[modelId] || modelId;
-    const targetModel = normalizedId && normalizedId.startsWith('gemini') ? normalizedId : 'gemini-2.5-flash';
+    const primaryModel = (normalizedId && normalizedId.startsWith('gemini')) ? normalizedId : 'gemini-3.8-flash';
+    const candidateModels = Array.from(new Set([primaryModel, 'gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-4-argon']));
+
     const geminiContents = history.map(h => ({
         role: h.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: h.content }]
     }));
 
-    const response = await geminiClient.models.generateContent({
-        model: targetModel,
-        contents: geminiContents,
-        config: {
-            systemInstruction: prompt,
-            temperature: 0.7
-        }
-    });
+    let lastErr = null;
+    for (const targetModel of candidateModels) {
+        try {
+            const response = await geminiClient.models.generateContent({
+                model: targetModel,
+                contents: geminiContents,
+                config: {
+                    systemInstruction: prompt,
+                    temperature: 0.7
+                }
+            });
 
-    const replyText = response.text ? response.text.trim() : '';
-    if (!replyText) throw new Error('Respuesta vacía de Google Gemini.');
-    return { reply: replyText, modelUsed: targetModel, provider: 'Google Gemini' };
+            const replyText = response.text ? response.text.trim() : '';
+            if (replyText) {
+                return { reply: replyText, modelUsed: targetModel, provider: 'Google Gemini' };
+            }
+        } catch (err) {
+            lastErr = err;
+            console.warn(`⚠️ [GEMINI SUB-FALLBACK] Modelo ${targetModel} no disponible (${err.message?.slice(0, 80)}), probando siguiente variante Gemini...`);
+        }
+    }
+
+    throw lastErr || new Error('Respuesta vacía de Google Gemini.');
 }
 
 // Adaptador 2: Anthropic Claude
@@ -1660,7 +1675,7 @@ async function llamarAPI_Groq(modelId, prompt, history) {
 
 // Jerarquía de Fallback Predeterminada
 const FALLBACK_PROVIDER_PIPELINE = [
-    { provider: 'google', fn: llamarAPI_Gemini, defaultModel: 'gemini-2.5-flash', check: () => isValidApiKey(process.env.GEMINI_API_KEY) },
+    { provider: 'google', fn: llamarAPI_Gemini, defaultModel: 'gemini-3.8-flash', check: () => isValidApiKey(process.env.GEMINI_API_KEY) },
     { provider: 'anthropic', fn: llamarAPI_Claude, defaultModel: 'claude-3-5-haiku-20241022', check: () => isValidApiKey(process.env.ANTHROPIC_API_KEY) },
     { provider: 'openai', fn: llamarAPI_OpenAI, defaultModel: 'gpt-4o-mini', check: () => isValidApiKey(process.env.OPENAI_API_KEY) },
     { provider: 'deepseek', fn: llamarAPI_DeepSeek, defaultModel: 'deepseek-chat', check: () => isValidApiKey(process.env.DEEPSEEK_API_KEY) },
@@ -1800,9 +1815,9 @@ INSTRUCCIONES CLAVE DE ATENCIÓN:
             const status = error.status || error.response?.status || error.statusCode;
             const errorMsg = error.message || '';
 
-            // Detectar Rate Limits (429) o Cuota Agotada (403, 402, 503)
-            const isQuotaOrRateLimit = status === 429 || status === 403 || status === 402 || 
-                                       /quota|rate limit|too many requests|credits|credit balance|overloaded/i.test(errorMsg);
+            // Detectar Rate Limits (429), API Key Expirada (401) o Cuota Agotada (403, 402, 503)
+            const isQuotaOrRateLimit = status === 429 || status === 403 || status === 402 || status === 401 ||
+                                       /quota|rate limit|too many requests|credits|credit balance|overloaded|expired|invalid api key/i.test(errorMsg);
 
             if (isQuotaOrRateLimit) {
                 console.warn(`🚨 [ALERTA DE CUOTA] ${providerKey.toUpperCase()} retornó error de cuota (${status || errorMsg}). Activando Cooldown de 10 min y pasando al siguiente en cascada sin perder contexto...`);

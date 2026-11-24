@@ -6,7 +6,7 @@
 ![Node.js](https://img.shields.io/badge/Node.js-v20+-339933?style=for-the-badge&logo=node.js&logoColor=white)
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-3.4-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white)
-![Google Gemini](https://img.shields.io/badge/Google_Gemini-2.5_Flash-4285F4?style=for-the-badge&logo=google&logoColor=white)
+![Google Gemini](https://img.shields.io/badge/Google_Gemini-3.8_Flash-4285F4?style=for-the-badge&logo=google&logoColor=white)
 ![MariaDB](https://img.shields.io/badge/MariaDB-11.x-003545?style=for-the-badge&logo=mariadb&logoColor=white)
 ![Meta WhatsApp](https://img.shields.io/badge/Meta-WhatsApp_Cloud_API-25D366?style=for-the-badge&logo=whatsapp&logoColor=white)
 
@@ -30,7 +30,7 @@ Personificado como el embajador cibernético del lobo rojo institucional (*Metal
 
 ### 🧠 1. Motor de Inferencia en Cascada Multi-Proveedor & Circuit Breaker
 - **Alta Disponibilidad 24/7:** Inferencia tolerante a fallos con soporte unificado para:
-  - **Google Gemini** (`gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.5-pro`)
+  - **Google Gemini** (`gemini-3.8-flash`, `gemini-3.5-flash-lite`, `gemini-4-argon`)
   - **Anthropic Claude** (`claude-3-5-haiku`, `claude-3-5-sonnet`)
   - **OpenAI** (`gpt-4o-mini`, `gpt-4o`)
   - **DeepSeek** (`deepseek-chat`)
@@ -92,14 +92,14 @@ flowchart TD
     end
 
     subgraph AI_Providers ["🤖 Proveedores de IA (Inferencia Resiliente)"]
-        GEMINI["Google Gemini 2.5 Flash (Principal)"]
+        GEMINI["Google Gemini 3.8 Flash (Principal)"]
         CLAUDE["Anthropic Claude 3.5 Haiku/Sonnet"]
         OPENAI["OpenAI GPT-4o-mini / GPT-4o"]
         GROQ["DeepSeek V3 / Groq Llama 3.3"]
     end
 
     subgraph Storage ["💾 Capa de Persistencia Híbrida"]
-        MARIADB[("MariaDB (aspirantes, sedes, usuarios,\nhistorial, pool_recursos, pool_categorias)")]
+        MARIADB[("MariaDB (unid_admisiones • 8 Tablas:\naspirantes, sedes, usuarios, historial,\nciclos, pool_recursos, pool_categorias, correos)")]
         FILES["Repositorio Físico (/uploads/recursos/ PDF/IMG,\nbrochures.json & system_prompt.txt)"]
     end
 
