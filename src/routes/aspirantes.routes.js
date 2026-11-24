@@ -115,7 +115,7 @@ router.get('/api/aspirantes/export', authMiddleware, authorizeRoles('desarrollad
 router.patch('/api/aspirantes/:id/status', authMiddleware, async (req, res) => {
     try {
         const { id } = req.params;
-        const { estado } = req.body;
+        const estado = req.body.estado || req.body.estado_prospecto;
         if (!['nuevo', 'contactado', 'en_proceso', 'inscrito', 'no_interesado'].includes(estado)) {
             return res.status(400).json({ error: 'Estado de prospecto no válido.' });
         }

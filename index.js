@@ -60,7 +60,12 @@ function startServer(port = config.PORT, host = config.HOST) {
         console.log(`🛡️ Modo de Inferencia: ${getActiveModelId()} ${isOllamaConfigured() ? '(+ Ollama Local último recurso)' : ''}`);
         console.log(`🔐 Seguridad: Helmet CSP + CORS Capacitor + Rate Limit + RBAC 100% + HMAC ${hmacActive ? 'ACTIVO ✅' : 'SANDBOX'}`);
         console.log(`🌐 Acceso Local: http://localhost:${port}`);
-        hw.lanUrls.forEach(u => console.log(`🏢 Acceso Red Local (LAN / APK Android): ${u}`));
+        hw.lanUrls.forEach(u => console.log(`📱 Acceso Red Local / APK Android (Wi-Fi/Ethernet): ${u}`));
+        if (hw.virtualUrls && hw.virtualUrls.length > 0) {
+            console.log(`⚠️ Adaptadores virtuales omitidos (NO usar desde celular): ${hw.virtualUrls.join(', ')}`);
+        }
+        console.log(`🔥 Si el celular no conecta, ejecuta en PowerShell Admin:`);
+        console.log(`   ${hw.firewallCommand}`);
         console.log(`🔗 Webhook de WhatsApp: http://localhost:${port}/webhook`);
         if (setupInfo.needsSetup) {
             console.log(`🧩 PRIMER USO DETECTADO: ${config.HEADLESS_MODE ? 'Conecta la APK Android o abre con HEADLESS_MODE=false para completar el Setup Wizard.' : `Abre http://localhost:${port} en tu navegador para el Setup Wizard.`}`);

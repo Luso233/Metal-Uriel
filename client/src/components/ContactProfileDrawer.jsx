@@ -104,7 +104,7 @@ export default function ContactProfileDrawer({
         const res = await fetch(resolveApiUrl(`/api/aspirantes/${lead.id}/status`), {
           method: 'PATCH',
           headers: authHeaders,
-          body: JSON.stringify({ estado_prospecto: nextStage })
+          body: JSON.stringify({ estado: nextStage, estado_prospecto: nextStage })
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Error moviendo etapa Kanban');
